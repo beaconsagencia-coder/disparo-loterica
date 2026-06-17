@@ -6,7 +6,7 @@
 import { GoogleGenAI, Type } from "npm:@google/genai@2.8.0";
 import type { SupabaseClient } from "jsr:@supabase/supabase-js@2";
 import { sendText } from "./evolution.ts";
-import { checkAvailability, suggestSlots } from "./agenda.ts";
+import { agendaResumo, checkAvailability, suggestSlots } from "./agenda.ts";
 
 const DEFAULT_MODEL = "gemini-2.5-flash";
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -225,7 +225,7 @@ function agoraEmSP(): string {
   }).format(new Date());
 }
 
-function buildSystem(playbook: string, persona: string, empresa: string, leadNome: string, leadEmpresa: string | null) {
+function buildSystem(playbook: string, persona: string, empresa: string, leadNome: string, leadEmpresa: string | null, agenda: string) {
   // Substitui as variáveis conhecidas direto no roteiro (evita o modelo
   // copiar "{{Empresa}}"/"{{Nome}}" literalmente quando o valor existe).
   const primeiroNome = leadNome ? leadNome.trim().split(/\s+/)[0] : "";
@@ -243,6 +243,9 @@ function buildSystem(playbook: string, persona: string, empresa: string, leadNom
     `- Nome do contato: ${leadNome || "(desconhecido — pergunte)"}.`,
     leadEmpresa ? `- Empresa do contato: ${leadEmpresa}.` : "",
     `- Agora é ${agoraEmSP()} (horário de Brasília).`,
+    "",
+    "## Agenda em tempo real (já consultada agora — use estes dados ao propor horários)",
+    agenda,
     "",
     "## Regras de operação (OBRIGATÓRIAS — valem acima do roteiro)",
     "- Responda SEMPRE em uma única mensagem curta de WhatsApp, em português, tom humano e natural. Sem listas, sem markdown.",
@@ -329,9 +332,10 @@ export async function runSdr(p: RunSdrParams): Promise<void> {
     });
   }
 
+  const agenda = await agendaResumo(supabase, p.userId);
   const systemInstruction = buildSystem(
     config.playbook, config.persona_nome, config.empresa,
-    lead?.nome ?? "", lead?.empresa ?? null,
+    lead?.nome ?? "", lead?.empresa ?? null, agenda,
   );
 
   // Garante um modelo Gemini válido (rows antigas podem ter modelo de outro provedor)

@@ -98,6 +98,25 @@ export async function checkAvailability(
   return { ok: !motivo, motivo, settings };
 }
 
+/** Resumo da agenda para injetar no contexto do SDR (validação sem depender de tool call). */
+export async function agendaResumo(supabase: SupabaseClient, userId: string): Promise<string> {
+  const settings = await loadAgenda(supabase, userId);
+  const { data: blocks } = await supabase.from("agenda_blocks")
+    .select("dia_semana, hora_inicio, hora_fim, titulo").eq("user_id", userId).order("dia_semana");
+  const dias = settings.dias.map((d) => DIAS_PT[d]).join(", ");
+  const linhas = [
+    `- Atendo: ${dias}, das ${settings.inicio} às ${settings.fim} (reuniões de ${settings.duracao} min).`,
+  ];
+  if (blocks?.length) {
+    const fix = blocks.map((b) =>
+      `${DIAS_PT[b.dia_semana]} ${b.hora_inicio}–${b.hora_fim}${b.titulo ? ` (${b.titulo})` : ""}`).join("; ");
+    linhas.push(`- BLOQUEADO toda semana (nunca ofereça): ${fix}.`);
+  }
+  const livres = await suggestSlots(supabase, userId, undefined, 5);
+  if (livres.length) linhas.push(`- Próximos horários LIVRES (ofereça só destes): ${livres.join("; ")}.`);
+  return linhas.join("\n");
+}
+
 /** Sugere os próximos N horários livres a partir de uma data. */
 export async function suggestSlots(
   supabase: SupabaseClient, userId: string, fromISO?: string, count = 3,

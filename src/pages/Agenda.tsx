@@ -1,14 +1,30 @@
-import { useEffect, useState } from "react";
-import { CalendarDays, Save, Plus, Trash2, Link2, Ban, Check } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { CalendarDays, Save, Plus, Trash2, Link2, Ban, Check, ChevronLeft, ChevronRight, Settings2, AlertCircle } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 
 const DIAS = ["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sáb"];
+const HOUR_PX = 44; // altura de 1 hora na grade
 
 interface Block { id: string; dia_semana: number; hora_inicio: string; hora_fim: string; titulo: string | null; }
 interface Meeting {
   id: string; titulo: string | null; quando_texto: string; scheduled_for: string | null;
-  status: string; leads?: { nome: string | null } | null;
+  duracao_min: number | null; status: string; leads?: { nome: string | null } | null;
 }
+
+const pad = (n: number) => String(n).padStart(2, "0");
+const hhmmToMin = (s: string) => { const [h, m] = String(s).split(":").map(Number); return (h || 0) * 60 + (m || 0); };
+const minToHHMM = (m: number) => `${pad(Math.floor(m / 60))}:${pad(m % 60)}`;
+
+function startOfWeek(d: Date): Date {
+  const x = new Date(d);
+  x.setHours(0, 0, 0, 0);
+  x.setDate(x.getDate() - x.getDay()); // volta para domingo
+  return x;
+}
+const addDays = (d: Date, n: number) => { const x = new Date(d); x.setDate(x.getDate() + n); return x; };
+const fmtDM = (d: Date) => `${pad(d.getDate())}/${pad(d.getMonth() + 1)}`;
+const sameDay = (a: Date, b: Date) =>
+  a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
 
 export default function Agenda() {
   // Configurações
@@ -19,12 +35,26 @@ export default function Agenda() {
   const [duracao, setDuracao] = useState(30);
   const [savingCfg, setSavingCfg] = useState(false);
   const [cfgMsg, setCfgMsg] = useState<string | null>(null);
+  const [showCfg, setShowCfg] = useState(false);
 
   const [blocks, setBlocks] = useState<Block[]>([]);
   const [meetings, setMeetings] = useState<Meeting[]>([]);
+  const [loadErr, setLoadErr] = useState<string | null>(null);
+  const [weekStart, setWeekStart] = useState<Date>(() => startOfWeek(new Date()));
+
+  // Formulário de bloco (prefill ao clicar na grade)
+  const blockFormRef = useRef<HTMLDivElement>(null);
+  const [bDia, setBDia] = useState(1);
+  const [bHi, setBHi] = useState("12:00");
+  const [bHf, setBHf] = useState("13:00");
+  const [bTitulo, setBTitulo] = useState("");
+  const [bErr, setBErr] = useState<string | null>(null);
+  const [bSaving, setBSaving] = useState(false);
 
   async function loadAll() {
-    const { data: cfg } = await supabase.from("agenda_settings").select("*").maybeSingle();
+    setLoadErr(null);
+    const { data: cfg, error: cfgErr } = await supabase.from("agenda_settings").select("*").maybeSingle();
+    if (cfgErr) setLoadErr("Não consegui carregar a agenda: " + cfgErr.message + ". Verifique se o banco foi atualizado (db push).");
     if (cfg) {
       setMeetLink(cfg.meet_link ?? "");
       setDias(cfg.dias ?? [0, 1, 2, 3, 4, 5, 6]);
@@ -32,12 +62,13 @@ export default function Agenda() {
       setFim(cfg.fim ?? "22:00");
       setDuracao(cfg.duracao_min ?? 30);
     }
-    const { data: b } = await supabase.from("agenda_blocks").select("*").order("dia_semana").order("hora_inicio");
-    setBlocks((b as any) ?? []);
+    const { data: b, error: bErr2 } = await supabase.from("agenda_blocks").select("*").order("dia_semana").order("hora_inicio");
+    if (bErr2 && !loadErr) setLoadErr("Não consegui carregar os compromissos: " + bErr2.message);
+    setBlocks((b as Block[]) ?? []);
     const { data: m } = await supabase.from("meetings")
-      .select("id, titulo, quando_texto, scheduled_for, status, leads(nome)")
+      .select("id, titulo, quando_texto, scheduled_for, duracao_min, status, leads(nome)")
       .order("scheduled_for", { ascending: true, nullsFirst: false });
-    setMeetings((m as any) ?? []);
+    setMeetings((m as unknown as Meeting[]) ?? []);
   }
   useEffect(() => { loadAll(); }, []);
 
@@ -56,116 +87,271 @@ export default function Agenda() {
     );
     setSavingCfg(false);
     setCfgMsg(error ? "Erro: " + error.message : "Configurações salvas ✅");
+    if (!error) loadAll();
   }
 
   function toggleDia(d: number) {
     setDias((cur) => cur.includes(d) ? cur.filter((x) => x !== d) : [...cur, d].sort());
   }
 
+  // ---- grade ----
+  const dayStartH = Math.floor(hhmmToMin(inicio) / 60);
+  const dayEndH = Math.ceil(hhmmToMin(fim) / 60);
+  const hours = useMemo(() => {
+    const out: number[] = [];
+    for (let h = dayStartH; h <= dayEndH; h++) out.push(h);
+    return out;
+  }, [dayStartH, dayEndH]);
+  const gridHeight = (dayEndH - dayStartH) * HOUR_PX;
+  const today = new Date();
+
+  // Reuniões desta semana, indexadas por dia da semana
+  const meetingsByDay = useMemo(() => {
+    const map: Record<number, { m: Meeting; date: Date }[]> = {};
+    for (const m of meetings) {
+      if (!m.scheduled_for || m.status === "cancelada") continue;
+      const date = new Date(m.scheduled_for);
+      if (date < weekStart || date >= addDays(weekStart, 7)) continue;
+      const wd = date.getDay();
+      (map[wd] ??= []).push({ m, date });
+    }
+    return map;
+  }, [meetings, weekStart]);
+
+  function topFor(min: number) { return ((min - dayStartH * 60) / 60) * HOUR_PX; }
+
+  function onCellClick(wd: number, e: React.MouseEvent<HTMLDivElement>) {
+    if (!dias.includes(wd)) return; // dia não atendido
+    const rect = e.currentTarget.getBoundingClientRect();
+    const y = e.clientY - rect.top;
+    const min = dayStartH * 60 + Math.floor(y / HOUR_PX) * 60; // arredonda p/ hora cheia
+    setBDia(wd);
+    setBHi(minToHHMM(min));
+    setBHf(minToHHMM(Math.min(dayEndH * 60, min + 60)));
+    setBErr(null);
+    blockFormRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }
+
+  async function addBlock() {
+    setBErr(null);
+    const uid = await userId();
+    if (!uid) return setBErr("Sessão expirada, faça login de novo.");
+    if (hhmmToMin(bHf) <= hhmmToMin(bHi)) return setBErr("O fim precisa ser depois do início.");
+    setBSaving(true);
+    const { error } = await supabase.from("agenda_blocks").insert({
+      user_id: uid, dia_semana: bDia, hora_inicio: bHi, hora_fim: bHf, titulo: bTitulo.trim() || null,
+    });
+    setBSaving(false);
+    if (error) return setBErr("Não foi possível salvar: " + error.message);
+    setBTitulo("");
+    loadAll();
+  }
+  async function removeBlock(id: string) {
+    const { error } = await supabase.from("agenda_blocks").delete().eq("id", id);
+    if (error) return setBErr("Erro ao remover: " + error.message);
+    loadAll();
+  }
+
   return (
-    <div className="mx-auto max-w-4xl">
-      <header className="mb-6 flex items-center gap-2">
-        <CalendarDays size={22} className="text-accent" />
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Agenda</h1>
-          <p className="text-sm text-ink-muted">Disponibilidade, compromissos fixos e reuniões — o bot respeita tudo isso.</p>
+    <div className="mx-auto max-w-6xl">
+      <header className="mb-6 flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <CalendarDays size={22} className="text-accent" />
+          <div>
+            <h1 className="text-2xl font-semibold tracking-tight">Agenda</h1>
+            <p className="text-sm text-ink-muted">O bot consulta esta agenda em tempo real e só marca em horários livres.</p>
+          </div>
         </div>
+        <button className="btn-ghost" onClick={() => setShowCfg((v) => !v)}>
+          <Settings2 size={16} /> Configurações
+        </button>
       </header>
 
-      {/* Configurações */}
-      <div className="bento-card mb-4">
-        <h2 className="mb-3 font-medium">Disponibilidade</h2>
-        <label className="mb-1 block text-xs font-medium text-ink-soft">Link fixo da reunião (Meet/Zoom/sala)</label>
-        <div className="mb-3 flex items-center gap-2">
-          <Link2 size={16} className="text-ink-muted" />
-          <input className="input" placeholder="https://meet.google.com/abc-defg-hij"
-            value={meetLink} onChange={(e) => setMeetLink(e.target.value)} />
+      {loadErr && (
+        <div className="bento-card mb-4 flex items-start gap-2 border-danger/30 text-sm text-danger">
+          <AlertCircle size={16} className="mt-0.5 shrink-0" /> {loadErr}
         </div>
+      )}
 
-        <label className="mb-1 block text-xs font-medium text-ink-soft">Dias de atendimento</label>
-        <div className="mb-3 flex flex-wrap gap-2">
-          {DIAS.map((d, i) => (
-            <button key={i} onClick={() => toggleDia(i)}
-              className={`chip ${dias.includes(i) ? "bg-accent text-white" : "bg-black/10 text-ink-muted"}`}>
-              {d}
+      {/* Configurações (recolhível) */}
+      {showCfg && (
+        <div className="bento-card mb-4">
+          <h2 className="mb-3 font-medium">Disponibilidade & link</h2>
+          <label className="mb-1 block text-xs font-medium text-ink-soft">Link fixo da reunião (Meet/Zoom/sala)</label>
+          <div className="mb-3 flex items-center gap-2">
+            <Link2 size={16} className="text-ink-muted" />
+            <input className="input" placeholder="https://meet.google.com/abc-defg-hij"
+              value={meetLink} onChange={(e) => setMeetLink(e.target.value)} />
+          </div>
+
+          <label className="mb-1 block text-xs font-medium text-ink-soft">Dias de atendimento</label>
+          <div className="mb-3 flex flex-wrap gap-2">
+            {DIAS.map((d, i) => (
+              <button key={i} onClick={() => toggleDia(i)}
+                className={`chip ${dias.includes(i) ? "bg-accent text-white" : "bg-black/10 text-ink-muted"}`}>
+                {d}
+              </button>
+            ))}
+          </div>
+
+          <div className="grid gap-3 sm:grid-cols-3">
+            <div>
+              <label className="mb-1 block text-xs font-medium text-ink-soft">Início</label>
+              <input type="time" className="input" value={inicio} onChange={(e) => setInicio(e.target.value)} />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-medium text-ink-soft">Fim</label>
+              <input type="time" className="input" value={fim} onChange={(e) => setFim(e.target.value)} />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-medium text-ink-soft">Duração da reunião (min)</label>
+              <input type="number" min={5} step={5} className="input" value={duracao} onChange={(e) => setDuracao(Number(e.target.value))} />
+            </div>
+          </div>
+
+          <div className="mt-4 flex items-center gap-3">
+            <button className="btn-accent" onClick={saveCfg} disabled={savingCfg}>
+              <Save size={16} /> {savingCfg ? "Salvando…" : "Salvar"}
             </button>
-          ))}
+            {cfgMsg && <span className="text-sm text-ink-muted">{cfgMsg}</span>}
+          </div>
+        </div>
+      )}
+
+      {/* Cronograma semanal */}
+      <div className="bento-card mb-4">
+        <div className="mb-3 flex items-center justify-between">
+          <div className="flex items-center gap-1">
+            <button className="btn-ghost !px-2 !py-1" onClick={() => setWeekStart((w) => addDays(w, -7))}><ChevronLeft size={18} /></button>
+            <button className="btn-ghost !px-3 !py-1 text-xs" onClick={() => setWeekStart(startOfWeek(new Date()))}>Hoje</button>
+            <button className="btn-ghost !px-2 !py-1" onClick={() => setWeekStart((w) => addDays(w, 7))}><ChevronRight size={18} /></button>
+          </div>
+          <div className="text-sm font-medium text-ink-soft">
+            {fmtDM(weekStart)} – {fmtDM(addDays(weekStart, 6))}
+          </div>
+          <div className="flex items-center gap-3 text-xs text-ink-muted">
+            <span className="flex items-center gap-1"><span className="h-2.5 w-2.5 rounded bg-ink-muted/40" /> Compromisso fixo</span>
+            <span className="flex items-center gap-1"><span className="h-2.5 w-2.5 rounded bg-accent" /> Reunião</span>
+          </div>
         </div>
 
-        <div className="grid gap-3 sm:grid-cols-3">
-          <div>
-            <label className="mb-1 block text-xs font-medium text-ink-soft">Início</label>
-            <input type="time" className="input" value={inicio} onChange={(e) => setInicio(e.target.value)} />
-          </div>
-          <div>
-            <label className="mb-1 block text-xs font-medium text-ink-soft">Fim</label>
-            <input type="time" className="input" value={fim} onChange={(e) => setFim(e.target.value)} />
-          </div>
-          <div>
-            <label className="mb-1 block text-xs font-medium text-ink-soft">Duração da reunião (min)</label>
-            <input type="number" min={5} step={5} className="input" value={duracao} onChange={(e) => setDuracao(Number(e.target.value))} />
-          </div>
-        </div>
+        <div className="overflow-x-auto">
+          <div className="min-w-[680px]">
+            {/* Cabeçalho dos dias */}
+            <div className="grid" style={{ gridTemplateColumns: `48px repeat(7, 1fr)` }}>
+              <div />
+              {DIAS.map((d, i) => {
+                const date = addDays(weekStart, i);
+                const isToday = sameDay(date, today);
+                const off = !dias.includes(i);
+                return (
+                  <div key={i} className={`px-1 pb-2 text-center ${off ? "opacity-40" : ""}`}>
+                    <div className="text-xs font-medium text-ink-soft">{d}</div>
+                    <div className={`mx-auto mt-0.5 flex h-6 w-6 items-center justify-center rounded-full text-xs ${isToday ? "bg-accent font-semibold text-white" : "text-ink-muted"}`}>
+                      {date.getDate()}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
 
-        <div className="mt-4 flex items-center gap-3">
-          <button className="btn-accent" onClick={saveCfg} disabled={savingCfg}>
-            <Save size={16} /> {savingCfg ? "Salvando…" : "Salvar"}
-          </button>
-          {cfgMsg && <span className="text-sm text-ink-muted">{cfgMsg}</span>}
+            {/* Corpo da grade */}
+            <div className="grid border-t border-black/5" style={{ gridTemplateColumns: `48px repeat(7, 1fr)` }}>
+              {/* Gutter de horas */}
+              <div className="relative" style={{ height: gridHeight }}>
+                {hours.slice(0, -1).map((h) => (
+                  <div key={h} className="absolute -translate-y-1/2 pr-1 text-right text-[10px] text-ink-muted" style={{ top: topFor(h * 60), right: 0, left: 0 }}>
+                    {pad(h)}:00
+                  </div>
+                ))}
+              </div>
+
+              {/* Colunas dos dias */}
+              {DIAS.map((_, wd) => {
+                const off = !dias.includes(wd);
+                return (
+                  <div
+                    key={wd}
+                    onClick={(e) => onCellClick(wd, e)}
+                    className={`relative border-l border-black/5 ${off ? "bg-black/[0.03]" : "cursor-pointer hover:bg-accent/[0.03]"}`}
+                    style={{ height: gridHeight }}
+                    title={off ? "Dia fora do atendimento" : "Clique para adicionar um compromisso fixo"}
+                  >
+                    {/* linhas de hora */}
+                    {hours.slice(0, -1).map((h) => (
+                      <div key={h} className="absolute left-0 right-0 border-t border-black/5" style={{ top: topFor(h * 60) }} />
+                    ))}
+
+                    {/* compromissos fixos (toda semana) */}
+                    {blocks.filter((b) => b.dia_semana === wd).map((b) => {
+                      const top = topFor(hhmmToMin(b.hora_inicio));
+                      const h = Math.max(18, ((hhmmToMin(b.hora_fim) - hhmmToMin(b.hora_inicio)) / 60) * HOUR_PX);
+                      return (
+                        <div key={b.id} onClick={(e) => { e.stopPropagation(); removeBlock(b.id); }}
+                          title={`${b.titulo ?? "Compromisso"} · clique para remover`}
+                          className="group absolute left-0.5 right-0.5 overflow-hidden rounded-md border border-ink-muted/20 bg-ink-muted/15 px-1 py-0.5 text-[10px] leading-tight text-ink-soft hover:bg-danger/15 hover:border-danger/30"
+                          style={{ top, height: h }}>
+                          <div className="font-medium truncate">{b.titulo ?? "Bloqueado"}</div>
+                          <div className="text-ink-muted">{b.hora_inicio}–{b.hora_fim}</div>
+                        </div>
+                      );
+                    })}
+
+                    {/* reuniões desta semana */}
+                    {(meetingsByDay[wd] ?? []).map(({ m, date }) => {
+                      const min = date.getHours() * 60 + date.getMinutes();
+                      const top = topFor(min);
+                      const h = Math.max(18, ((m.duracao_min ?? duracao) / 60) * HOUR_PX);
+                      const nome = m.leads?.nome && !/^\d+$/.test(m.leads.nome) ? m.leads.nome : null;
+                      return (
+                        <div key={m.id}
+                          title={`${m.titulo ?? "Reunião"} · ${pad(date.getHours())}:${pad(date.getMinutes())}`}
+                          className="absolute left-0.5 right-0.5 overflow-hidden rounded-md border border-accent/30 bg-accent/20 px-1 py-0.5 text-[10px] leading-tight text-accent"
+                          style={{ top, height: h }}>
+                          <div className="font-medium truncate">{nome ?? m.titulo ?? "Reunião"}</div>
+                          <div className="opacity-70">{pad(date.getHours())}:{pad(date.getMinutes())}</div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
         </div>
+        <p className="mt-2 text-xs text-ink-muted">Clique num espaço livre de um dia para criar um compromisso fixo. Clique num bloco cinza para removê-lo.</p>
       </div>
 
-      {/* Compromissos fixos semanais */}
-      <BlocksCard blocks={blocks} reload={loadAll} userId={userId} />
+      <div className="grid gap-4 lg:grid-cols-2">
+        {/* Compromissos fixos */}
+        <div ref={blockFormRef} className="bento-card">
+          <h2 className="mb-1 font-medium">Compromissos fixos (semanais)</h2>
+          <p className="mb-3 text-sm text-ink-muted">Repetem toda semana e ficam bloqueados para o bot.</p>
 
-      {/* Reuniões */}
-      <MeetingsCard meetings={meetings} reload={loadAll} userId={userId} duracao={duracao} />
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------
-function BlocksCard({ blocks, reload, userId }: { blocks: Block[]; reload: () => void; userId: () => Promise<string | null> }) {
-  const [dia, setDia] = useState(1);
-  const [hi, setHi] = useState("12:00");
-  const [hf, setHf] = useState("13:00");
-  const [titulo, setTitulo] = useState("");
-
-  async function add() {
-    const uid = await userId();
-    if (!uid || !hi || !hf) return;
-    await supabase.from("agenda_blocks").insert({ user_id: uid, dia_semana: dia, hora_inicio: hi, hora_fim: hf, titulo: titulo.trim() || null });
-    setTitulo("");
-    reload();
-  }
-  async function remove(id: string) {
-    await supabase.from("agenda_blocks").delete().eq("id", id);
-    reload();
-  }
-
-  return (
-    <div className="bento-card mb-4">
-      <h2 className="mb-1 font-medium">Compromissos fixos (semanais)</h2>
-      <p className="mb-3 text-sm text-ink-muted">Horários que se repetem toda semana e ficam bloqueados para o bot.</p>
-
-      <div className="mb-3 space-y-2">
-        {blocks.map((b) => (
-          <div key={b.id} className="flex items-center justify-between rounded-xl bg-white/60 px-3 py-2 text-sm">
-            <span><strong>{DIAS[b.dia_semana]}</strong> {b.hora_inicio}–{b.hora_fim}{b.titulo ? ` · ${b.titulo}` : ""}</span>
-            <button className="btn-ghost !px-2 !py-1 text-[#b4231b]" onClick={() => remove(b.id)}><Trash2 size={14} /></button>
+          <div className="mb-3 space-y-2">
+            {blocks.map((b) => (
+              <div key={b.id} className="flex items-center justify-between rounded-xl bg-white/60 px-3 py-2 text-sm">
+                <span><strong>{DIAS[b.dia_semana]}</strong> {b.hora_inicio}–{b.hora_fim}{b.titulo ? ` · ${b.titulo}` : ""}</span>
+                <button className="btn-ghost !px-2 !py-1 text-danger" onClick={() => removeBlock(b.id)}><Trash2 size={14} /></button>
+              </div>
+            ))}
+            {blocks.length === 0 && <p className="text-sm text-ink-muted">Nenhum compromisso fixo.</p>}
           </div>
-        ))}
-        {blocks.length === 0 && <p className="text-sm text-ink-muted">Nenhum compromisso fixo.</p>}
-      </div>
 
-      <div className="flex flex-wrap items-end gap-2">
-        <select className="input !w-24" value={dia} onChange={(e) => setDia(Number(e.target.value))}>
-          {DIAS.map((d, i) => <option key={i} value={i}>{d}</option>)}
-        </select>
-        <input type="time" className="input !w-28" value={hi} onChange={(e) => setHi(e.target.value)} />
-        <input type="time" className="input !w-28" value={hf} onChange={(e) => setHf(e.target.value)} />
-        <input className="input flex-1 !min-w-[120px]" placeholder="Título (opcional)" value={titulo} onChange={(e) => setTitulo(e.target.value)} />
-        <button className="btn-accent" onClick={add}><Plus size={16} /> Adicionar</button>
+          <div className="flex flex-wrap items-end gap-2">
+            <select className="input !w-20" value={bDia} onChange={(e) => setBDia(Number(e.target.value))}>
+              {DIAS.map((d, i) => <option key={i} value={i}>{d}</option>)}
+            </select>
+            <input type="time" className="input !w-28" value={bHi} onChange={(e) => setBHi(e.target.value)} />
+            <input type="time" className="input !w-28" value={bHf} onChange={(e) => setBHf(e.target.value)} />
+            <input className="input flex-1 !min-w-[120px]" placeholder="Título (opcional)" value={bTitulo} onChange={(e) => setBTitulo(e.target.value)} />
+            <button className="btn-accent" onClick={addBlock} disabled={bSaving}><Plus size={16} /> {bSaving ? "…" : "Adicionar"}</button>
+          </div>
+          {bErr && <p className="mt-2 flex items-center gap-1 text-sm text-danger"><AlertCircle size={14} /> {bErr}</p>}
+        </div>
+
+        {/* Reuniões */}
+        <MeetingsCard meetings={meetings} reload={loadAll} userId={userId} duracao={duracao} />
       </div>
     </div>
   );
@@ -180,16 +366,19 @@ function MeetingsCard(
   const [data, setData] = useState("");
   const [hora, setHora] = useState("15:00");
   const [titulo, setTitulo] = useState("");
+  const [err, setErr] = useState<string | null>(null);
 
   async function add() {
+    setErr(null);
     const uid = await userId();
-    if (!uid || !data || !hora) return;
+    if (!uid || !data || !hora) return setErr("Preencha data e hora.");
     const iso = `${data}T${hora}:00-03:00`;
     const quando = new Date(iso).toLocaleString("pt-BR", { weekday: "short", day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
-    await supabase.from("meetings").insert({
+    const { error } = await supabase.from("meetings").insert({
       user_id: uid, titulo: titulo.trim() || (nome ? `Reunião com ${nome}` : "Reunião"),
       quando_texto: quando, scheduled_for: iso, duracao_min: duracao, status: "agendada",
     });
+    if (error) return setErr("Não foi possível salvar: " + error.message);
     setNome(""); setTitulo("");
     reload();
   }
@@ -210,9 +399,9 @@ function MeetingsCard(
   return (
     <div className="bento-card">
       <h2 className="mb-1 font-medium">Reuniões</h2>
-      <p className="mb-3 text-sm text-ink-muted">Agendadas pela IA ou adicionadas por você. Contam na disponibilidade.</p>
+      <p className="mb-3 text-sm text-ink-muted">Agendadas pela IA ou por você. Contam na disponibilidade.</p>
 
-      <div className="mb-3 space-y-2">
+      <div className="mb-3 max-h-72 space-y-2 overflow-y-auto">
         {meetings.map((m) => (
           <div key={m.id} className="flex items-center justify-between rounded-xl bg-white/60 px-3 py-2 text-sm">
             <div>
@@ -231,7 +420,7 @@ function MeetingsCard(
                   <button className="btn-ghost !px-2 !py-1" title="Cancelar" onClick={() => setStatus(m.id, "cancelada")}><Ban size={14} /></button>
                 </>
               )}
-              <button className="btn-ghost !px-2 !py-1 text-[#b4231b]" title="Remover" onClick={() => remove(m.id)}><Trash2 size={14} /></button>
+              <button className="btn-ghost !px-2 !py-1 text-danger" title="Remover" onClick={() => remove(m.id)}><Trash2 size={14} /></button>
             </div>
           </div>
         ))}
@@ -242,8 +431,9 @@ function MeetingsCard(
         <input className="input flex-1 !min-w-[120px]" placeholder="Nome (opcional)" value={nome} onChange={(e) => setNome(e.target.value)} />
         <input type="date" className="input !w-40" value={data} onChange={(e) => setData(e.target.value)} />
         <input type="time" className="input !w-28" value={hora} onChange={(e) => setHora(e.target.value)} />
-        <button className="btn-accent" onClick={add}><Plus size={16} /> Adicionar reunião</button>
+        <button className="btn-accent" onClick={add}><Plus size={16} /> Adicionar</button>
       </div>
+      {err && <p className="mt-2 flex items-center gap-1 text-sm text-danger"><AlertCircle size={14} /> {err}</p>}
     </div>
   );
 }
