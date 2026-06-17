@@ -6,6 +6,7 @@
 import { GoogleGenAI, Type } from "npm:@google/genai@2.8.0";
 import type { SupabaseClient } from "jsr:@supabase/supabase-js@2";
 import { sendText } from "./evolution.ts";
+import { checkAvailability, suggestSlots } from "./agenda.ts";
 
 const DEFAULT_MODEL = "gemini-2.5-flash";
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -176,27 +177,44 @@ interface RunSdrParams {
   silencioMin?: number;        // minutos de silêncio (modo followup)
 }
 
+// Ferramenta: consulta a agenda em tempo real ANTES de sugerir/confirmar.
+const consultarDisponibilidade = {
+  name: "consultar_disponibilidade",
+  description:
+    "Consulta a agenda em tempo real. Use ANTES de sugerir ou confirmar qualquer horário. " +
+    "Passe data_iso para checar um horário específico; sem data_iso, devolve os próximos horários livres.",
+  parameters: {
+    type: Type.OBJECT,
+    properties: {
+      data_iso: {
+        type: Type.STRING,
+        description: "Horário a checar em ISO 8601 com fuso -03:00 (ex: 2026-06-20T15:00:00-03:00). Opcional.",
+      },
+    },
+  },
+};
+
 // Ferramenta que a IA chama quando um horário de reunião é combinado.
 const agendarReuniao = {
   name: "agendar_reuniao",
   description:
-    "Registra a reunião quando o cliente CONFIRMA um horário específico. " +
-    "Só chame após o cliente concordar com um dia/horário. Depois de chamar, " +
-    "responda confirmando o agendamento de forma calorosa.",
+    "Confirma e registra a reunião APÓS o cliente concordar com um dia/horário. " +
+    "O sistema valida a disponibilidade: se o horário estiver ocupado, retorna alternativas — " +
+    "nesse caso ofereça uma das alternativas em vez de confirmar. Sempre informe data_iso.",
   parameters: {
     type: Type.OBJECT,
     properties: {
       quando_texto: {
         type: Type.STRING,
-        description: "O horário combinado em linguagem natural (ex: 'amanhã às 18h', 'segunda às 10h').",
+        description: "O horário combinado em linguagem natural (ex: 'sexta às 15h').",
       },
       data_iso: {
         type: Type.STRING,
-        description: "Data e hora em ISO 8601 (ex: 2026-06-17T18:00:00-03:00), se conseguir inferir. Opcional.",
+        description: "Data e hora em ISO 8601 com fuso -03:00 (ex: 2026-06-20T15:00:00-03:00). OBRIGATÓRIO.",
       },
       observacao: { type: Type.STRING, description: "Detalhe relevante combinado. Opcional." },
     },
-    required: ["quando_texto"],
+    required: ["quando_texto", "data_iso"],
   },
 };
 
@@ -235,6 +253,7 @@ function buildSystem(playbook: string, persona: string, empresa: string, leadNom
     "- PEDIDO DE LIGAÇÃO ('me liga', 'liga para X'): não ligue. Explique com naturalidade que precisa mostrar o mecanismo na tela, por isso é uma rápida reunião online, e proponha um horário.",
     "- MENSAGEM AUTOMÁTICA DO CLIENTE: se a última mensagem parecer um auto-atendimento da empresa (ex: 'seja bem-vindo', 'horário de atendimento', 'deixe sua mensagem', menu de opções/números), NÃO dispare a proposta de valor. Apenas cumprimente de forma curta e pergunte se está falando com o responsável.",
     "- AGENDAMENTO: sugira horários exatos (ex: 14:30 ou 15h) e seja flexível para remarcar. Quando o cliente confirmar, chame a função agendar_reuniao e confirme calorosamente.",
+    "- DISPONIBILIDADE (tempo real): SEMPRE chame consultar_disponibilidade ANTES de sugerir ou confirmar qualquer horário. Ofereça apenas horários livres. Se o cliente pedir um horário ocupado, avise que nele não dá e ofereça as opções livres mais próximas que a função retornar. Se agendar_reuniao responder que está ocupado, NÃO confirme: ofereça uma das alternativas.",
     "- LINK DA REUNIÃO: o link é enviado NO DIA da reunião, 15 minutos antes do horário — NUNCA diga 'amanhã' por padrão. Use a data/hora atual acima para descobrir o dia certo: diga 'no dia, uns 15 minutinhos antes, te envio o link' ou cite o dia exato (ex: 'na sexta, 15 min antes'). Só fale 'amanhã' se a reunião for realmente no dia seguinte.",
     "- NÃO REPITA: nunca reenvie uma mensagem que você já mandou, mesmo que o cliente escreva em mensagens picadas ou demore a responder. Continue de onde parou.",
     "- VARIÁVEIS: trechos como {{Nome}} e {{Empresa}} são apenas exemplos. NUNCA escreva chaves {{ }} nem colchetes [ ] na mensagem enviada. Se NÃO souber a empresa do contato, fale de forma natural SEM citar nome de empresa (ex: 'Olá, tudo bem?' em vez de 'Olá, pessoal da {{Empresa}}'). Se não souber o nome, pergunte — nunca use um placeholder no lugar.",
@@ -333,7 +352,7 @@ export async function runSdr(p: RunSdrParams): Promise<void> {
       config: {
         systemInstruction,
         maxOutputTokens: 1024,
-        tools: [{ functionDeclarations: [agendarReuniao] }],
+        tools: [{ functionDeclarations: [consultarDisponibilidade, agendarReuniao] }],
       },
     });
 
@@ -351,24 +370,50 @@ export async function runSdr(p: RunSdrParams): Promise<void> {
     // deno-lint-ignore no-explicit-any
     const responseParts: any[] = [];
     for (const call of calls) {
-      if (call.name === "agendar_reuniao") {
+      if (call.name === "consultar_disponibilidade") {
+        const args = (call.args ?? {}) as { data_iso?: string };
+        let result: Record<string, unknown>;
+        if (args.data_iso) {
+          const av = await checkAvailability(supabase, p.userId, args.data_iso);
+          result = av.ok
+            ? { disponivel: true }
+            : { disponivel: false, motivo: av.motivo, alternativas: await suggestSlots(supabase, p.userId, args.data_iso) };
+        } else {
+          result = { proximos_horarios_livres: await suggestSlots(supabase, p.userId) };
+        }
+        responseParts.push({ functionResponse: { name: "consultar_disponibilidade", response: result } });
+      } else if (call.name === "agendar_reuniao") {
         const args = (call.args ?? {}) as { quando_texto?: string; data_iso?: string; observacao?: string };
-        await supabase.from("meetings").insert({
-          user_id: p.userId,
-          lead_id: p.leadId,
-          conversation_id: p.conversationId,
-          quando_texto: args.quando_texto ?? "(não informado)",
-          scheduled_for: args.data_iso ?? null,
-          observacao: args.observacao ?? null,
-          titulo: `Reunião com ${lead?.nome ?? p.numero}`,
-        });
-        await supabase.from("leads").update({ status: "reuniao_agendada" }).eq("id", p.leadId);
-        responseParts.push({
-          functionResponse: {
-            name: "agendar_reuniao",
-            response: { result: `Reunião registrada para "${args.quando_texto}". Agora confirme calorosamente com o cliente.` },
-          },
-        });
+        const av = await checkAvailability(supabase, p.userId, args.data_iso ?? "");
+        if (!av.ok) {
+          // Horário ocupado/ inválido → devolve alternativas e NÃO agenda.
+          const alternativas = await suggestSlots(supabase, p.userId, args.data_iso);
+          responseParts.push({
+            functionResponse: {
+              name: "agendar_reuniao",
+              response: { agendado: false, motivo: av.motivo, alternativas, instrucao: "Ofereça uma destas alternativas ao cliente; não confirme este horário." },
+            },
+          });
+        } else {
+          await supabase.from("meetings").insert({
+            user_id: p.userId,
+            lead_id: p.leadId,
+            conversation_id: p.conversationId,
+            quando_texto: args.quando_texto ?? "(não informado)",
+            scheduled_for: args.data_iso ?? null,
+            duracao_min: av.settings.duracao,
+            meet_link: av.settings.meetLink || null,
+            observacao: args.observacao ?? null,
+            titulo: `Reunião com ${lead?.nome ?? p.numero}`,
+          });
+          await supabase.from("leads").update({ status: "reuniao_agendada" }).eq("id", p.leadId);
+          responseParts.push({
+            functionResponse: {
+              name: "agendar_reuniao",
+              response: { agendado: true, quando: args.quando_texto, instrucao: "Confirme calorosamente. NÃO mande o link agora — ele será enviado automaticamente 15 min antes." },
+            },
+          });
+        }
       } else {
         responseParts.push({ functionResponse: { name: call.name, response: { result: "ferramenta desconhecida" } } });
       }

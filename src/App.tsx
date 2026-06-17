@@ -7,6 +7,7 @@ import UploadPage from "./pages/UploadPage";
 import Campaigns from "./pages/Campaigns";
 import Cadences from "./pages/Cadences";
 import AiSdr from "./pages/AiSdr";
+import Agenda from "./pages/Agenda";
 import Inbox from "./pages/Inbox";
 import Instances from "./pages/Instances";
 
@@ -33,6 +34,7 @@ export default function App() {
           <Route path="/campanhas" element={<Campaigns />} />
           <Route path="/cadencias" element={<Cadences />} />
           <Route path="/ia-sdr" element={<AiSdr />} />
+          <Route path="/agenda" element={<Agenda />} />
           <Route path="/inbox" element={<Inbox />} />
           <Route path="/instancias" element={<Instances />} />
         </Routes>

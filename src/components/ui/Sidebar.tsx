@@ -1,5 +1,5 @@
 import { NavLink } from "react-router-dom";
-import { LayoutDashboard, Upload, Megaphone, GitBranch, Bot, MessageSquare, Smartphone, Send, LogOut } from "lucide-react";
+import { LayoutDashboard, Upload, Megaphone, GitBranch, Bot, CalendarDays, MessageSquare, Smartphone, Send, LogOut } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 
 const items = [
@@ -8,6 +8,7 @@ const items = [
   { to: "/cadencias", label: "Cadências", icon: GitBranch },
   { to: "/campanhas", label: "Campanhas", icon: Megaphone },
   { to: "/ia-sdr", label: "SDR com IA", icon: Bot },
+  { to: "/agenda", label: "Agenda", icon: CalendarDays },
   { to: "/inbox", label: "Inbox CRM", icon: MessageSquare },
   { to: "/instancias", label: "Instâncias", icon: Smartphone },
 ];
