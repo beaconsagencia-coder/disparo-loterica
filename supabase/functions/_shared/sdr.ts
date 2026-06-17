@@ -7,7 +7,6 @@ import { GoogleGenAI, Type } from "npm:@google/genai@2.8.0";
 import type { SupabaseClient } from "jsr:@supabase/supabase-js@2";
 import { sendText } from "./evolution.ts";
 
-const ai = new GoogleGenAI({ apiKey: Deno.env.get("GEMINI_API_KEY")! });
 const DEFAULT_MODEL = "gemini-2.5-flash";
 
 interface RunSdrParams {
@@ -76,15 +75,17 @@ type Content = { role: "user" | "model"; parts: any[] };
 
 export async function runSdr(p: RunSdrParams): Promise<void> {
   const { supabase } = p;
+  console.log("[sdr] start", { conversationId: p.conversationId });
 
   // 1) Config do SDR + checagens de ativação
   const { data: config } = await supabase
     .from("ai_config").select("*").eq("user_id", p.userId).maybeSingle();
-  if (!config || !config.ativo) return;
+  if (!config) { console.log("[sdr] sem ai_config para o usuário — salve a config na aba SDR com IA"); return; }
+  if (!config.ativo) { console.log("[sdr] ai_config existe mas está INATIVO (ligue a IA e salve)"); return; }
 
   const { data: conv } = await supabase
     .from("conversations").select("ai_enabled").eq("id", p.conversationId).maybeSingle();
-  if (!conv || conv.ai_enabled === false) return;
+  if (!conv || conv.ai_enabled === false) { console.log("[sdr] conversa com IA desligada (ai_enabled=false)"); return; }
 
   // 2) Lead + histórico
   const { data: lead } = await supabase
@@ -106,7 +107,10 @@ export async function runSdr(p: RunSdrParams): Promise<void> {
     if (contents.length === 0 && role === "model") continue;
     contents.push({ role, parts: [{ text }] });
   }
-  if (contents.length === 0 || contents[contents.length - 1].role !== "user") return;
+  if (contents.length === 0 || contents[contents.length - 1].role !== "user") {
+    console.log("[sdr] histórico sem turno de usuário no fim — nada a responder");
+    return;
+  }
 
   const systemInstruction = buildSystem(
     config.playbook, config.persona_nome, config.empresa,
@@ -116,6 +120,12 @@ export async function runSdr(p: RunSdrParams): Promise<void> {
   // Garante um modelo Gemini válido (rows antigas podem ter modelo de outro provedor)
   const model = typeof config.model === "string" && config.model.startsWith("gemini")
     ? config.model : DEFAULT_MODEL;
+
+  // Cliente Gemini (lazy: chave faltando não derruba o webhook, só pula o SDR)
+  const apiKey = Deno.env.get("GEMINI_API_KEY");
+  if (!apiKey) { console.error("[sdr] GEMINI_API_KEY não configurada"); return; }
+  const ai = new GoogleGenAI({ apiKey });
+  console.log("[sdr] chamando Gemini", { model });
 
   // 3) Loop de function calling até a IA terminar o turno
   let finalText = "";
@@ -169,7 +179,8 @@ export async function runSdr(p: RunSdrParams): Promise<void> {
     contents.push({ role: "user", parts: responseParts });
   }
 
-  if (!finalText) return;
+  if (!finalText) { console.log("[sdr] Gemini não retornou texto"); return; }
+  console.log("[sdr] resposta gerada:", finalText.slice(0, 80));
 
   // 4) Anti-duplicação: se chegou mensagem mais nova que a que disparou, aborta.
   const { count } = await supabase

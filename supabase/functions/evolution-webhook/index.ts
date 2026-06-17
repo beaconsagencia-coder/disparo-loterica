@@ -155,6 +155,7 @@ Deno.serve(async (req) => {
 
     // SDR com IA: responde em background (não bloqueia o retorno pra Evolution).
     if (inserted && text) {
+      console.log("[webhook] inbound salvo, acionando SDR para conversa", conv);
       const numero = normalizeNumber(remoteJid);
       const task = runSdr({
         supabase,
