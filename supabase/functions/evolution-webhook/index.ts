@@ -84,7 +84,18 @@ Deno.serve(async (req) => {
     const key = item?.key ?? {};
     if (key.fromMe) continue; // só nos interessam mensagens recebidas
 
-    const numero = normalizeNumber(key.remoteJid ?? "");
+    // Ignora o que NÃO é conversa 1-a-1: grupos (@g.us), status/transmissão
+    // (@broadcast) e canais/newsletter (@newsletter).
+    const remoteJid: string = key.remoteJid ?? "";
+    if (
+      remoteJid.endsWith("@g.us") ||
+      remoteJid.includes("@broadcast") ||
+      remoteJid.endsWith("@newsletter")
+    ) {
+      continue;
+    }
+
+    const numero = normalizeNumber(remoteJid);
     if (!numero) continue;
     const text = extractText(item?.message);
     const evoId = key.id as string | undefined;
