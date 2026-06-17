@@ -73,7 +73,7 @@ Deno.serve(async (req) => {
     // 3) Carrega o lead para render + número.
     const { data: lead } = await supabase
       .from("leads")
-      .select("id, nome, empresa, telefone")
+      .select("id, nome, empresa, telefone, status")
       .eq("id", queue.lead_id)
       .single();
 
@@ -81,6 +81,16 @@ Deno.serve(async (req) => {
       await supabase.from("message_queue")
         .update({ status: "falha", last_error: "lead não encontrado" })
         .eq("id", queue.id);
+      continue;
+    }
+
+    // 3b) Cadência: se este é um passo de follow-up (>1) e o lead já
+    //     respondeu (em_negociacao), interrompe — não insiste com quem engajou.
+    if (queue.cadence_step && queue.cadence_step > 1 && lead.status === "em_negociacao") {
+      await supabase.from("message_queue")
+        .update({ status: "cancelado", last_error: "cliente respondeu — cadência interrompida" })
+        .eq("id", queue.id);
+      results.push({ instance: inst.nome, lead: lead.telefone, skipped: "respondeu" });
       continue;
     }
 
@@ -130,6 +140,11 @@ Deno.serve(async (req) => {
         });
       }
 
+      // 5b) Cadência: agenda o próximo passo (se houver), respeitando a espera.
+      if (queue.cadence_id) {
+        await enqueueNextCadenceStep(queue, lead.id, inst.user_id, now);
+      }
+
       // 6) Consome a janela do chip (next_allowed_send_at = now + 30..45min).
       await consumeWindow(inst.id, now, today, inst);
 
@@ -170,6 +185,40 @@ async function consumeWindow(
     patch.daily_count_date = today;
   }
   await supabase.from("whatsapp_instances").update(patch).eq("id", instanceId);
+}
+
+/**
+ * Cadência: após enviar o passo atual, agenda o próximo passo da sequência
+ * (se existir) com a espera configurada. O envio só acontecerá se o cliente
+ * não tiver respondido até lá (verificado no claim, passo 3b, e cancelado
+ * pelo webhook quando entra uma resposta).
+ */
+async function enqueueNextCadenceStep(
+  queue: Record<string, any>,
+  leadId: string,
+  userId: string,
+  now: Date,
+) {
+  const proximaOrdem = (queue.cadence_step ?? 1) + 1;
+  const { data: step } = await supabase
+    .from("cadence_steps")
+    .select("ordem, spintax_template, aguardar_minutos")
+    .eq("cadence_id", queue.cadence_id)
+    .eq("ordem", proximaOrdem)
+    .maybeSingle();
+
+  if (!step) return; // fim da cadência
+
+  const scheduled = new Date(now.getTime() + (step.aguardar_minutos ?? 0) * 60_000);
+  await supabase.from("message_queue").insert({
+    user_id: userId,
+    lead_id: leadId,
+    cadence_id: queue.cadence_id,
+    cadence_step: step.ordem,
+    spintax_template: step.spintax_template,
+    status: "pendente",
+    scheduled_for: scheduled.toISOString(),
+  });
 }
 
 async function upsertConversation(

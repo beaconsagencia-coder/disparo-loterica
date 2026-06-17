@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { UploadCloud, ArrowRight, CheckCircle2, AlertTriangle } from "lucide-react";
 import { parseFile, type ParsedFile } from "@/components/upload/useFileParser";
 import { normalizePhoneBR, maskPhoneBR } from "@/lib/phone";
@@ -16,9 +16,16 @@ export default function UploadPage() {
   const [parsed, setParsed] = useState<ParsedFile | null>(null);
   const [mapping, setMapping] = useState<Mapping>({ nome: "", telefone: "", empresa: "" });
   const [template, setTemplate] = useState(DEFAULT_TEMPLATE);
+  const [cadences, setCadences] = useState<{ id: string; nome: string }[]>([]);
+  const [cadenceId, setCadenceId] = useState(""); // "" = mensagem única
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<{ inserted: number; invalid: number } | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    supabase.from("cadences").select("id, nome").eq("ativo", true).order("nome")
+      .then(({ data }) => setCadences((data as any) ?? []));
+  }, []);
 
   async function handleFile(file: File) {
     setError(null);
@@ -91,12 +98,25 @@ export default function UploadPage() {
         .select("id");
       if (leadErr) throw leadErr;
 
-      // 3) Enfileira uma mensagem por lead -> vai direto para a fila de disparo
+      // 3) Define a mensagem do passo 1: cadência escolhida ou mensagem única.
+      let firstTemplate = template;
+      let cadenceFields: Record<string, unknown> = {};
+      if (cadenceId) {
+        const { data: step1 } = await supabase
+          .from("cadence_steps").select("spintax_template")
+          .eq("cadence_id", cadenceId).eq("ordem", 1).maybeSingle();
+        if (!step1) throw new Error("A cadência escolhida não tem 1ª mensagem.");
+        firstTemplate = step1.spintax_template;
+        cadenceFields = { cadence_id: cadenceId, cadence_step: 1 };
+      }
+
+      // 4) Enfileira uma mensagem por lead -> vai direto para a fila de disparo
       const queue = (leads ?? []).map((l) => ({
         user_id: userId,
         lead_id: l.id,
-        spintax_template: template,
+        spintax_template: firstTemplate,
         status: "pendente" as const,
+        ...cadenceFields,
       }));
       if (queue.length) {
         const { error: qErr } = await supabase.from("message_queue").insert(queue);
@@ -224,34 +244,55 @@ export default function UploadPage() {
         </div>
       )}
 
-      {/* STEP 2 — Mensagem (Spintax) */}
+      {/* STEP 2 — Mensagem (Spintax) ou Cadência */}
       {step === 2 && (
         <div className="grid gap-4 md:grid-cols-2">
-          <div className="bento-card">
-            <h2 className="mb-1 font-medium">Template Spintax</h2>
-            <p className="mb-3 text-sm text-ink-muted">
-              Use <code className="rounded bg-black/5 px-1">{"{a|b|c}"}</code> para variações e{" "}
-              <code className="rounded bg-black/5 px-1">{"{{Nome}}"}</code>,{" "}
-              <code className="rounded bg-black/5 px-1">{"{{Empresa}}"}</code>,{" "}
-              <code className="rounded bg-black/5 px-1">{"{{Saudacao}}"}</code>.
-            </p>
-            <textarea
-              className="input min-h-[180px] font-mono text-xs leading-relaxed"
-              value={template}
-              onChange={(e) => setTemplate(e.target.value)}
-            />
-          </div>
-          <div className="bento-card">
-            <h2 className="mb-3 font-medium">Prévia</h2>
-            <div className="space-y-2">
-              {[0, 1, 2].map((i) => (
-                <div key={i} className="rounded-2xl rounded-bl-sm bg-success/10 px-4 py-2.5 text-sm">
-                  {previewMessage(template)}
-                </div>
+          <div className="md:col-span-2 bento-card">
+            <label className="mb-1 block text-xs font-medium text-ink-soft">Tipo de disparo</label>
+            <select className="input" value={cadenceId} onChange={(e) => setCadenceId(e.target.value)}>
+              <option value="">Mensagem única</option>
+              {cadences.map((c) => (
+                <option key={c.id} value={c.id}>Cadência (follow-up): {c.nome}</option>
               ))}
-            </div>
-            <p className="mt-3 text-xs text-ink-muted">Cada lead recebe uma variação única.</p>
+            </select>
+            {cadenceId && (
+              <p className="mt-2 text-xs text-ink-muted">
+                Os leads entram na cadência escolhida: a 1ª mensagem sai agora e os follow-ups
+                seguem automaticamente para quem não responder. Edite o fluxo na aba <strong>Cadências</strong>.
+              </p>
+            )}
           </div>
+
+          {!cadenceId && (
+            <>
+              <div className="bento-card">
+                <h2 className="mb-1 font-medium">Template Spintax</h2>
+                <p className="mb-3 text-sm text-ink-muted">
+                  Use <code className="rounded bg-black/5 px-1">{"{a|b|c}"}</code> para variações e{" "}
+                  <code className="rounded bg-black/5 px-1">{"{{Nome}}"}</code>,{" "}
+                  <code className="rounded bg-black/5 px-1">{"{{Empresa}}"}</code>,{" "}
+                  <code className="rounded bg-black/5 px-1">{"{{Saudacao}}"}</code>.
+                </p>
+                <textarea
+                  className="input min-h-[180px] font-mono text-xs leading-relaxed"
+                  value={template}
+                  onChange={(e) => setTemplate(e.target.value)}
+                />
+              </div>
+              <div className="bento-card">
+                <h2 className="mb-3 font-medium">Prévia</h2>
+                <div className="space-y-2">
+                  {[0, 1, 2].map((i) => (
+                    <div key={i} className="rounded-2xl rounded-bl-sm bg-success/10 px-4 py-2.5 text-sm">
+                      {previewMessage(template)}
+                    </div>
+                  ))}
+                </div>
+                <p className="mt-3 text-xs text-ink-muted">Cada lead recebe uma variação única.</p>
+              </div>
+            </>
+          )}
+
           <div className="md:col-span-2 flex justify-between">
             <button className="btn-ghost" onClick={() => setStep(1)}>Voltar</button>
             <button className="btn-accent" disabled={busy} onClick={handleImport}>

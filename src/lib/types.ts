@@ -71,6 +71,21 @@ export interface Message {
   created_at: string;
 }
 
+export interface Cadence {
+  id: string;
+  nome: string;
+  ativo: boolean;
+  created_at: string;
+}
+
+export interface CadenceStep {
+  id: string;
+  cadence_id: string;
+  ordem: number;
+  spintax_template: string;
+  aguardar_minutos: number;
+}
+
 export const LEAD_STATUS_LABEL: Record<LeadStatus, string> = {
   novo: "Novo",
   na_fila: "Na fila",

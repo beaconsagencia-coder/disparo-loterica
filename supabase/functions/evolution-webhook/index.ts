@@ -130,6 +130,14 @@ Deno.serve(async (req) => {
     }
     if (!leadId) continue;
 
+    // Cliente respondeu → interrompe os follow-ups de cadência ainda pendentes
+    // (não insistir com quem já engajou). Disparos únicos não são afetados.
+    await supabase.from("message_queue")
+      .update({ status: "cancelado", last_error: "cliente respondeu" })
+      .eq("lead_id", leadId)
+      .not("cadence_id", "is", null)
+      .in("status", ["pendente", "pausado"]);
+
     // Conversa unificada (1 por lead) — registra por qual chip entrou.
     const conv = await upsertConversation(inst.user_id, leadId, inst.id);
     if (!conv) continue;

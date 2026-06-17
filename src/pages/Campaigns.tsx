@@ -222,8 +222,15 @@ function AddContactModal({ onClose, onSaved }: { onClose: () => void; onSaved: (
   const [telefone, setTelefone] = useState("");
   const [empresa, setEmpresa] = useState("");
   const [enfileirar, setEnfileirar] = useState(true);
+  const [cadences, setCadences] = useState<{ id: string; nome: string }[]>([]);
+  const [cadenceId, setCadenceId] = useState(""); // "" = mensagem única
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    supabase.from("cadences").select("id, nome").eq("ativo", true).order("nome")
+      .then(({ data }) => setCadences((data as any) ?? []));
+  }, []);
 
   async function save() {
     setError(null);
@@ -249,8 +256,21 @@ function AddContactModal({ onClose, onSaved }: { onClose: () => void; onSaved: (
       if (leadErr) throw leadErr;
 
       if (enfileirar && lead) {
+        // Se escolheu uma cadência, enfileira o passo 1 dela (tagueado);
+        // senão, disparo único com a mensagem padrão.
+        let template = DEFAULT_TEMPLATE;
+        let cadenceFields: Record<string, unknown> = {};
+        if (cadenceId) {
+          const { data: step1 } = await supabase
+            .from("cadence_steps").select("spintax_template")
+            .eq("cadence_id", cadenceId).eq("ordem", 1).maybeSingle();
+          if (!step1) throw new Error("A cadência escolhida não tem 1ª mensagem.");
+          template = step1.spintax_template;
+          cadenceFields = { cadence_id: cadenceId, cadence_step: 1 };
+        }
         const { error: qErr } = await supabase.from("message_queue").insert({
-          user_id: userId, lead_id: lead.id, spintax_template: DEFAULT_TEMPLATE, status: "pendente",
+          user_id: userId, lead_id: lead.id, spintax_template: template, status: "pendente",
+          ...cadenceFields,
         });
         if (qErr) throw qErr;
       }
@@ -281,11 +301,19 @@ function AddContactModal({ onClose, onSaved }: { onClose: () => void; onSaved: (
         <input className="input mb-3" value={telefone} onChange={(e) => setTelefone(e.target.value)} placeholder="(62) 99999-8888" />
 
         <label className="mb-1 block text-xs font-medium text-ink-soft">Empresa (opcional)</label>
-        <input className="input mb-4" value={empresa} onChange={(e) => setEmpresa(e.target.value)} placeholder="Lotérica Sorte Grande" />
+        <input className="input mb-3" value={empresa} onChange={(e) => setEmpresa(e.target.value)} placeholder="Lotérica Sorte Grande" />
+
+        <label className="mb-1 block text-xs font-medium text-ink-soft">Disparo</label>
+        <select className="input mb-3" value={cadenceId} onChange={(e) => setCadenceId(e.target.value)} disabled={!enfileirar}>
+          <option value="">Mensagem única (padrão)</option>
+          {cadences.map((c) => (
+            <option key={c.id} value={c.id}>Cadência: {c.nome}</option>
+          ))}
+        </select>
 
         <label className="mb-4 flex items-center gap-2 text-sm text-ink-soft">
           <input type="checkbox" checked={enfileirar} onChange={(e) => setEnfileirar(e.target.checked)} />
-          Já enfileirar para disparo (mensagem padrão)
+          Já enfileirar para disparo
         </label>
 
         <div className="flex justify-end gap-2">
