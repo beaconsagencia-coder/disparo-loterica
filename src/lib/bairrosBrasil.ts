@@ -151,4 +151,233 @@ export const CATALOGO_BRASIL: CidadeCatalogo[] = [
     bairros: ["Centro", "Coxipó", "Jardim Cuiabá", "Santa Rosa", "CPA", "Morada do Ouro", "Pedra 90",
       "Goiabeiras", "Boa Esperança", "Jardim Aclimação"],
   },
+
+  // =====================================================================
+  // INTERIOR DO NORDESTE (exceto Maranhão) — principais cidades não-capital
+  // =====================================================================
+
+  // --- Bahia (interior) ---
+  {
+    cidade: "Feira de Santana", estado: "BA",
+    bairros: ["Centro", "Kalilândia", "Cidade Nova", "Tomba", "Brasília", "Capuchinhos",
+      "Santo Antônio dos Prazeres", "Caseb", "Queimadinha", "Sobradinho", "Gabriela", "Mangabeira", "Feira VI"],
+  },
+  {
+    cidade: "Vitória da Conquista", estado: "BA",
+    bairros: ["Centro", "Recreio", "Candeias", "Brasil", "Boa Vista", "Patagônia", "Ibirapuera",
+      "Felícia", "Alto Maron", "Guarani", "Jurema", "Zabelê"],
+  },
+  {
+    cidade: "Itabuna", estado: "BA",
+    bairros: ["Centro", "São Caetano", "Jardim Vitória", "Conceição", "Fátima", "Pontalzinho",
+      "São Pedro", "Mangabinha", "Califórnia", "Nova Itabuna"],
+  },
+  {
+    cidade: "Juazeiro", estado: "BA",
+    bairros: ["Centro", "Santo Antônio", "João Paulo II", "Maringá", "Itaberaba", "Alto da Maravilha", "Piranga"],
+  },
+  {
+    cidade: "Ilhéus", estado: "BA",
+    bairros: ["Centro", "Pontal", "Cidade Nova", "Nelson Costa", "São Domingos", "Malhado",
+      "Banco da Vitória", "Conquista"],
+  },
+  {
+    cidade: "Jequié", estado: "BA",
+    bairros: ["Centro", "Jequiezinho", "Mandacaru", "Joaquim Romão", "Cansanção", "Brasília", "Curral Novo"],
+  },
+  {
+    cidade: "Barreiras", estado: "BA",
+    bairros: ["Centro", "Vila Brasil", "Sandra Regina", "Boa Sorte", "Morada Nobre", "Vila Rica", "Renato Gonçalves"],
+  },
+  {
+    cidade: "Alagoinhas", estado: "BA",
+    bairros: ["Centro", "Alagoinhas Velha", "Juracy Magalhães", "Santa Terezinha", "Bairro dos Quintas", "Boa Vista"],
+  },
+  {
+    cidade: "Porto Seguro", estado: "BA",
+    bairros: ["Centro", "Arraial d'Ajuda", "Baianão", "Cambolo", "Mirante", "Pacata"],
+  },
+  {
+    cidade: "Paulo Afonso", estado: "BA",
+    bairros: ["Centro", "Tancredo Neves", "BTN", "General Dutra", "Alto da Bela Vista", "Vila Poty"],
+  },
+
+  // --- Pernambuco (interior) ---
+  {
+    cidade: "Caruaru", estado: "PE",
+    bairros: ["Centro", "Maurício de Nassau", "Universitário", "Petrópolis", "São Francisco", "Indianópolis",
+      "Salgado", "Boa Vista", "Agamenon Magalhães", "Cidade Alta", "Kennedy", "Rendeiras"],
+  },
+  {
+    cidade: "Petrolina", estado: "PE",
+    bairros: ["Centro", "Areia Branca", "Vila Mocó", "Dom Avelar", "Henrique Leite", "José e Maria",
+      "Cohab", "Jardim Amazonas", "Maria Auxiliadora", "Gercino Coelho"],
+  },
+  {
+    cidade: "Garanhuns", estado: "PE",
+    bairros: ["Heliópolis", "Centro", "Magano", "São José", "Boa Vista", "Severiano Moraes Filho", "Aloísio Pinto"],
+  },
+  {
+    cidade: "Vitória de Santo Antão", estado: "PE",
+    bairros: ["Centro", "Cajá", "Livramento", "Matriz", "Redenção", "Bela Vista"],
+  },
+  {
+    cidade: "Serra Talhada", estado: "PE",
+    bairros: ["Centro", "Caxixola", "Bom Jesus", "AABB", "Ipsep", "São Cristóvão"],
+  },
+  {
+    cidade: "Arcoverde", estado: "PE",
+    bairros: ["Centro", "São Cristóvão", "São Geraldo", "Bela Vista", "Cohab", "Alto do Cruzeiro"],
+  },
+  {
+    cidade: "Santa Cruz do Capibaribe", estado: "PE",
+    bairros: ["Centro", "São Cristóvão", "Malaquias Cardoso", "Cohab", "Nossa Senhora das Dores"],
+  },
+
+  // --- Ceará (interior) ---
+  {
+    cidade: "Juazeiro do Norte", estado: "CE",
+    bairros: ["Centro", "Triângulo", "São Miguel", "Pirajá", "Lagoa Seca", "João Cabral", "Romeirão",
+      "Franciscanos", "Frei Damião", "Limoeiro"],
+  },
+  {
+    cidade: "Sobral", estado: "CE",
+    bairros: ["Centro", "Junco", "Dom Expedito", "Coração de Jesus", "Sumaré", "Cohab", "Alto da Brasília",
+      "Padre Palhano", "Dom José"],
+  },
+  {
+    cidade: "Crato", estado: "CE",
+    bairros: ["Centro", "Seminário", "Pimenta", "Granjeiro", "Muriti", "Belmonte", "Gisélia Pinheiro"],
+  },
+  {
+    cidade: "Caucaia", estado: "CE",
+    bairros: ["Centro", "Jurema", "Parque Potira", "Itambé", "Tabapuá", "Metrópole", "Araturi"],
+  },
+  {
+    cidade: "Maracanaú", estado: "CE",
+    bairros: ["Centro", "Pajuçara", "Jereissati", "Piratininga", "Timbó", "Mucunã", "Acaracuzinho"],
+  },
+  {
+    cidade: "Iguatu", estado: "CE",
+    bairros: ["Centro", "Veneza", "Tabuleiro", "Prado", "Vila Centenário", "Areias"],
+  },
+  {
+    cidade: "Itapipoca", estado: "CE",
+    bairros: ["Centro", "Cidade Nova", "Lagoa", "Violete", "Belo Horizonte", "Cruzeiro"],
+  },
+  {
+    cidade: "Quixadá", estado: "CE",
+    bairros: ["Centro", "Campo Velho", "Planalto Universitário", "Comban", "Alto São João"],
+  },
+
+  // --- Paraíba (interior) ---
+  {
+    cidade: "Campina Grande", estado: "PB",
+    bairros: ["Centro", "Catolé", "Liberdade", "Bodocongó", "José Pinheiro", "Prata", "Mirante",
+      "Bela Vista", "Cruzeiro", "Malvinas", "Jeremias", "Santa Rosa", "Itararé", "Alto Branco"],
+  },
+  {
+    cidade: "Patos", estado: "PB",
+    bairros: ["Centro", "Belo Horizonte", "Jardim Magnólia", "Jatobá", "Liberdade", "Santa Cecília",
+      "Bivar Olinto", "São Sebastião"],
+  },
+  {
+    cidade: "Sousa", estado: "PB",
+    bairros: ["Centro", "Jardim Sorrilândia", "Frei Damião", "Gato Preto", "Angelim", "São Vicente"],
+  },
+  {
+    cidade: "Cajazeiras", estado: "PB",
+    bairros: ["Centro", "São José", "Cristo Rei", "Vila Tibério", "Padre Constantino", "Remédios"],
+  },
+  {
+    cidade: "Guarabira", estado: "PB",
+    bairros: ["Centro", "Nordeste", "Bairro Novo", "Areia Branca", "Mutirão", "Primavera"],
+  },
+
+  // --- Rio Grande do Norte (interior) ---
+  {
+    cidade: "Mossoró", estado: "RN",
+    bairros: ["Centro", "Alto de São Manoel", "Abolição", "Nova Betânia", "Santo Antônio", "Bom Jardim",
+      "Aeroporto", "Doze Anos", "Boa Vista", "Costa e Silva", "Belo Horizonte", "Santa Delmira"],
+  },
+  {
+    cidade: "Parnamirim", estado: "RN",
+    bairros: ["Centro", "Nova Parnamirim", "Emaús", "Cohabinal", "Passagem de Areia", "Rosa dos Ventos", "Cajupiranga"],
+  },
+  {
+    cidade: "Caicó", estado: "RN",
+    bairros: ["Centro", "Penedo", "Paraíba", "Walfredo Gurgel", "Maynard", "Recreio", "Barra Nova"],
+  },
+  {
+    cidade: "Currais Novos", estado: "RN",
+    bairros: ["Centro", "Bela Vista", "Manoel Salustino", "Vila Nova", "Walfredo Gurgel"],
+  },
+  {
+    cidade: "Açu", estado: "RN",
+    bairros: ["Centro", "Bela Vista", "Ilha de Santana", "Nova Açu", "Alto da Conceição"],
+  },
+
+  // --- Piauí (interior) ---
+  {
+    cidade: "Parnaíba", estado: "PI",
+    bairros: ["Centro", "Pindorama", "Frei Higino", "Dirceu Arcoverde", "São Vicente de Paula",
+      "Nossa Senhora de Fátima", "Piauí", "Rodoviária"],
+  },
+  {
+    cidade: "Picos", estado: "PI",
+    bairros: ["Centro", "Junco", "Bomba", "Paroquial", "Canto da Várzea", "Pedrinhas", "Aerolândia", "Ipueiras"],
+  },
+  {
+    cidade: "Floriano", estado: "PI",
+    bairros: ["Centro", "Manguinha", "Vermelha", "Tabuleta", "Sambaíba", "Irapuá"],
+  },
+  {
+    cidade: "Piripiri", estado: "PI",
+    bairros: ["Centro", "Modelo", "Pelo Sinal", "São Francisco", "Aroeiras"],
+  },
+
+  // --- Alagoas (interior) ---
+  {
+    cidade: "Arapiraca", estado: "AL",
+    bairros: ["Centro", "Brasília", "Itapecerica", "Baixão", "Planalto", "Santa Edwiges",
+      "Senador Arnon de Mello", "Caititus", "Capiatã", "Primavera"],
+  },
+  {
+    cidade: "Palmeira dos Índios", estado: "AL",
+    bairros: ["Centro", "Xucurus", "Boa Vista", "Caetés", "Vila Maria", "São Cristóvão"],
+  },
+  {
+    cidade: "Rio Largo", estado: "AL",
+    bairros: ["Centro", "Tabuleiro", "Brasília", "Cana Brava", "Pilar"],
+  },
+  {
+    cidade: "União dos Palmares", estado: "AL",
+    bairros: ["Centro", "Floresta", "Bom Jesus", "Zumbi", "Santo Antônio"],
+  },
+  {
+    cidade: "Penedo", estado: "AL",
+    bairros: ["Centro", "Santa Luzia", "Barro Vermelho", "Oiteiro", "Dom Constantino"],
+  },
+
+  // --- Sergipe (interior) ---
+  {
+    cidade: "Nossa Senhora do Socorro", estado: "SE",
+    bairros: ["Centro", "Conjunto João Alves", "Marcos Freire", "Fernando Collor", "Piabeta", "Albano Franco"],
+  },
+  {
+    cidade: "Lagarto", estado: "SE",
+    bairros: ["Centro", "Cidade Nova", "Loiola", "Alto da Boa Vista", "Carro Quebrado", "Novo Horizonte"],
+  },
+  {
+    cidade: "Itabaiana", estado: "SE",
+    bairros: ["Centro", "Marizan", "Sítios Novos", "Porto", "Olaria", "Bairro Industrial"],
+  },
+  {
+    cidade: "Estância", estado: "SE",
+    bairros: ["Centro", "Cidade Alta", "Bonfim", "Cirurgia", "Cleto Nunes"],
+  },
+  {
+    cidade: "Tobias Barreto", estado: "SE",
+    bairros: ["Centro", "Sinhazinha", "Algodões", "Cohab", "Bom Conselho"],
+  },
 ];
