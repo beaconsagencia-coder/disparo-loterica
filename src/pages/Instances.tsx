@@ -76,6 +76,7 @@ export default function Instances() {
                 />
               </div>
             </div>
+            <PersonaField key={`persona-${i.id}`} instance={i} />
           </div>
         ))}
         {instances.length === 0 && (
@@ -114,6 +115,46 @@ export default function Instances() {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+/** Nome com que o atendente (IA) se apresenta neste chip — teste A/B de persona. */
+function PersonaField({ instance }: { instance: WhatsappInstance }) {
+  const [val, setVal] = useState(instance.persona_nome ?? "");
+  const [estado, setEstado] = useState<"idle" | "salvando" | "ok">("idle");
+
+  async function salvar() {
+    const novo = val.trim();
+    if (novo === (instance.persona_nome ?? "")) return; // nada mudou
+    setEstado("salvando");
+    const { error } = await supabase
+      .from("whatsapp_instances")
+      .update({ persona_nome: novo || null })
+      .eq("id", instance.id);
+    setEstado(error ? "idle" : "ok");
+    if (error) alert("Falha ao salvar: " + error.message);
+    else setTimeout(() => setEstado("idle"), 1500);
+  }
+
+  return (
+    <div className="border-t border-black/5 pt-3">
+      <label className="mb-1 block text-xs font-medium text-ink-soft">Atendente se apresenta como</label>
+      <input
+        className="input"
+        placeholder="Ex: Ana"
+        value={val}
+        onChange={(e) => setVal(e.target.value)}
+        onBlur={salvar}
+        onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
+      />
+      <p className="mt-1 text-[11px] text-ink-muted">
+        {estado === "salvando"
+          ? "Salvando…"
+          : estado === "ok"
+            ? "Salvo ✓"
+            : "A IA usa este nome ao falar pelo chip (vazio = nome global do SDR)."}
+      </p>
     </div>
   );
 }

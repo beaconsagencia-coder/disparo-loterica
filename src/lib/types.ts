@@ -38,6 +38,7 @@ export interface WhatsappInstance {
   daily_count: number;
   daily_limit: number;
   active: boolean;
+  persona_nome: string | null;
 }
 
 export interface Lead {

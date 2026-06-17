@@ -296,6 +296,12 @@ export async function runSdr(p: RunSdrParams): Promise<void> {
   const { data: lead } = await supabase
     .from("leads").select("nome, empresa").eq("id", p.leadId).maybeSingle();
 
+  // Nome do atendente pode ser personalizado por chip (teste A/B de persona).
+  // Se este chip tiver um nome próprio, ele tem prioridade sobre o nome global.
+  const { data: inst } = await supabase
+    .from("whatsapp_instances").select("persona_nome").eq("id", p.instanceId).maybeSingle();
+  const persona = inst?.persona_nome?.trim() || config.persona_nome;
+
   const { data: hist } = await supabase
     .from("messages").select("direction, body, created_at")
     .eq("conversation_id", p.conversationId)
@@ -334,7 +340,7 @@ export async function runSdr(p: RunSdrParams): Promise<void> {
 
   const agenda = await agendaResumo(supabase, p.userId);
   const systemInstruction = buildSystem(
-    config.playbook, config.persona_nome, config.empresa,
+    config.playbook, persona, config.empresa,
     lead?.nome ?? "", lead?.empresa ?? null, agenda,
   );
 
