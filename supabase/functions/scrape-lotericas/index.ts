@@ -54,7 +54,7 @@ async function buscarLotericas(bairro: string, cidade: string, estado: string): 
     body: JSON.stringify({
       searchStringsArray: [query],
       maxCrawledPlacesPerSearch: POR_BAIRRO,
-      language: "pt",
+      language: "pt-BR",   // o Actor exige um código da lista (pt-BR), não "pt"
       countryCode: "br",
       skipClosedPlaces: false,
     }),
