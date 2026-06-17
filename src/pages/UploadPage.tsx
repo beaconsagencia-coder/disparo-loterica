@@ -4,14 +4,10 @@ import { parseFile, type ParsedFile } from "@/components/upload/useFileParser";
 import { normalizePhoneBR, maskPhoneBR } from "@/lib/phone";
 import { previewMessage } from "@/lib/spintax";
 import { supabase } from "@/lib/supabase";
+import { DEFAULT_TEMPLATE } from "@/lib/templates";
 
 type Field = "nome" | "telefone" | "empresa";
 type Mapping = Record<Field, string>; // Field -> nome da coluna do arquivo
-
-const DEFAULT_TEMPLATE =
-  "{{Saudacao}} {{Nome}}! {Tudo bem|Como vai|Espero que esteja bem}? " +
-  "Sou da {plataforma de gestão de bolões|solução de bolões com OCR} e queria te mostrar " +
-  "{como automatizar|uma forma de turbinar} as vendas da sua lotérica. {Posso te explicar rapidinho?|Faz sentido pra você?}";
 
 const STEPS = ["Arquivo", "Mapeamento", "Mensagem", "Concluído"] as const;
 

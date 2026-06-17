@@ -1,10 +1,11 @@
 import { NavLink } from "react-router-dom";
-import { LayoutDashboard, Upload, MessageSquare, Smartphone, Send, LogOut } from "lucide-react";
+import { LayoutDashboard, Upload, Megaphone, MessageSquare, Smartphone, Send, LogOut } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 
 const items = [
   { to: "/", label: "Dashboard", icon: LayoutDashboard, end: true },
   { to: "/upload", label: "Importar Leads", icon: Upload },
+  { to: "/campanhas", label: "Campanhas", icon: Megaphone },
   { to: "/inbox", label: "Inbox CRM", icon: MessageSquare },
   { to: "/instancias", label: "Instâncias", icon: Smartphone },
 ];

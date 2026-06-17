@@ -9,7 +9,22 @@ export type LeadStatus =
   | "ganho"
   | "perdido";
 
-export type QueueStatus = "pendente" | "enviando" | "enviado" | "falha";
+export type QueueStatus =
+  | "pendente"
+  | "enviando"
+  | "enviado"
+  | "falha"
+  | "pausado"
+  | "cancelado";
+
+export const QUEUE_STATUS_LABEL: Record<QueueStatus, string> = {
+  pendente: "Na fila",
+  enviando: "Enviando",
+  enviado: "Enviado",
+  falha: "Falha",
+  pausado: "Pausado",
+  cancelado: "Cancelado",
+};
 
 export interface WhatsappInstance {
   id: string;

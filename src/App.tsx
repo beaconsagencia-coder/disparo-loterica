@@ -4,6 +4,7 @@ import { useSession } from "./lib/useSession";
 import Login from "./pages/Login";
 import Dashboard from "./pages/Dashboard";
 import UploadPage from "./pages/UploadPage";
+import Campaigns from "./pages/Campaigns";
 import Inbox from "./pages/Inbox";
 import Instances from "./pages/Instances";
 
@@ -27,6 +28,7 @@ export default function App() {
         <Routes>
           <Route path="/" element={<Dashboard />} />
           <Route path="/upload" element={<UploadPage />} />
+          <Route path="/campanhas" element={<Campaigns />} />
           <Route path="/inbox" element={<Inbox />} />
           <Route path="/instancias" element={<Instances />} />
         </Routes>
