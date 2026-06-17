@@ -49,19 +49,36 @@ function saudacaoHora(): string {
   return "boa noite";
 }
 
+/** Acha o 1º telefone BR válido numa string (waid tem prioridade). */
+function phoneFromVcard(vcard: string): string | null {
+  const waid = /waid=(\d{10,15})/i.exec(vcard)?.[1];
+  const fromWaid = waid && normalizeBR(waid);
+  if (fromWaid) return fromWaid;
+  for (const m of String(vcard).matchAll(/[\d][\d().\-\s+]{7,}\d/g)) {
+    const n = normalizeBR(m[0]);
+    if (n) return n;
+  }
+  return null;
+}
+
 /** Detecta um contato repassado: cartão de contato (vCard) ou número no texto. */
 // deno-lint-ignore no-explicit-any
 export function extractReferral(item: any, text: string): { numero: string; nome?: string } | null {
   const msg = item?.message ?? {};
-  const card = msg.contactMessage ?? msg.contactsArrayMessage?.contacts?.[0];
-  if (card?.vcard) {
-    const waid = /waid=(\d{10,15})/i.exec(card.vcard)?.[1];
-    const tel = /TEL[^:]*:([+\d().\-\s]{8,})/i.exec(card.vcard)?.[1];
-    const numero = normalizeBR(waid ?? tel ?? "");
-    if (numero) return { numero, nome: card.displayName ?? card.fullName ?? undefined };
+  // deno-lint-ignore no-explicit-any
+  const cards: any[] = [];
+  if (msg.contactMessage) cards.push(msg.contactMessage);
+  if (Array.isArray(msg.contactsArrayMessage?.contacts)) cards.push(...msg.contactsArrayMessage.contacts);
+
+  for (const card of cards) {
+    const vcard = card?.vcard ?? card?.vCard ?? "";
+    const numero = vcard ? phoneFromVcard(vcard) : null;
+    if (numero) return { numero, nome: card?.displayName ?? card?.fullName ?? undefined };
+    console.log("[referral] contato sem número extraível. card:", JSON.stringify(card).slice(0, 300));
   }
-  // Número digitado no texto (pega a maior sequência que vire um telefone válido).
-  for (const m of (text ?? "").matchAll(/[\d][\d().\-\s]{8,}\d/g)) {
+
+  // Número digitado no texto (pega a 1ª sequência que vire um telefone válido).
+  for (const m of (text ?? "").matchAll(/[\d][\d().\-\s+]{8,}\d/g)) {
     const numero = normalizeBR(m[0]);
     if (numero) return { numero };
   }

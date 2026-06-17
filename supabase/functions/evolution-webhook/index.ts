@@ -182,6 +182,7 @@ Deno.serve(async (req) => {
     // Indicação de contato: o cliente repassou o número de outra pessoa?
     const referral = inserted ? extractReferral(item, text) : null;
     const isHandoff = !!referral && referral.numero !== numero;
+    if (isContact && !isHandoff) console.log("[webhook] contato compartilhado mas sem número extraível");
 
     if (isHandoff && inserted) {
       console.log("[webhook] indicação detectada → iniciando contato com", referral!.numero);
