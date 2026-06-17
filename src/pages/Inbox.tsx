@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Send, Search, Bot } from "lucide-react";
+import { Send, Search, Bot, Trash2 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import type { Conversation, Message } from "@/lib/types";
 import { maskPhoneBR } from "@/lib/phone";
@@ -78,6 +78,16 @@ export default function Inbox() {
     loadConversations();
   }
 
+  async function deleteConversation(id: string) {
+    if (!confirm("Apagar todo o histórico desta conversa? As mensagens serão removidas (o contato continua na base). Isso não pode ser desfeito.")) return;
+    // Apaga as mensagens e a conversa (as mensagens caem por cascade ao remover a conversa).
+    const { error } = await supabase.from("conversations").delete().eq("id", id);
+    if (error) return alert("Falha ao apagar: " + error.message);
+    setActiveId(null);
+    setMessages([]);
+    loadConversations();
+  }
+
   const active = conversations.find((c) => c.id === activeId);
   const filtered = conversations.filter((c) =>
     (c.leads?.nome ?? "").toLowerCase().includes(query.toLowerCase()),
@@ -136,13 +146,22 @@ export default function Inbox() {
                   {active.whatsapp_instances?.nome}
                 </div>
               </div>
-              <button
-                onClick={() => toggleAi(active.id, !active.ai_enabled)}
-                className={`chip ${active.ai_enabled ? "bg-success/15 text-[#1b7a35]" : "bg-black/10 text-ink-muted"}`}
-                title={active.ai_enabled ? "IA está respondendo — clique para assumir" : "Você está respondendo — clique para devolver à IA"}
-              >
-                <Bot size={14} /> {active.ai_enabled ? "IA respondendo" : "Manual"}
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => toggleAi(active.id, !active.ai_enabled)}
+                  className={`chip ${active.ai_enabled ? "bg-success/15 text-[#1b7a35]" : "bg-black/10 text-ink-muted"}`}
+                  title={active.ai_enabled ? "IA está respondendo — clique para assumir" : "Você está respondendo — clique para devolver à IA"}
+                >
+                  <Bot size={14} /> {active.ai_enabled ? "IA respondendo" : "Manual"}
+                </button>
+                <button
+                  onClick={() => deleteConversation(active.id)}
+                  className="rounded-full p-2 text-ink-muted transition-colors hover:bg-danger/10 hover:text-[#b4231b]"
+                  title="Apagar histórico desta conversa"
+                >
+                  <Trash2 size={16} />
+                </button>
+              </div>
             </header>
 
             <div className="flex-1 space-y-2 overflow-auto px-5 py-4">
