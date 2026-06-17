@@ -8,6 +8,7 @@ import type { SupabaseClient } from "jsr:@supabase/supabase-js@2";
 import { sendText } from "./evolution.ts";
 
 const DEFAULT_MODEL = "gemini-2.5-flash";
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 function getAi(): GoogleGenAI {
   const apiKey = Deno.env.get("GEMINI_API_KEY");
@@ -85,12 +86,17 @@ function buildSystem(playbook: string, persona: string, empresa: string, leadNom
     leadEmpresa ? `- Empresa do contato: ${leadEmpresa}.` : "",
     `- Agora é ${agoraEmSP()} (horário de Brasília).`,
     "",
-    "## Regras de operação",
-    "- Responda SEMPRE em uma única mensagem curta de WhatsApp, em português, tom humano e natural (como nos exemplos do roteiro). Sem listas, sem markdown.",
-    "- Siga o fluxo do roteiro: cumprimentar → confirmar que fala com o responsável → pegar o nome → gerar interesse → propor uma reunião de 15 minutos → combinar o melhor horário.",
-    "- Faça UMA pergunta por vez. Não despeje tudo de uma vez.",
-    "- Quando o cliente confirmar um horário, chame a função agendar_reuniao e então confirme com ele.",
-    "- Nunca invente informações nem prometa o que o roteiro não diz. Se o cliente sair muito do escopo ou pedir para falar com humano, responda educadamente que vai chamar alguém do time.",
+    "## Regras de operação (OBRIGATÓRIAS — valem acima do roteiro)",
+    "- Responda SEMPRE em uma única mensagem curta de WhatsApp, em português, tom humano e natural. Sem listas, sem markdown.",
+    "- Siga o fluxo: cumprimentar → confirmar que fala com o responsável → pegar o nome → gerar interesse → propor uma reunião de 15 min → combinar o horário. Faça UMA pergunta por vez.",
+    "- RESPONDA ANTES DE AVANÇAR: se o cliente fizer uma pergunta direta (seu nome, de qual empresa você é, qual lotérica, etc.) ou der uma instrução, responda de forma curtíssima e direta PRIMEIRO; só depois retome o funil. NUNCA ignore o que o cliente acabou de dizer nem force um bloco pronto por cima da pergunta dele.",
+    "- AUTORIDADE: nunca diga 'número 1', 'Top 1', 'Top 10' ou similar. Use sempre 'uma das lotéricas que mais vendem online' (ou 'uma das que mais vende'). Credível, sem exageros.",
+    "- OBJEÇÃO DE PREÇO: não fale valores. Diga algo como 'a gente nem gosta de falar de valor agora porque a ideia é crescer junto com a lotérica' e volte para o agendamento.",
+    "- PEDIDO DE LIGAÇÃO ('me liga', 'liga para X'): não ligue. Explique com naturalidade que precisa mostrar o mecanismo na tela, por isso é uma rápida reunião online, e proponha um horário.",
+    "- MENSAGEM AUTOMÁTICA DO CLIENTE: se a última mensagem parecer um auto-atendimento da empresa (ex: 'seja bem-vindo', 'horário de atendimento', 'deixe sua mensagem', menu de opções/números), NÃO dispare a proposta de valor. Apenas cumprimente de forma curta e pergunte se está falando com o responsável.",
+    "- AGENDAMENTO: sugira horários exatos (ex: 14:30 ou 15h) e seja flexível para remarcar. Quando o cliente confirmar, chame a função agendar_reuniao e confirme calorosamente.",
+    "- NÃO REPITA: nunca reenvie uma mensagem que você já mandou, mesmo que o cliente escreva em mensagens picadas ou demore a responder. Continue de onde parou.",
+    "- Nunca invente informações. Se o cliente sair muito do escopo ou pedir um humano, diga educadamente que vai chamar alguém do time.",
   ].filter(Boolean).join("\n");
 }
 
@@ -110,6 +116,17 @@ export async function runSdr(p: RunSdrParams): Promise<void> {
   const { data: conv } = await supabase
     .from("conversations").select("ai_enabled").eq("id", p.conversationId).maybeSingle();
   if (!conv || conv.ai_enabled === false) { console.log("[sdr] conversa com IA desligada (ai_enabled=false)"); return; }
+
+  // Anti-loop / mensagens picadas: ao responder, espera alguns segundos para o
+  // cliente terminar de digitar. Se chegar mensagem nova nesse meio, aborta —
+  // só a execução do ÚLTIMO fragmento responde (com o contexto completo).
+  if ((p.mode ?? "reply") === "reply") {
+    await sleep(6000);
+    const { count } = await supabase
+      .from("messages").select("id", { count: "exact", head: true })
+      .eq("conversation_id", p.conversationId).gt("created_at", p.triggerAt);
+    if ((count ?? 0) > 0) { console.log("[sdr] debounce: chegou mensagem mais nova, abortando este turno"); return; }
+  }
 
   // 2) Lead + histórico
   const { data: lead } = await supabase
@@ -144,8 +161,9 @@ export async function runSdr(p: RunSdrParams): Promise<void> {
       parts: [{
         text:
           `[INSTRUÇÃO INTERNA DO SISTEMA — não é mensagem do cliente] O cliente está há cerca de ${p.silencioMin ?? 30} minutos sem responder. ` +
-          "Envie UMA mensagem curta e natural para retomar a conversa de onde parou (relembrar o convite da reunião ou fazer a próxima pergunta do roteiro), " +
-          "sem ser insistente, sem repetir o que já disse e sem mencionar esta instrução.",
+          "Envie UMA mensagem curta para REATIVAR o interesse — NÃO cobre resposta (nada de 'e aí?', 'conseguiu ver?', 'tudo certo?'). " +
+          "Use leve imprevisibilidade/curiosidade sobre o mecanismo de captação de clientes (um resultado concreto, um gancho novo ou uma pergunta provocativa), " +
+          "retomando de onde parou, sem repetir o que já disse e sem mencionar esta instrução.",
       }],
     });
   }
