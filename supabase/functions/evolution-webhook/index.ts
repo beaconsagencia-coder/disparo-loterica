@@ -101,20 +101,27 @@ Deno.serve(async (req) => {
     if (!numero) continue;
     let text = extractText(item?.message);
     const evoId = key.id as string | undefined;
+    const isAudio = !!(item?.message?.audioMessage || item?.message?.pttMessage);
 
-    // Áudio: transcreve com o Gemini e usa como texto da mensagem.
-    if (!text && item?.message?.audioMessage) {
+    // Áudio (nota de voz): baixa a mídia e transcreve com o Gemini.
+    if (!text && isAudio) {
+      console.log("[webhook] áudio recebido — baixando mídia da Evolution…");
       const media = await getMediaBase64(evolutionInstance, item);
-      if (media) {
+      if (!media) {
+        console.error("[webhook] não consegui baixar o áudio (getBase64FromMediaMessage).");
+      } else {
         try {
           const transcrito = await transcribeAudio(media.base64, media.mimetype);
-          if (transcrito) text = transcrito;
-          console.log("[webhook] áudio transcrito:", text.slice(0, 60));
+          if (transcrito) { text = transcrito; console.log("[webhook] áudio transcrito:", text.slice(0, 80)); }
+          else console.warn("[webhook] transcrição do áudio veio vazia.");
         } catch (e) {
           console.error("[webhook] falha ao transcrever áudio:", e instanceof Error ? e.message : e);
         }
       }
     }
+
+    // Corpo a salvar: o áudio SEMPRE aparece no chat, mesmo sem transcrição.
+    const bodyToSave = text || (isAudio ? "🎤 [áudio recebido]" : "");
 
     // Match do lead pelo telefone (dentro do tenant).
     const { data: lead } = await supabase
@@ -166,7 +173,7 @@ Deno.serve(async (req) => {
       conversation_id: conv,
       instance_id: inst.id,
       direction: "inbound",
-      body: text,
+      body: bodyToSave,
       evolution_message_id: evoId ?? null,
       status: "delivered",
     }).select("id, created_at").maybeSingle(); // unique (instance_id, evolution_message_id) deduplica reentregas

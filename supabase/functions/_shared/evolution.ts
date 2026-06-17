@@ -49,22 +49,36 @@ export async function getMediaBase64(
   // deno-lint-ignore no-explicit-any
   message: any,
 ): Promise<{ base64: string; mimetype: string } | null> {
-  try {
-    const res = await fetch(`${BASE}/chat/getBase64FromMediaMessage/${instance}`, {
-      method: "POST",
-      headers: headers(),
-      body: JSON.stringify({ message, convertToMp4: false }),
-    });
-    if (!res.ok) return null;
-    const data = await res.json();
-    const base64 = data?.base64 ?? data?.media ?? null;
-    if (!base64) return null;
-    const mimetype = data?.mimetype ?? data?.mimeType ??
-      message?.message?.audioMessage?.mimetype ?? "audio/ogg";
-    return { base64, mimetype: String(mimetype).split(";")[0] };
-  } catch {
-    return null;
+  const url = `${BASE}/chat/getBase64FromMediaMessage/${instance}`;
+  // Versões diferentes da Evolution aceitam o objeto inteiro ou só { key }.
+  const bodies = [
+    { message, convertToMp4: false },
+    { message: { key: message?.key }, convertToMp4: false },
+  ];
+  for (const body of bodies) {
+    try {
+      const res = await fetch(url, { method: "POST", headers: headers(), body: JSON.stringify(body) });
+      const raw = await res.text();
+      if (!res.ok) {
+        console.error(`[evolution] getBase64 ${res.status}: ${raw.slice(0, 160)}`);
+        continue;
+      }
+      let data: any = raw;
+      try { data = JSON.parse(raw); } catch { /* pode ser base64 cru */ }
+      let base64: string | null =
+        (typeof data === "string" ? data : null) ??
+        data?.base64 ?? data?.media ?? data?.buffer ?? null;
+      if (!base64) { console.error("[evolution] getBase64 sem campo base64:", JSON.stringify(data).slice(0, 160)); continue; }
+      // Remove prefixo data URI se vier "data:audio/ogg;base64,...."
+      const m = /^data:([^;]+);base64,(.*)$/s.exec(base64);
+      let mimetype = data?.mimetype ?? data?.mimeType ?? message?.message?.audioMessage?.mimetype ?? "audio/ogg";
+      if (m) { mimetype = m[1]; base64 = m[2]; }
+      return { base64, mimetype: String(mimetype).split(";")[0] };
+    } catch (e) {
+      console.error("[evolution] getBase64 erro:", e instanceof Error ? e.message : e);
+    }
   }
+  return null;
 }
 
 /** Verifica se um número possui WhatsApp. Retorna true/false (ou null se indisponível). */
