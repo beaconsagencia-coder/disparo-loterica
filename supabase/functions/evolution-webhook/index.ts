@@ -7,7 +7,8 @@
 // =====================================================================
 import { createClient } from "jsr:@supabase/supabase-js@2";
 import { json } from "../_shared/cors.ts";
-import { runSdr } from "../_shared/sdr.ts";
+import { runSdr, transcribeAudio } from "../_shared/sdr.ts";
+import { getMediaBase64 } from "../_shared/evolution.ts";
 
 const supabase = createClient(
   Deno.env.get("SUPABASE_URL")!,
@@ -98,8 +99,22 @@ Deno.serve(async (req) => {
 
     const numero = normalizeNumber(remoteJid);
     if (!numero) continue;
-    const text = extractText(item?.message);
+    let text = extractText(item?.message);
     const evoId = key.id as string | undefined;
+
+    // Áudio: transcreve com o Gemini e usa como texto da mensagem.
+    if (!text && item?.message?.audioMessage) {
+      const media = await getMediaBase64(evolutionInstance, item);
+      if (media) {
+        try {
+          const transcrito = await transcribeAudio(media.base64, media.mimetype);
+          if (transcrito) text = transcrito;
+          console.log("[webhook] áudio transcrito:", text.slice(0, 60));
+        } catch (e) {
+          console.error("[webhook] falha ao transcrever áudio:", e instanceof Error ? e.message : e);
+        }
+      }
+    }
 
     // Match do lead pelo telefone (dentro do tenant).
     const { data: lead } = await supabase
@@ -142,6 +157,9 @@ Deno.serve(async (req) => {
     // Conversa unificada (1 por lead) — registra por qual chip entrou.
     const conv = await upsertConversation(inst.user_id, leadId, inst.id);
     if (!conv) continue;
+
+    // Cliente respondeu: zera o contador de follow-ups automáticos.
+    await supabase.from("conversations").update({ followup_count: 0 }).eq("id", conv);
 
     const { data: inserted } = await supabase.from("messages").insert({
       user_id: inst.user_id,

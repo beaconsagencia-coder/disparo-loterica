@@ -9,6 +9,28 @@ import { sendText } from "./evolution.ts";
 
 const DEFAULT_MODEL = "gemini-2.5-flash";
 
+function getAi(): GoogleGenAI {
+  const apiKey = Deno.env.get("GEMINI_API_KEY");
+  if (!apiKey) throw new Error("GEMINI_API_KEY não configurada");
+  return new GoogleGenAI({ apiKey });
+}
+
+/** Transcreve um áudio (base64) para texto usando o Gemini. */
+export async function transcribeAudio(base64: string, mimetype: string): Promise<string> {
+  const ai = getAi();
+  const resp = await ai.models.generateContent({
+    model: DEFAULT_MODEL,
+    contents: [{
+      role: "user",
+      parts: [
+        { inlineData: { mimeType: mimetype, data: base64 } },
+        { text: "Transcreva este áudio em português do Brasil. Responda APENAS com a transcrição, sem comentários." },
+      ],
+    }],
+  });
+  return (resp.text ?? "").trim();
+}
+
 interface RunSdrParams {
   supabase: SupabaseClient;
   userId: string;
@@ -17,7 +39,9 @@ interface RunSdrParams {
   instanceId: string;
   evolutionInstance: string;
   numero: string;
-  triggerAt: string; // created_at da mensagem recebida que disparou o SDR
+  triggerAt: string;          // created_at da última mensagem (gatilho / anti-duplicação)
+  mode?: "reply" | "followup"; // followup = cutucar após silêncio
+  silencioMin?: number;        // minutos de silêncio (modo followup)
 }
 
 // Ferramenta que a IA chama quando um horário de reunião é combinado.
@@ -107,9 +131,23 @@ export async function runSdr(p: RunSdrParams): Promise<void> {
     if (contents.length === 0 && role === "model") continue;
     contents.push({ role, parts: [{ text }] });
   }
-  if (contents.length === 0 || contents[contents.length - 1].role !== "user") {
+  const mode = p.mode ?? "reply";
+  if (contents.length === 0) { console.log("[sdr] sem histórico"); return; }
+  if (mode === "reply" && contents[contents.length - 1].role !== "user") {
     console.log("[sdr] histórico sem turno de usuário no fim — nada a responder");
     return;
+  }
+  if (mode === "followup") {
+    // Cliente em silêncio: instrução interna para o bot dar andamento sozinho.
+    contents.push({
+      role: "user",
+      parts: [{
+        text:
+          `[INSTRUÇÃO INTERNA DO SISTEMA — não é mensagem do cliente] O cliente está há cerca de ${p.silencioMin ?? 30} minutos sem responder. ` +
+          "Envie UMA mensagem curta e natural para retomar a conversa de onde parou (relembrar o convite da reunião ou fazer a próxima pergunta do roteiro), " +
+          "sem ser insistente, sem repetir o que já disse e sem mencionar esta instrução.",
+      }],
+    });
   }
 
   const systemInstruction = buildSystem(
@@ -122,10 +160,9 @@ export async function runSdr(p: RunSdrParams): Promise<void> {
     ? config.model : DEFAULT_MODEL;
 
   // Cliente Gemini (lazy: chave faltando não derruba o webhook, só pula o SDR)
-  const apiKey = Deno.env.get("GEMINI_API_KEY");
-  if (!apiKey) { console.error("[sdr] GEMINI_API_KEY não configurada"); return; }
-  const ai = new GoogleGenAI({ apiKey });
-  console.log("[sdr] chamando Gemini", { model });
+  let ai: GoogleGenAI;
+  try { ai = getAi(); } catch { console.error("[sdr] GEMINI_API_KEY não configurada"); return; }
+  console.log("[sdr] chamando Gemini", { model, mode });
 
   // 3) Loop de function calling até a IA terminar o turno
   let finalText = "";
@@ -189,9 +226,17 @@ export async function runSdr(p: RunSdrParams): Promise<void> {
     .gt("created_at", p.triggerAt);
   if ((count ?? 0) > 0) return;
 
-  // 5) Envia pela mesma instância e registra no histórico
+  // 5) Delay humanizado ("digitando…") proporcional ao tamanho da resposta,
+  //    dentro da faixa configurada pelo usuário.
+  const dmin = Number(config.delay_min_seg ?? 3);
+  const dmax = Number(config.delay_max_seg ?? 8);
+  const base = dmin + Math.random() * Math.max(0, dmax - dmin);
+  const porTamanho = Math.min(dmax, finalText.length / 25); // textos maiores "demoram" mais a digitar
+  const delayMs = Math.round(Math.max(dmin, Math.max(base, porTamanho)) * 1000);
+
+  // 6) Envia pela mesma instância e registra no histórico
   try {
-    const { messageId } = await sendText(p.evolutionInstance, p.numero, finalText);
+    const { messageId } = await sendText(p.evolutionInstance, p.numero, finalText, delayMs);
     await supabase.from("messages").insert({
       user_id: p.userId,
       conversation_id: p.conversationId,
@@ -201,6 +246,12 @@ export async function runSdr(p: RunSdrParams): Promise<void> {
       evolution_message_id: messageId ?? null,
       status: "sent",
     });
+    if (mode === "followup") {
+      const { data: c } = await supabase
+        .from("conversations").select("followup_count").eq("id", p.conversationId).maybeSingle();
+      await supabase.from("conversations")
+        .update({ followup_count: (c?.followup_count ?? 0) + 1 }).eq("id", p.conversationId);
+    }
   } catch (e) {
     console.error("SDR sendText falhou:", e instanceof Error ? e.message : e);
   }

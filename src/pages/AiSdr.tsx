@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Bot, Save, Power, AlertTriangle, Calendar } from "lucide-react";
+import { Bot, Save, Power, AlertTriangle, Calendar, Clock } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { DEFAULT_PLAYBOOK } from "@/lib/aiPlaybook";
 
@@ -22,6 +22,10 @@ export default function AiSdr() {
   const [persona, setPersona] = useState("Pedro");
   const [empresa, setEmpresa] = useState("Chamada Beacons");
   const [model, setModel] = useState("gemini-2.5-flash");
+  const [delayMin, setDelayMin] = useState(3);
+  const [delayMax, setDelayMax] = useState(8);
+  const [followupMin, setFollowupMin] = useState(30);
+  const [followupMax, setFollowupMax] = useState(2);
   const [playbook, setPlaybook] = useState(DEFAULT_PLAYBOOK);
   const [meetings, setMeetings] = useState<Meeting[]>([]);
   const [busy, setBusy] = useState(false);
@@ -36,6 +40,10 @@ export default function AiSdr() {
         setEmpresa(data.empresa);
         setModel(data.model);
         setPlaybook(data.playbook);
+        if (data.delay_min_seg != null) setDelayMin(data.delay_min_seg);
+        if (data.delay_max_seg != null) setDelayMax(data.delay_max_seg);
+        if (data.followup_inatividade_min != null) setFollowupMin(data.followup_inatividade_min);
+        if (data.followup_max != null) setFollowupMax(data.followup_max);
       }
       const { data: m } = await supabase
         .from("meetings").select("id, quando_texto, titulo, status, created_at")
@@ -51,7 +59,11 @@ export default function AiSdr() {
     const userId = auth.user?.id;
     if (!userId) { setBusy(false); return setMsg("Sessão expirada."); }
     const { error } = await supabase.from("ai_config").upsert(
-      { user_id: userId, ativo, persona_nome: persona.trim(), empresa: empresa.trim(), model, playbook },
+      {
+        user_id: userId, ativo, persona_nome: persona.trim(), empresa: empresa.trim(), model, playbook,
+        delay_min_seg: delayMin, delay_max_seg: delayMax,
+        followup_inatividade_min: followupMin, followup_max: followupMax,
+      },
       { onConflict: "user_id" },
     );
     setBusy(false);
@@ -96,6 +108,42 @@ export default function AiSdr() {
           <select className="input" value={model} onChange={(e) => setModel(e.target.value)}>
             {MODELS.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
           </select>
+        </div>
+      </div>
+
+      <div className="bento-card mb-4">
+        <div className="mb-3 flex items-center gap-2">
+          <Clock size={16} className="text-accent" />
+          <h2 className="font-medium">Comportamento humano</h2>
+        </div>
+        <div className="grid gap-4 sm:grid-cols-2">
+          <div>
+            <label className="mb-1 block text-xs font-medium text-ink-soft">
+              Delay antes de responder (segundos)
+            </label>
+            <div className="flex items-center gap-2">
+              <input type="number" min={0} className="input" value={delayMin}
+                onChange={(e) => setDelayMin(Number(e.target.value))} />
+              <span className="text-ink-muted">a</span>
+              <input type="number" min={0} className="input" value={delayMax}
+                onChange={(e) => setDelayMax(Number(e.target.value))} />
+            </div>
+            <p className="mt-1 text-xs text-ink-muted">Mostra "digitando…" por esse tempo antes de enviar.</p>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="mb-1 block text-xs font-medium text-ink-soft">Follow-up após (min)</label>
+              <input type="number" min={1} className="input" value={followupMin}
+                onChange={(e) => setFollowupMin(Number(e.target.value))} />
+              <p className="mt-1 text-xs text-ink-muted">Silêncio até cutucar.</p>
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-medium text-ink-soft">Máx. de follow-ups</label>
+              <input type="number" min={0} className="input" value={followupMax}
+                onChange={(e) => setFollowupMax(Number(e.target.value))} />
+              <p className="mt-1 text-xs text-ink-muted">0 = desliga.</p>
+            </div>
+          </div>
         </div>
       </div>
 
