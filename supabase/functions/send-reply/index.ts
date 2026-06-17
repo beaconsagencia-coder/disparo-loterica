@@ -55,6 +55,9 @@ Deno.serve(async (req) => {
       status: "sent",
     });
 
+    // Atendente assumiu: desliga a IA nesta conversa (pode religar no Inbox).
+    await userClient.from("conversations").update({ ai_enabled: false }).eq("id", conv.id);
+
     return json({ ok: true, messageId });
   } catch (e) {
     return json({ error: e instanceof Error ? e.message : String(e) }, 502);

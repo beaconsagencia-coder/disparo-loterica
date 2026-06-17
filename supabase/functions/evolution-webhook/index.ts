@@ -7,6 +7,7 @@
 // =====================================================================
 import { createClient } from "jsr:@supabase/supabase-js@2";
 import { json } from "../_shared/cors.ts";
+import { runSdr } from "../_shared/sdr.ts";
 
 const supabase = createClient(
   Deno.env.get("SUPABASE_URL")!,
@@ -142,7 +143,7 @@ Deno.serve(async (req) => {
     const conv = await upsertConversation(inst.user_id, leadId, inst.id);
     if (!conv) continue;
 
-    await supabase.from("messages").insert({
+    const { data: inserted } = await supabase.from("messages").insert({
       user_id: inst.user_id,
       conversation_id: conv,
       instance_id: inst.id,
@@ -150,7 +151,25 @@ Deno.serve(async (req) => {
       body: text,
       evolution_message_id: evoId ?? null,
       status: "delivered",
-    }).select("id"); // unique (instance_id, evolution_message_id) deduplica reentregas
+    }).select("id, created_at").maybeSingle(); // unique (instance_id, evolution_message_id) deduplica reentregas
+
+    // SDR com IA: responde em background (não bloqueia o retorno pra Evolution).
+    if (inserted && text) {
+      const numero = normalizeNumber(remoteJid);
+      const task = runSdr({
+        supabase,
+        userId: inst.user_id,
+        conversationId: conv,
+        leadId,
+        instanceId: inst.id,
+        evolutionInstance,
+        numero,
+        triggerAt: inserted.created_at,
+      }).catch((e) => console.error("runSdr erro:", e instanceof Error ? e.message : e));
+      // @ts-ignore EdgeRuntime existe no runtime do Supabase
+      if (typeof EdgeRuntime !== "undefined") EdgeRuntime.waitUntil(task);
+      else await task;
+    }
   }
 
   return json({ ok: true });

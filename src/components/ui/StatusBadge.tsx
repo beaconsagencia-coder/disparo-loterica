@@ -6,6 +6,7 @@ const leadColors: Record<LeadStatus, string> = {
   na_fila: "bg-accent/10 text-accent",
   aguardando_resposta: "bg-warning/15 text-[#9a6200]",
   em_negociacao: "bg-success/15 text-[#1b7a35]",
+  reuniao_agendada: "bg-accent/15 text-accent",
   sem_whatsapp: "bg-danger/15 text-[#b4231b]",
   ganho: "bg-success/20 text-[#1b7a35]",
   perdido: "bg-black/10 text-ink-muted",

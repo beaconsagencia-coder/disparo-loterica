@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Send, Search } from "lucide-react";
+import { Send, Search, Bot } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import type { Conversation, Message } from "@/lib/types";
 import { maskPhoneBR } from "@/lib/phone";
@@ -73,6 +73,11 @@ export default function Inbox() {
     setSending(false);
   }
 
+  async function toggleAi(id: string, value: boolean) {
+    await supabase.from("conversations").update({ ai_enabled: value }).eq("id", id);
+    loadConversations();
+  }
+
   const active = conversations.find((c) => c.id === activeId);
   const filtered = conversations.filter((c) =>
     (c.leads?.nome ?? "").toLowerCase().includes(query.toLowerCase()),
@@ -131,6 +136,13 @@ export default function Inbox() {
                   {active.whatsapp_instances?.nome}
                 </div>
               </div>
+              <button
+                onClick={() => toggleAi(active.id, !active.ai_enabled)}
+                className={`chip ${active.ai_enabled ? "bg-success/15 text-[#1b7a35]" : "bg-black/10 text-ink-muted"}`}
+                title={active.ai_enabled ? "IA está respondendo — clique para assumir" : "Você está respondendo — clique para devolver à IA"}
+              >
+                <Bot size={14} /> {active.ai_enabled ? "IA respondendo" : "Manual"}
+              </button>
             </header>
 
             <div className="flex-1 space-y-2 overflow-auto px-5 py-4">

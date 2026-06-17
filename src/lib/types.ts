@@ -5,6 +5,7 @@ export type LeadStatus =
   | "na_fila"
   | "aguardando_resposta"
   | "em_negociacao"
+  | "reuniao_agendada"
   | "sem_whatsapp"
   | "ganho"
   | "perdido";
@@ -56,6 +57,7 @@ export interface Conversation {
   last_message_at: string | null;
   last_message_preview: string | null;
   unread_count: number;
+  ai_enabled: boolean;
   // joins
   leads?: Pick<Lead, "nome" | "telefone">;
   whatsapp_instances?: Pick<WhatsappInstance, "nome">;
@@ -91,6 +93,7 @@ export const LEAD_STATUS_LABEL: Record<LeadStatus, string> = {
   na_fila: "Na fila",
   aguardando_resposta: "Aguardando resposta",
   em_negociacao: "Em negociação",
+  reuniao_agendada: "Reunião agendada",
   sem_whatsapp: "Sem WhatsApp",
   ganho: "Ganho",
   perdido: "Perdido",
