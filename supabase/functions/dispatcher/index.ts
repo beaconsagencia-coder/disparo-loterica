@@ -11,6 +11,7 @@ import { createClient } from "jsr:@supabase/supabase-js@2";
 import { json } from "../_shared/cors.ts";
 import { renderMessage, nextSendDelayMs } from "../_shared/spintax.ts";
 import { sendText, hasWhatsApp } from "../_shared/evolution.ts";
+import { dentroDaJanela } from "../_shared/janela.ts";
 
 const supabase = createClient(
   Deno.env.get("SUPABASE_URL")!,
@@ -25,6 +26,12 @@ Deno.serve(async (req) => {
   // Autenticação simples do cron (header compartilhado)
   if (req.headers.get("x-cron-secret") !== CRON_SECRET) {
     return json({ error: "unauthorized" }, 401);
+  }
+
+  // Janela de disparo: só envia entre 07h e 21h (horário de Brasília).
+  // Fora disso, as mensagens ficam na fila e saem quando a janela abrir.
+  if (!dentroDaJanela()) {
+    return json({ ok: true, sent: 0, reason: "fora da janela de disparo (07h-21h)" });
   }
 
   const now = new Date();

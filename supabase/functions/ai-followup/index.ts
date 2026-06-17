@@ -8,6 +8,7 @@
 import { createClient } from "jsr:@supabase/supabase-js@2";
 import { json } from "../_shared/cors.ts";
 import { runSdr } from "../_shared/sdr.ts";
+import { dentroDaJanela } from "../_shared/janela.ts";
 
 const supabase = createClient(
   Deno.env.get("SUPABASE_URL")!,
@@ -20,6 +21,11 @@ const SKIP_STATUS = ["reuniao_agendada", "ganho", "perdido", "sem_whatsapp"];
 Deno.serve(async (req) => {
   if (req.headers.get("x-cron-secret") !== CRON_SECRET) {
     return json({ error: "unauthorized" }, 401);
+  }
+
+  // Follow-up proativo só dentro da janela de disparo (07h-21h, Brasília).
+  if (!dentroDaJanela()) {
+    return json({ ok: true, nudged: 0, reason: "fora da janela de disparo (07h-21h)" });
   }
 
   // Configs de SDR ativas (1 por usuário)
