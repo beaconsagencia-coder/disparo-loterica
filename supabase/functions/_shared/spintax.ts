@@ -48,11 +48,24 @@ export interface RenderVars {
 
 /** Substitui placeholders e depois aplica o spintax. */
 export function renderMessage(template: string, vars: RenderVars = {}): string {
-  const replaced = template
+  const empresa = (vars.empresa ?? "").trim();
+  let replaced = template
     .replace(/\{\{\s*Saudacao\s*\}\}/gi, saudacao(vars.now))
-    .replace(/\{\{\s*Nome\s*\}\}/gi, firstName(vars.nome ?? ""))
-    .replace(/\{\{\s*Empresa\s*\}\}/gi, vars.empresa ?? "");
-  return spin(replaced).replace(/\s{2,}/g, " ").trim();
+    .replace(/\{\{\s*Nome\s*\}\}/gi, firstName(vars.nome ?? ""));
+  if (empresa) {
+    replaced = replaced.replace(/\{\{\s*Empresa\s*\}\}/gi, empresa);
+  } else {
+    // Sem empresa conhecida: remove "(pessoal )?d{a,e,o} {{Empresa}}" para não
+    // sobrar "da !" ou "pessoal da !" na mensagem enviada.
+    replaced = replaced
+      .replace(/,?\s*pessoal\s+d[aeo]s?\s+\{\{\s*Empresa\s*\}\}/gi, "")
+      .replace(/\s+d[aeo]s?\s+\{\{\s*Empresa\s*\}\}/gi, "")
+      .replace(/\{\{\s*Empresa\s*\}\}/gi, "");
+  }
+  return spin(replaced)
+    .replace(/\s{2,}/g, " ")
+    .replace(/\s+([!?.,;:])/g, "$1")
+    .trim();
 }
 
 /** Intervalo anti-ban: 30 a 45 minutos em milissegundos. */

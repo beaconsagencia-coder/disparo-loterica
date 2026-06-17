@@ -26,8 +26,10 @@ const POR_BAIRRO = 20;   // resultados máximos por bairro
 
 // Mensagem padrão caso o usuário não tenha definido um template na aba Prospecção.
 const DEFAULT_TEMPLATE =
-  "{{Saudacao}}! {Tudo bem|Como vai}? {Sou da|Falo pela} plataforma de gestão de bolões e queria " +
-  "te mostrar {como automatizar|uma forma de turbinar} as vendas da sua lotérica. {Posso explicar rapidinho?|Faz sentido?}";
+  "{{Saudacao}}, pessoal da {{Empresa}}! {Estava analisando|Estava observando|Andei vendo} " +
+  "o atendimento digital de vocês e {tenho|separei|montei} algumas estratégias {para|pra} " +
+  "{aumentar|turbinar|alavancar} as vendas de bolões e jogos pelo WhatsApp. " +
+  "{É por esse número que falo com o responsável?|É por aqui que consigo falar com o responsável?|Consigo falar com o responsável por esse número?}";
 
 interface Bairro { id: string; user_id: string; bairro: string; cidade: string; estado: string; }
 interface Place { title?: string; name?: string; phone?: string; phoneUnformatted?: string }
