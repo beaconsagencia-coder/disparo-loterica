@@ -32,6 +32,120 @@ export async function transcribeAudio(base64: string, mimetype: string): Promise
   return (resp.text ?? "").trim();
 }
 
+// --- Indicação de contato (cliente repassa o número da "dona/responsável") ---
+
+/** Normaliza um telefone BR para dígitos com DDI 55, ou null se inválido. */
+function normalizeBR(raw: string): string | null {
+  let d = (raw ?? "").replace(/\D/g, "").replace(/^0+/, "");
+  if (d.length === 10 || d.length === 11) d = "55" + d;
+  if (d.length < 12 || d.length > 13) return null;
+  return d;
+}
+
+function saudacaoHora(): string {
+  const h = Number(new Intl.DateTimeFormat("pt-BR", { hour: "numeric", hour12: false, timeZone: "America/Sao_Paulo" }).format(new Date()));
+  if (h >= 5 && h < 12) return "bom dia";
+  if (h >= 12 && h < 18) return "boa tarde";
+  return "boa noite";
+}
+
+/** Detecta um contato repassado: cartão de contato (vCard) ou número no texto. */
+// deno-lint-ignore no-explicit-any
+export function extractReferral(item: any, text: string): { numero: string; nome?: string } | null {
+  const msg = item?.message ?? {};
+  const card = msg.contactMessage ?? msg.contactsArrayMessage?.contacts?.[0];
+  if (card?.vcard) {
+    const waid = /waid=(\d{10,15})/i.exec(card.vcard)?.[1];
+    const tel = /TEL[^:]*:([+\d().\-\s]{8,})/i.exec(card.vcard)?.[1];
+    const numero = normalizeBR(waid ?? tel ?? "");
+    if (numero) return { numero, nome: card.displayName ?? card.fullName ?? undefined };
+  }
+  // Número digitado no texto (pega a maior sequência que vire um telefone válido).
+  for (const m of (text ?? "").matchAll(/[\d][\d().\-\s]{8,}\d/g)) {
+    const numero = normalizeBR(m[0]);
+    if (numero) return { numero };
+  }
+  return null;
+}
+
+interface ReferralParams {
+  supabase: SupabaseClient;
+  userId: string;
+  instanceId: string;
+  evolutionInstance: string;
+  referidoNumero: string;
+  referidoNome?: string;
+  indicadorNome?: string;
+  indicadorConversationId: string;
+  indicadorNumero: string;
+}
+
+/**
+ * Inicia proativamente a conversa com o contato indicado: cria o lead, a
+ * conversa (com IA ligada) e envia uma mensagem de abertura citando quem
+ * indicou. Também manda um "ok" curto para quem repassou o contato.
+ */
+export async function handleReferral(p: ReferralParams): Promise<void> {
+  const { supabase } = p;
+  const numero = normalizeBR(p.referidoNumero);
+  if (!numero || numero === normalizeBR(p.indicadorNumero)) return;
+
+  // Só age se o SDR estiver ativo (mesmo interruptor da IA).
+  const { data: config } = await supabase
+    .from("ai_config").select("ativo, delay_min_seg, delay_max_seg").eq("user_id", p.userId).maybeSingle();
+  if (!config?.ativo) { console.log("[referral] SDR inativo, ignorando indicação"); return; }
+
+  // Lead do contato indicado.
+  const { data: lead } = await supabase.from("leads").upsert(
+    { user_id: p.userId, nome: p.referidoNome?.trim() || numero, telefone: numero, status: "em_negociacao", origem: "indicacao" },
+    { onConflict: "user_id,telefone" },
+  ).select("id, nome").single();
+  if (!lead) return;
+
+  // Conversa do indicado — se já existir com mensagens, não cutuca de novo.
+  const { data: existing } = await supabase
+    .from("conversations").select("id").eq("user_id", p.userId).eq("lead_id", lead.id).maybeSingle();
+  let convId = existing?.id;
+  if (convId) {
+    const { count } = await supabase.from("messages").select("id", { count: "exact", head: true }).eq("conversation_id", convId);
+    if ((count ?? 0) > 0) { console.log("[referral] indicado já tem conversa, pulando abertura"); return; }
+  } else {
+    const { data: novo } = await supabase.from("conversations")
+      .insert({ user_id: p.userId, lead_id: lead.id, instance_id: p.instanceId, ai_enabled: true })
+      .select("id").single();
+    convId = novo?.id;
+  }
+  if (!convId) return;
+
+  const primeiroNome = (lead.nome && !/^\d+$/.test(lead.nome)) ? lead.nome.split(/\s+/)[0] : "";
+  const indicador = p.indicadorNome && !/^\d+$/.test(p.indicadorNome) ? p.indicadorNome.split(/\s+/)[0] : "Um contato";
+  const intro =
+    `Olá${primeiroNome ? `, ${primeiroNome}` : ""}, ${saudacaoHora()}! ${indicador} me repassou seu contato dizendo ` +
+    "que eu posso tratar por aqui sobre as estratégias para aumentar as vendas da lotérica pelo WhatsApp. Posso te explicar rapidinho? 🙂";
+
+  const delayMs = Math.round((Number(config.delay_min_seg ?? 3) + Math.random() * 3) * 1000);
+  try {
+    const { messageId } = await sendText(p.evolutionInstance, numero, intro, delayMs);
+    await supabase.from("messages").insert({
+      user_id: p.userId, conversation_id: convId, instance_id: p.instanceId,
+      direction: "outbound", body: intro, evolution_message_id: messageId ?? null, status: "sent",
+    });
+    console.log("[referral] abertura enviada ao indicado", numero);
+  } catch (e) {
+    console.error("[referral] falha ao abrir contato:", e instanceof Error ? e.message : e);
+  }
+
+  // "Ok" curto para quem repassou o contato.
+  try {
+    const ack = `Perfeito${indicador && indicador !== "Um contato" ? "" : ""}! Já vou falar com ${primeiroNome || "ela"} por aqui. Muito obrigado! 🙏`;
+    const { messageId } = await sendText(p.evolutionInstance, p.indicadorNumero, ack, 2000);
+    await supabase.from("messages").insert({
+      user_id: p.userId, conversation_id: p.indicadorConversationId, instance_id: p.instanceId,
+      direction: "outbound", body: ack, evolution_message_id: messageId ?? null, status: "sent",
+    });
+  } catch { /* ack é opcional */ }
+}
+
 interface RunSdrParams {
   supabase: SupabaseClient;
   userId: string;

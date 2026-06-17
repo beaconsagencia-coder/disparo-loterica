@@ -7,7 +7,7 @@
 // =====================================================================
 import { createClient } from "jsr:@supabase/supabase-js@2";
 import { json } from "../_shared/cors.ts";
-import { runSdr, transcribeAudio } from "../_shared/sdr.ts";
+import { runSdr, transcribeAudio, extractReferral, handleReferral } from "../_shared/sdr.ts";
 import { getMediaBase64 } from "../_shared/evolution.ts";
 
 const supabase = createClient(
@@ -120,8 +120,9 @@ Deno.serve(async (req) => {
       }
     }
 
-    // Corpo a salvar: o áudio SEMPRE aparece no chat, mesmo sem transcrição.
-    const bodyToSave = text || (isAudio ? "🎤 [áudio recebido]" : "");
+    // Corpo a salvar: áudio/contato SEMPRE aparecem no chat, mesmo sem texto.
+    const isContact = !!(item?.message?.contactMessage || item?.message?.contactsArrayMessage);
+    const bodyToSave = text || (isAudio ? "🎤 [áudio recebido]" : isContact ? "📇 [contato compartilhado]" : "");
 
     // Match do lead pelo telefone (dentro do tenant).
     const { data: lead } = await supabase
@@ -178,10 +179,29 @@ Deno.serve(async (req) => {
       status: "delivered",
     }).select("id, created_at").maybeSingle(); // unique (instance_id, evolution_message_id) deduplica reentregas
 
-    // SDR com IA: responde em background (não bloqueia o retorno pra Evolution).
-    if (inserted && text) {
+    // Indicação de contato: o cliente repassou o número de outra pessoa?
+    const referral = inserted ? extractReferral(item, text) : null;
+    const isHandoff = !!referral && referral.numero !== numero;
+
+    if (isHandoff && inserted) {
+      console.log("[webhook] indicação detectada → iniciando contato com", referral!.numero);
+      const task = handleReferral({
+        supabase,
+        userId: inst.user_id,
+        instanceId: inst.id,
+        evolutionInstance,
+        referidoNumero: referral!.numero,
+        referidoNome: referral!.nome,
+        indicadorNome: lead?.nome ?? item?.pushName,
+        indicadorConversationId: conv,
+        indicadorNumero: numero,
+      }).catch((e) => console.error("handleReferral erro:", e instanceof Error ? e.message : e));
+      // @ts-ignore EdgeRuntime existe no runtime do Supabase
+      if (typeof EdgeRuntime !== "undefined") EdgeRuntime.waitUntil(task);
+      else await task;
+    } else if (inserted && text) {
+      // SDR com IA: responde em background (não bloqueia o retorno pra Evolution).
       console.log("[webhook] inbound salvo, acionando SDR para conversa", conv);
-      const numero = normalizeNumber(remoteJid);
       const task = runSdr({
         supabase,
         userId: inst.user_id,
