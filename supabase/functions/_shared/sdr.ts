@@ -208,8 +208,17 @@ function agoraEmSP(): string {
 }
 
 function buildSystem(playbook: string, persona: string, empresa: string, leadNome: string, leadEmpresa: string | null) {
+  // Substitui as variáveis conhecidas direto no roteiro (evita o modelo
+  // copiar "{{Empresa}}"/"{{Nome}}" literalmente quando o valor existe).
+  const primeiroNome = leadNome ? leadNome.trim().split(/\s+/)[0] : "";
+  const empContato = (leadEmpresa ?? "").trim();
+  let roteiro = playbook;
+  roteiro = roteiro.replace(/\{\{\s*Saudacao\s*\}\}/gi, saudacaoHora());
+  if (primeiroNome) roteiro = roteiro.replace(/\{\{\s*Nome\s*\}\}/gi, primeiroNome);
+  if (empContato) roteiro = roteiro.replace(/\{\{\s*Empresa\s*\}\}/gi, empContato);
+
   return [
-    playbook.trim(),
+    roteiro.trim(),
     "",
     "## Contexto desta conversa",
     `- Você é ${persona}, da ${empresa}.`,
@@ -228,6 +237,7 @@ function buildSystem(playbook: string, persona: string, empresa: string, leadNom
     "- AGENDAMENTO: sugira horários exatos (ex: 14:30 ou 15h) e seja flexível para remarcar. Quando o cliente confirmar, chame a função agendar_reuniao e confirme calorosamente.",
     "- LINK DA REUNIÃO: o link é enviado NO DIA da reunião, 15 minutos antes do horário — NUNCA diga 'amanhã' por padrão. Use a data/hora atual acima para descobrir o dia certo: diga 'no dia, uns 15 minutinhos antes, te envio o link' ou cite o dia exato (ex: 'na sexta, 15 min antes'). Só fale 'amanhã' se a reunião for realmente no dia seguinte.",
     "- NÃO REPITA: nunca reenvie uma mensagem que você já mandou, mesmo que o cliente escreva em mensagens picadas ou demore a responder. Continue de onde parou.",
+    "- VARIÁVEIS: trechos como {{Nome}} e {{Empresa}} são apenas exemplos. NUNCA escreva chaves {{ }} nem colchetes [ ] na mensagem enviada. Se NÃO souber a empresa do contato, fale de forma natural SEM citar nome de empresa (ex: 'Olá, tudo bem?' em vez de 'Olá, pessoal da {{Empresa}}'). Se não souber o nome, pergunte — nunca use um placeholder no lugar.",
     "- Nunca invente informações. Se o cliente sair muito do escopo ou pedir um humano, diga educadamente que vai chamar alguém do time.",
   ].filter(Boolean).join("\n");
 }
@@ -366,7 +376,17 @@ export async function runSdr(p: RunSdrParams): Promise<void> {
     contents.push({ role: "user", parts: responseParts });
   }
 
-  if (!finalText) { console.log("[sdr] Gemini não retornou texto"); return; }
+  // Filtro de segurança: nunca enviar placeholder cru ({{Empresa}}, [Nome]…).
+  // Remove a preposição pendurada junto (ex: "da {{Empresa}}" -> "").
+  finalText = finalText
+    .replace(/\b(d[aeo]s?|para a|pra|com a|n[ao]s?)\s*\{\{[^}]*\}\}/gi, "")
+    .replace(/\{\{[^}]*\}\}/g, "")
+    .replace(/\[[^\]]*\]/g, "")
+    .replace(/\s{2,}/g, " ")
+    .replace(/\s+([!?.,;:])/g, "$1")
+    .trim();
+
+  if (!finalText) { console.log("[sdr] Gemini não retornou texto (ou só placeholder)"); return; }
   console.log("[sdr] resposta gerada:", finalText.slice(0, 80));
 
   // 4) Anti-duplicação: se chegou mensagem mais nova que a que disparou, aborta.
