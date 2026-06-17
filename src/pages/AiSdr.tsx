@@ -4,9 +4,9 @@ import { supabase } from "@/lib/supabase";
 import { DEFAULT_PLAYBOOK } from "@/lib/aiPlaybook";
 
 const MODELS = [
-  { id: "claude-opus-4-8", label: "Claude Opus 4.8 — mais inteligente (recomendado)" },
-  { id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6 — equilíbrio custo/velocidade" },
-  { id: "claude-haiku-4-5", label: "Claude Haiku 4.5 — mais barato e rápido" },
+  { id: "gemini-2.5-flash", label: "Gemini 2.5 Flash — rápido e econômico (recomendado)" },
+  { id: "gemini-2.5-pro", label: "Gemini 2.5 Pro — mais inteligente" },
+  { id: "gemini-2.5-flash-lite", label: "Gemini 2.5 Flash-Lite — o mais barato" },
 ];
 
 interface Meeting {
@@ -21,7 +21,7 @@ export default function AiSdr() {
   const [ativo, setAtivo] = useState(false);
   const [persona, setPersona] = useState("Pedro");
   const [empresa, setEmpresa] = useState("Chamada Beacons");
-  const [model, setModel] = useState("claude-opus-4-8");
+  const [model, setModel] = useState("gemini-2.5-flash");
   const [playbook, setPlaybook] = useState(DEFAULT_PLAYBOOK);
   const [meetings, setMeetings] = useState<Meeting[]>([]);
   const [busy, setBusy] = useState(false);

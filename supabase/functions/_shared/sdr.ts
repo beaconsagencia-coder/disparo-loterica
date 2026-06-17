@@ -1,12 +1,14 @@
 // =====================================================================
-// SDR com IA (Claude) — conduz a conversa seguindo o playbook do usuário,
-// qualifica o lead e agenda a reunião (tool use). Roda em background.
+// SDR com IA (Google Gemini) — conduz a conversa seguindo o playbook do
+// usuário, qualifica o lead e agenda a reunião (function calling).
+// Roda em background a partir do webhook.
 // =====================================================================
-import Anthropic from "npm:@anthropic-ai/sdk@0.104.2";
+import { GoogleGenAI, Type } from "npm:@google/genai@2.8.0";
 import type { SupabaseClient } from "jsr:@supabase/supabase-js@2";
 import { sendText } from "./evolution.ts";
 
-const anthropic = new Anthropic({ apiKey: Deno.env.get("ANTHROPIC_API_KEY")! });
+const ai = new GoogleGenAI({ apiKey: Deno.env.get("GEMINI_API_KEY")! });
+const DEFAULT_MODEL = "gemini-2.5-flash";
 
 interface RunSdrParams {
   supabase: SupabaseClient;
@@ -20,30 +22,28 @@ interface RunSdrParams {
 }
 
 // Ferramenta que a IA chama quando um horário de reunião é combinado.
-const tools: Anthropic.Tool[] = [
-  {
-    name: "agendar_reuniao",
-    description:
-      "Registra a reunião quando o cliente CONFIRMA um horário específico. " +
-      "Só chame após o cliente concordar com um dia/horário. Depois de chamar, " +
-      "responda confirmando o agendamento de forma calorosa.",
-    input_schema: {
-      type: "object",
-      properties: {
-        quando_texto: {
-          type: "string",
-          description: "O horário combinado em linguagem natural (ex: 'amanhã às 18h', 'segunda às 10h').",
-        },
-        data_iso: {
-          type: "string",
-          description: "Data e hora em ISO 8601 (ex: 2026-06-17T18:00:00-03:00), se conseguir inferir. Opcional.",
-        },
-        observacao: { type: "string", description: "Detalhe relevante combinado. Opcional." },
+const agendarReuniao = {
+  name: "agendar_reuniao",
+  description:
+    "Registra a reunião quando o cliente CONFIRMA um horário específico. " +
+    "Só chame após o cliente concordar com um dia/horário. Depois de chamar, " +
+    "responda confirmando o agendamento de forma calorosa.",
+  parameters: {
+    type: Type.OBJECT,
+    properties: {
+      quando_texto: {
+        type: Type.STRING,
+        description: "O horário combinado em linguagem natural (ex: 'amanhã às 18h', 'segunda às 10h').",
       },
-      required: ["quando_texto"],
+      data_iso: {
+        type: Type.STRING,
+        description: "Data e hora em ISO 8601 (ex: 2026-06-17T18:00:00-03:00), se conseguir inferir. Opcional.",
+      },
+      observacao: { type: Type.STRING, description: "Detalhe relevante combinado. Opcional." },
     },
+    required: ["quando_texto"],
   },
-];
+};
 
 function agoraEmSP(): string {
   return new Intl.DateTimeFormat("pt-BR", {
@@ -66,10 +66,13 @@ function buildSystem(playbook: string, persona: string, empresa: string, leadNom
     "- Responda SEMPRE em uma única mensagem curta de WhatsApp, em português, tom humano e natural (como nos exemplos do roteiro). Sem listas, sem markdown.",
     "- Siga o fluxo do roteiro: cumprimentar → confirmar que fala com o responsável → pegar o nome → gerar interesse → propor uma reunião de 15 minutos → combinar o melhor horário.",
     "- Faça UMA pergunta por vez. Não despeje tudo de uma vez.",
-    "- Quando o cliente confirmar um horário, chame a ferramenta agendar_reuniao e então confirme com ele.",
+    "- Quando o cliente confirmar um horário, chame a função agendar_reuniao e então confirme com ele.",
     "- Nunca invente informações nem prometa o que o roteiro não diz. Se o cliente sair muito do escopo ou pedir para falar com humano, responda educadamente que vai chamar alguém do time.",
   ].filter(Boolean).join("\n");
 }
+
+// deno-lint-ignore no-explicit-any
+type Content = { role: "user" | "model"; parts: any[] };
 
 export async function runSdr(p: RunSdrParams): Promise<void> {
   const { supabase } = p;
@@ -93,66 +96,77 @@ export async function runSdr(p: RunSdrParams): Promise<void> {
     .order("created_at", { ascending: true })
     .limit(40);
 
-  // Monta o array de mensagens (inbound=user, outbound=assistant).
-  // A API exige começar com 'user' — descartamos mensagens 'assistant' iniciais.
-  const messages: Anthropic.MessageParam[] = [];
+  // Monta o histórico (inbound=user, outbound=model). O Gemini exige começar
+  // com 'user' — descartamos mensagens 'model' iniciais (a abertura do disparo).
+  const contents: Content[] = [];
   for (const m of hist ?? []) {
-    const role = m.direction === "inbound" ? "user" : "assistant";
+    const role = m.direction === "inbound" ? "user" : "model";
     const text = (m.body ?? "").trim();
     if (!text) continue;
-    if (messages.length === 0 && role === "assistant") continue; // pula abertura
-    messages.push({ role, content: text });
+    if (contents.length === 0 && role === "model") continue;
+    contents.push({ role, parts: [{ text }] });
   }
-  if (messages.length === 0 || messages[messages.length - 1].role !== "user") return;
+  if (contents.length === 0 || contents[contents.length - 1].role !== "user") return;
 
-  const system = buildSystem(
+  const systemInstruction = buildSystem(
     config.playbook, config.persona_nome, config.empresa,
     lead?.nome ?? "", lead?.empresa ?? null,
   );
 
-  // 3) Loop de tool use (manual) até a IA terminar o turno
+  // Garante um modelo Gemini válido (rows antigas podem ter modelo de outro provedor)
+  const model = typeof config.model === "string" && config.model.startsWith("gemini")
+    ? config.model : DEFAULT_MODEL;
+
+  // 3) Loop de function calling até a IA terminar o turno
   let finalText = "";
   for (let i = 0; i < 4; i++) {
-    const resp = await anthropic.messages.create({
-      model: config.model || "claude-opus-4-8",
-      max_tokens: 1024,
-      system,
-      tools,
-      messages,
+    const resp = await ai.models.generateContent({
+      model,
+      contents,
+      config: {
+        systemInstruction,
+        maxOutputTokens: 1024,
+        tools: [{ functionDeclarations: [agendarReuniao] }],
+      },
     });
 
-    const turnText = resp.content.filter((b) => b.type === "text").map((b: any) => b.text).join(" ").trim();
-    if (turnText) finalText = turnText;
+    const text = (resp.text ?? "").trim();
+    if (text) finalText = text;
 
-    if (resp.stop_reason !== "tool_use") break;
+    const calls = resp.functionCalls ?? [];
+    if (!calls.length) break;
 
-    // Executa as ferramentas chamadas
-    messages.push({ role: "assistant", content: resp.content });
-    const toolResults: Anthropic.ToolResultBlockParam[] = [];
-    for (const block of resp.content) {
-      if (block.type !== "tool_use") continue;
-      if (block.name === "agendar_reuniao") {
-        const input = block.input as { quando_texto: string; data_iso?: string; observacao?: string };
+    // Acrescenta o turno do modelo (com as functionCalls) ao histórico.
+    const modelParts = resp.candidates?.[0]?.content?.parts ?? calls.map((c) => ({ functionCall: c }));
+    contents.push({ role: "model", parts: modelParts });
+
+    // Executa cada função e devolve o resultado.
+    // deno-lint-ignore no-explicit-any
+    const responseParts: any[] = [];
+    for (const call of calls) {
+      if (call.name === "agendar_reuniao") {
+        const args = (call.args ?? {}) as { quando_texto?: string; data_iso?: string; observacao?: string };
         await supabase.from("meetings").insert({
           user_id: p.userId,
           lead_id: p.leadId,
           conversation_id: p.conversationId,
-          quando_texto: input.quando_texto,
-          scheduled_for: input.data_iso ?? null,
-          observacao: input.observacao ?? null,
+          quando_texto: args.quando_texto ?? "(não informado)",
+          scheduled_for: args.data_iso ?? null,
+          observacao: args.observacao ?? null,
           titulo: `Reunião com ${lead?.nome ?? p.numero}`,
         });
         await supabase.from("leads").update({ status: "reuniao_agendada" }).eq("id", p.leadId);
-        toolResults.push({
-          type: "tool_result",
-          tool_use_id: block.id,
-          content: `Reunião registrada para "${input.quando_texto}". Agora confirme calorosamente com o cliente.`,
+        responseParts.push({
+          functionResponse: {
+            name: "agendar_reuniao",
+            response: { result: `Reunião registrada para "${args.quando_texto}". Agora confirme calorosamente com o cliente.` },
+          },
         });
       } else {
-        toolResults.push({ type: "tool_result", tool_use_id: block.id, content: "ok", is_error: true });
+        responseParts.push({ functionResponse: { name: call.name, response: { result: "ferramenta desconhecida" } } });
       }
     }
-    messages.push({ role: "user", content: toolResults });
+    contents.push({ role: "user", parts: responseParts });
   }
 
   if (!finalText) return;
