@@ -35,6 +35,32 @@ interface Bairro { id: string; user_id: string; bairro: string; cidade: string; 
 interface Place { title?: string; name?: string; phone?: string; phoneUnformatted?: string }
 interface Prosp { autoDisparo: boolean; template: string }
 
+/**
+ * Extrai o "nome principal" do estabelecimento (para usar em {{Empresa}}),
+ * tirando prefixos genéricos ("Loteria/Lotérica") e caudas corporativas
+ * ("Shopping Service", "LTDA", "ME", "Comércio"…). Mantém a gramática do
+ * "pessoal da …": só remove o prefixo se o que sobra não começar com preposição.
+ */
+function nomePrincipal(raw: string): string {
+  let s = (raw ?? "").trim();
+  if (!s) return "";
+  // 1) corta em separadores comuns (fica com a 1ª parte)
+  s = s.split(/\s*[-–—|/•·]\s*/)[0].trim();
+  // 2) remove cauda corporativa / razão social
+  s = s.replace(
+    /\s+(shopping\s+service|com[eé]rcio\b.*|servi[çc]os?\b.*|representa[çc][õo]es?\b.*|neg[oó]cios?\b.*|conveni[êe]ncia\b.*|ltda\.?\b.*|eireli\b.*|epp\b.*|mei\b.*|me\b.*|s\.?\/?a\.?\b.*)$/i,
+    "",
+  ).trim();
+  // 3) remove prefixo genérico de lotérica, se sobrar um nome próprio
+  const semPrefixo = s.replace(/^(casa\s+)?(lot[eé]ricas?|loterias?)\s+(e\s+)?/i, "").trim();
+  if (semPrefixo && !/^(d[aeo]s?|e|em|no|na)\b/i.test(semPrefixo)) s = semPrefixo;
+  // 4) limpa pontuação nas pontas e limita a 3 palavras se ainda estiver longo
+  s = s.replace(/^[\s,.;:]+|[\s,.;:]+$/g, "").trim();
+  const w = s.split(/\s+/);
+  if (w.length > 4) s = w.slice(0, 3).join(" ");
+  return s || (raw ?? "").trim();
+}
+
 /** Limpa e formata um telefone BR para 55DDDXXXXXYYYY (12–13 dígitos). */
 function normalizePhone(raw: string): string | null {
   let d = (raw ?? "").replace(/\D/g, "").replace(/^0+/, ""); // só dígitos, sem zeros à esquerda
@@ -122,7 +148,7 @@ Deno.serve(async (req) => {
         if (ok === false) continue; // sem WhatsApp -> descarta (null = não deu p/ validar, mantém)
         leadRows.push({
           user_id: b.user_id, nome: c.nome, telefone: c.telefone,
-          empresa: c.nome, origem: "prospeccao",
+          empresa: nomePrincipal(c.nome), origem: "prospeccao", // {{Empresa}} = só o nome principal
           status: cfg.autoDisparo ? "na_fila" : "novo",
           notas: `Lotérica · ${b.bairro}, ${b.cidade}-${b.estado}`,
         });
