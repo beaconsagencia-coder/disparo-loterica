@@ -9,6 +9,7 @@
 // =====================================================================
 import { createClient } from "jsr:@supabase/supabase-js@2";
 import { json, corsHeaders } from "../_shared/cors.ts";
+import { evolutionWebhookUrl } from "../_shared/evolution.ts";
 
 const EVO_URL = Deno.env.get("EVOLUTION_API_URL")!;
 const EVO_KEY = Deno.env.get("EVOLUTION_API_KEY")!;
@@ -31,7 +32,7 @@ Deno.serve(async (req) => {
   const evolutionInstance = `u${auth.user.id.slice(0, 8)}-${slug(nome)}`;
 
   // 1) Cria a instância na Evolution API (idempotente: ignora se já existe)
-  const webhookUrl = `${Deno.env.get("SUPABASE_URL")}/functions/v1/evolution-webhook`;
+  const webhookUrl = evolutionWebhookUrl(); // inclui ?token=<segredo> quando configurado
   const createRes = await fetch(`${EVO_URL}/instance/create`, {
     method: "POST",
     headers: { "Content-Type": "application/json", apikey: EVO_KEY },

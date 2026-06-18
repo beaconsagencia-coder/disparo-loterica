@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Plus, Smartphone, QrCode, RefreshCw, Trash2 } from "lucide-react";
+import { Plus, Smartphone, QrCode, RefreshCw, Trash2, ShieldCheck } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { InstanceBadge } from "@/components/ui/StatusBadge";
 import type { WhatsappInstance } from "@/lib/types";
@@ -10,6 +10,7 @@ export default function Instances() {
   const [nome, setNome] = useState("");
   const [qr, setQr] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [syncing, setSyncing] = useState(false);
 
   async function load() {
     const { data } = await supabase.from("whatsapp_instances").select("*").order("nome");
@@ -46,6 +47,14 @@ export default function Instances() {
     load();
   }
 
+  async function resyncWebhooks() {
+    setSyncing(true);
+    const { data, error } = await supabase.functions.invoke("webhook-sync", { body: {} });
+    setSyncing(false);
+    if (error) return alert("Falha ao re-sincronizar: " + error.message);
+    alert(`Webhooks atualizados: ${data?.atualizados ?? 0}` + (data?.falhas ? ` · falhas: ${data.falhas}` : ""));
+  }
+
   return (
     <div className="mx-auto max-w-4xl">
       <header className="mb-6 flex items-center justify-between">
@@ -53,9 +62,15 @@ export default function Instances() {
           <h1 className="text-2xl font-semibold tracking-tight">Instâncias</h1>
           <p className="text-sm text-ink-muted">Conecte seus números de WhatsApp (chips) via QR Code.</p>
         </div>
-        <button className="btn-accent" onClick={() => { setModalOpen(true); setQr(null); setNome(""); }}>
-          <Plus size={16} /> Conectar chip
-        </button>
+        <div className="flex items-center gap-2">
+          <button className="btn-ghost" onClick={resyncWebhooks} disabled={syncing}
+            title="Re-registra o webhook (com token) em todos os chips. Rode após definir o segredo do webhook.">
+            <ShieldCheck size={16} /> {syncing ? "Sincronizando…" : "Re-sincronizar webhooks"}
+          </button>
+          <button className="btn-accent" onClick={() => { setModalOpen(true); setQr(null); setNome(""); }}>
+            <Plus size={16} /> Conectar chip
+          </button>
+        </div>
       </header>
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">

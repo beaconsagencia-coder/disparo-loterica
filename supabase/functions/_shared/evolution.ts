@@ -101,6 +101,39 @@ export async function hasWhatsApp(
   }
 }
 
+/**
+ * URL do webhook desta aplicação, com o segredo embutido (?token=...) quando
+ * EVOLUTION_WEBHOOK_SECRET estiver definido. O evolution-webhook valida esse
+ * token para recusar chamadas forjadas. Sem o segredo, a URL fica "aberta"
+ * (comportamento antigo) — defina o segredo e re-sincronize os webhooks.
+ */
+export function evolutionWebhookUrl(): string {
+  const base = Deno.env.get("SUPABASE_URL")!;
+  const secret = Deno.env.get("EVOLUTION_WEBHOOK_SECRET") ?? "";
+  const suffix = secret ? `?token=${encodeURIComponent(secret)}` : "";
+  return `${base}/functions/v1/evolution-webhook${suffix}`;
+}
+
+/** (Re)registra o webhook (com token) numa instância já existente na Evolution. */
+export async function setWebhook(instance: string): Promise<boolean> {
+  try {
+    const res = await fetch(`${BASE}/webhook/set/${instance}`, {
+      method: "POST",
+      headers: headers(),
+      body: JSON.stringify({
+        webhook: {
+          enabled: true,
+          url: evolutionWebhookUrl(),
+          events: ["MESSAGES_UPSERT", "CONNECTION_UPDATE"],
+        },
+      }),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
 /** Gera/recupera o QR Code de conexão de uma instância. */
 export async function connectInstance(instance: string): Promise<unknown> {
   const res = await fetch(`${BASE}/instance/connect/${instance}`, {

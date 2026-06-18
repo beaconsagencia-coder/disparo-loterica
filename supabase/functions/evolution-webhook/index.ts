@@ -16,6 +16,21 @@ const supabase = createClient(
   { auth: { persistSession: false } },
 );
 
+// Segredo do webhook: se definido, exigimos ?token=<segredo> (ou header apikey/
+// x-webhook-secret) para recusar chamadas forjadas. Vazio = sem checagem
+// (compatível com chips antigos até você rodar a re-sincronização).
+const WEBHOOK_SECRET = Deno.env.get("EVOLUTION_WEBHOOK_SECRET") ?? "";
+
+function autorizado(req: Request): boolean {
+  if (!WEBHOOK_SECRET) return true; // ainda não configurado
+  const token =
+    new URL(req.url).searchParams.get("token") ??
+    req.headers.get("apikey") ??
+    req.headers.get("x-webhook-secret") ??
+    "";
+  return token === WEBHOOK_SECRET;
+}
+
 // Normaliza JID da Evolution -> dígitos E.164 (ex: "5562999998888@s.whatsapp.net")
 function normalizeNumber(remoteJid: string): string {
   return (remoteJid || "").split("@")[0].split(":")[0].replace(/\D/g, "");
@@ -33,6 +48,7 @@ function extractText(message: any): string {
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return json({ ok: true });
+  if (!autorizado(req)) return json({ error: "unauthorized" }, 401);
 
   let payload: any;
   try {
