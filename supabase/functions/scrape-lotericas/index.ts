@@ -61,6 +61,19 @@ function nomePrincipal(raw: string): string {
   return s || (raw ?? "").trim();
 }
 
+/**
+ * Erro de cota/créditos do Apify (ex.: 402 not-enough-usage-to-run-paid-actor,
+ * limite mensal atingido). Não adianta insistir — é problema de conta, não do bairro.
+ */
+function isQuotaError(msg: string): boolean {
+  const m = msg.toLowerCase();
+  return m.includes("not-enough-usage") ||
+    m.includes("monthly-usage-hard-limit") ||
+    m.includes("usage hard limit") ||
+    m.includes("payment required") ||
+    /\bapify 402\b/.test(m);
+}
+
 /** Limpa e formata um telefone BR para 55DDDXXXXXYYYY (12–13 dígitos). */
 function normalizePhone(raw: string): string | null {
   let d = (raw ?? "").replace(/\D/g, "").replace(/^0+/, ""); // só dígitos, sem zeros à esquerda
@@ -125,6 +138,7 @@ Deno.serve(async (req) => {
   if (!bairros?.length) return json({ ok: true, processados: 0 });
 
   let novosLeads = 0, enfileirados = 0;
+  let semCredito = false;
   for (const b of bairros as Bairro[]) {
     try {
       const instance = await instanciaDe(b.user_id);
@@ -177,8 +191,28 @@ Deno.serve(async (req) => {
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       console.error(`[scrape] bairro ${b.id} falhou:`, msg);
+      if (isQuotaError(msg)) {
+        // Sem créditos no Apify: não marca erro (senão a fila inteira "queima").
+        // Devolve este bairro à fila e para — retoma sozinho quando houver crédito.
+        await supabase.from("fila_bairros").update({ status: "pendente", erro: null }).eq("id", b.id);
+        semCredito = true;
+        break;
+      }
       await supabase.from("fila_bairros").update({ status: "erro", erro: msg.slice(0, 300) }).eq("id", b.id);
     }
+  }
+
+  if (semCredito) {
+    // Devolve os demais bairros reivindicados (ainda 'processando') para a fila.
+    const ids = (bairros as Bairro[]).map((b) => b.id);
+    await supabase.from("fila_bairros")
+      .update({ status: "pendente", erro: null }).in("id", ids).eq("status", "processando");
+    console.warn("[scrape] Apify sem créditos — lote devolvido à fila.");
+    return json({
+      ok: false,
+      motivo: "Apify sem créditos (402 not-enough-usage). Bairros mantidos na fila; adicione créditos no Apify ou troque o APIFY_ACTOR_ID.",
+      novos: novosLeads, enfileirados,
+    });
   }
 
   return json({ ok: true, bairros: bairros.length, novos: novosLeads, enfileirados });
