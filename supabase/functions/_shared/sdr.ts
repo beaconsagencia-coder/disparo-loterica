@@ -258,6 +258,7 @@ function buildSystem(playbook: string, persona: string, empresa: string, leadNom
     "- MENSAGEM AUTOMÁTICA DO CLIENTE: se a última mensagem parecer um auto-atendimento da empresa (ex: 'seja bem-vindo', 'horário de atendimento', 'deixe sua mensagem', menu de opções/números), NÃO dispare a proposta de valor. Apenas cumprimente de forma curta e pergunte se está falando com o responsável.",
     "- AGENDAMENTO: sugira horários exatos (ex: 14:30 ou 15h) e seja flexível para remarcar. Quando o cliente confirmar, chame a função agendar_reuniao e confirme calorosamente.",
     "- DISPONIBILIDADE (tempo real): SEMPRE chame consultar_disponibilidade ANTES de sugerir ou confirmar qualquer horário. Ofereça apenas horários livres. Se o cliente pedir um horário ocupado, avise que nele não dá e ofereça as opções livres mais próximas que a função retornar. Se agendar_reuniao responder que está ocupado, NÃO confirme: ofereça uma das alternativas.",
+    "- NUNCA PROMETA RESPONDER DEPOIS: você NÃO consegue voltar sozinho à conversa mais tarde. É PROIBIDO dizer 'vou verificar com a equipe', 'deixa eu confirmar a agenda e já te retorno', 'já te aviso', 'volto já', 'aguarde um momento' ou qualquer promessa de resposta futura. Você TEM acesso à agenda AGORA: chame consultar_disponibilidade e, no MESMO turno, já responda ao cliente com os horários livres ou confirme a reunião. Resolva o agendamento sempre na hora, sem deixar o cliente esperando.",
     "- LINK DA REUNIÃO: o link é enviado NO DIA da reunião, 15 minutos antes do horário — NUNCA diga 'amanhã' por padrão. Use a data/hora atual acima para descobrir o dia certo: diga 'no dia, uns 15 minutinhos antes, te envio o link' ou cite o dia exato (ex: 'na sexta, 15 min antes'). Só fale 'amanhã' se a reunião for realmente no dia seguinte.",
     "- NÃO REPITA: nunca reenvie uma mensagem que você já mandou, mesmo que o cliente escreva em mensagens picadas ou demore a responder. Continue de onde parou.",
     "- VARIÁVEIS: trechos como {{Nome}} e {{Empresa}} são apenas exemplos. NUNCA escreva chaves {{ }} nem colchetes [ ] na mensagem enviada. Se NÃO souber a empresa do contato, fale de forma natural SEM citar nome de empresa (ex: 'Olá, tudo bem?' em vez de 'Olá, pessoal da {{Empresa}}'). Se não souber o nome, pergunte — nunca use um placeholder no lugar.",
@@ -320,21 +321,35 @@ export async function runSdr(p: RunSdrParams): Promise<void> {
     contents.push({ role, parts: [{ text }] });
   }
   const mode = p.mode ?? "reply";
-  if (contents.length === 0) { console.log("[sdr] sem histórico"); return; }
-  if (mode === "reply" && contents[contents.length - 1].role !== "user") {
-    console.log("[sdr] histórico sem turno de usuário no fim — nada a responder");
-    return;
-  }
-  if (mode === "followup") {
-    // Cliente em silêncio: instrução interna para o bot dar andamento sozinho.
+
+  if (mode === "reply") {
+    if (contents.length === 0) { console.log("[sdr] sem histórico"); return; }
+    if (contents[contents.length - 1].role !== "user") {
+      console.log("[sdr] histórico sem turno de usuário no fim — nada a responder");
+      return;
+    }
+  } else {
+    // Follow-up por inatividade. ATENÇÃO: pode NÃO haver turno do cliente ainda
+    // (ele nunca respondeu à abertura). Nesse caso 'contents' fica vazio porque a
+    // abertura (outbound) é descartada — mas ainda queremos cutucar. Recuperamos
+    // o que já enviamos como contexto e criamos um turno 'user' com a instrução.
+    const enviadas = (hist ?? [])
+      .filter((m) => m.direction === "outbound" && (m.body ?? "").trim())
+      .slice(-3)
+      .map((m) => (m.body ?? "").trim());
+    const jaEnviado = enviadas.length
+      ? `Mensagens que VOCÊ já enviou a este contato (NÃO repita, continue de onde parou):\n- ${enviadas.join("\n- ")}\n\n`
+      : "";
     contents.push({
       role: "user",
       parts: [{
         text:
-          `[INSTRUÇÃO INTERNA DO SISTEMA — não é mensagem do cliente] O cliente está há cerca de ${p.silencioMin ?? 30} minutos sem responder. ` +
+          `[INSTRUÇÃO INTERNA DO SISTEMA — não é mensagem do cliente] ${jaEnviado}` +
+          `O cliente está há cerca de ${p.silencioMin ?? 30} minutos sem responder. ` +
           "Envie UMA mensagem curta para REATIVAR o interesse — NÃO cobre resposta (nada de 'e aí?', 'conseguiu ver?', 'tudo certo?'). " +
           "Use leve imprevisibilidade/curiosidade sobre o mecanismo de captação de clientes (um resultado concreto, um gancho novo ou uma pergunta provocativa), " +
-          "retomando de onde parou, sem repetir o que já disse e sem mencionar esta instrução.",
+          "retomando de onde parou, sem repetir o que já disse e sem mencionar esta instrução. " +
+          "Se a conversa já estava combinando um horário, consulte a disponibilidade e PROPONHA um horário livre você mesmo, em vez de só perguntar.",
       }],
     });
   }
