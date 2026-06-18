@@ -4,6 +4,18 @@ import { supabase } from "@/lib/supabase";
 
 const DIAS = ["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sáb"];
 const HOUR_PX = 44; // altura de 1 hora na grade
+const GUTTER_PX = 48; // largura da coluna das horas
+const SNAP_MIN = 15; // arraste “gruda” em múltiplos de 15 min
+
+// Estado de um item sendo arrastado na grade (reunião ou compromisso fixo).
+interface DragState {
+  kind: "meeting" | "block";
+  id: string;
+  startX: number; startY: number; // ponto onde o arraste começou
+  dx: number; dy: number;         // deslocamento atual (para o “fantasma”)
+  moved: boolean;                 // passou do limiar => é arraste, não clique
+  durationMin: number;            // duração a preservar ao soltar
+}
 
 interface Block { id: string; dia_semana: number; hora_inicio: string; hora_fim: string; titulo: string | null; }
 interface Meeting {
@@ -61,6 +73,13 @@ export default function Agenda() {
   const [bTitulo, setBTitulo] = useState("");
   const [bErr, setBErr] = useState<string | null>(null);
   const [bSaving, setBSaving] = useState(false);
+
+  // Arraste na grade (remarcar reuniões / mover compromissos)
+  const gridBodyRef = useRef<HTMLDivElement>(null);
+  const [drag, setDrag] = useState<DragState | null>(null);
+  const dragRef = useRef<DragState | null>(null);
+  dragRef.current = drag;
+  const suppressClickRef = useRef(false); // evita que o "soltar" crie um bloco
 
   async function loadAll() {
     setLoadErr(null);
@@ -141,6 +160,7 @@ export default function Agenda() {
   function topFor(min: number) { return ((min - dayStartH * 60) / 60) * HOUR_PX; }
 
   function onCellClick(wd: number, e: React.MouseEvent<HTMLDivElement>) {
+    if (suppressClickRef.current) { suppressClickRef.current = false; return; } // veio de um arraste
     if (!dias.includes(wd)) return; // dia não atendido
     const rect = e.currentTarget.getBoundingClientRect();
     const y = e.clientY - rect.top;
@@ -171,6 +191,68 @@ export default function Agenda() {
     if (error) return setBErr("Erro ao remover: " + error.message);
     loadAll();
   }
+
+  // ---- arraste (drag) na grade ----
+  const labelQuando = (iso: string) =>
+    new Date(iso).toLocaleString("pt-BR", { weekday: "short", day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+
+  // Remarca uma reunião para o dia (data da coluna) e minuto soltos.
+  async function moveMeeting(id: string, dateCol: Date, min: number) {
+    const iso = `${dateCol.getFullYear()}-${pad(dateCol.getMonth() + 1)}-${pad(dateCol.getDate())}T${minToHHMM(min)}:00-03:00`;
+    const { error } = await supabase.from("meetings")
+      .update({ scheduled_for: iso, quando_texto: labelQuando(iso) }).eq("id", id);
+    if (error) setLoadErr("Não consegui remarcar a reunião: " + error.message);
+    loadAll();
+  }
+
+  // Move um compromisso fixo para outro dia/horário (mantém a duração).
+  async function moveBlock(id: string, wd: number, min: number, durationMin: number) {
+    const endMin = Math.min(dayEndH * 60, min + durationMin);
+    const { error } = await supabase.from("agenda_blocks")
+      .update({ dia_semana: wd, hora_inicio: minToHHMM(min), hora_fim: minToHHMM(endMin) }).eq("id", id);
+    if (error) setBErr("Não consegui mover o compromisso: " + error.message);
+    loadAll();
+  }
+
+  function startDrag(kind: DragState["kind"], id: string, durationMin: number, e: React.PointerEvent) {
+    e.stopPropagation();
+    setDrag({ kind, id, startX: e.clientX, startY: e.clientY, dx: 0, dy: 0, moved: false, durationMin });
+  }
+
+  // Listeners globais enquanto há item sendo arrastado.
+  useEffect(() => {
+    if (!drag) return;
+    function onMove(ev: PointerEvent) {
+      const d = dragRef.current;
+      if (!d) return;
+      const dx = ev.clientX - d.startX, dy = ev.clientY - d.startY;
+      const moved = d.moved || Math.hypot(dx, dy) > 4;
+      setDrag({ ...d, dx, dy, moved });
+    }
+    function onUp(ev: PointerEvent) {
+      const d = dragRef.current;
+      setDrag(null);
+      if (!d || !d.moved) return;                 // clique simples: ignora
+      const body = gridBodyRef.current;
+      if (!body) return;
+      const rect = body.getBoundingClientRect();
+      const colW = (rect.width - GUTTER_PX) / 7;
+      const col = Math.max(0, Math.min(6, Math.floor((ev.clientX - rect.left - GUTTER_PX) / colW)));
+      const minutesFromStart = ((ev.clientY - rect.top) / HOUR_PX) * 60;
+      let min = dayStartH * 60 + Math.round(minutesFromStart / SNAP_MIN) * SNAP_MIN;
+      min = Math.max(dayStartH * 60, Math.min(dayEndH * 60 - d.durationMin, min));
+      suppressClickRef.current = true;            // o clique-fantasma não cria bloco
+      if (d.kind === "meeting") moveMeeting(d.id, weekDates[col], min);
+      else moveBlock(d.id, col, min, d.durationMin);
+    }
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    return () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [drag != null]);
 
   return (
     <div className="mx-auto max-w-6xl">
@@ -276,7 +358,7 @@ export default function Agenda() {
             </div>
 
             {/* Corpo da grade */}
-            <div className="grid border-t border-black/5" style={{ gridTemplateColumns: `48px repeat(7, 1fr)` }}>
+            <div ref={gridBodyRef} className="grid border-t border-black/5" style={{ gridTemplateColumns: `${GUTTER_PX}px repeat(7, 1fr)` }}>
               {/* Gutter de horas */}
               <div className="relative" style={{ height: gridHeight }}>
                 {hours.slice(0, -1).map((h) => (
@@ -302,32 +384,39 @@ export default function Agenda() {
                       <div key={h} className="absolute left-0 right-0 border-t border-black/5" style={{ top: topFor(h * 60) }} />
                     ))}
 
-                    {/* compromissos fixos (toda semana) */}
+                    {/* compromissos fixos (toda semana) — arraste para mover */}
                     {blocks.filter((b) => b.dia_semana === wd).map((b) => {
                       const top = topFor(hhmmToMin(b.hora_inicio));
                       const h = Math.max(18, ((hhmmToMin(b.hora_fim) - hhmmToMin(b.hora_inicio)) / 60) * HOUR_PX);
+                      const dur = hhmmToMin(b.hora_fim) - hhmmToMin(b.hora_inicio);
+                      const dragging = drag?.kind === "block" && drag.id === b.id && drag.moved;
                       return (
-                        <div key={b.id} onClick={(e) => { e.stopPropagation(); removeBlock(b.id); }}
-                          title={`${b.titulo ?? "Compromisso"} · clique para remover`}
-                          className="group absolute left-0.5 right-0.5 overflow-hidden rounded-md border border-ink-muted/20 bg-ink-muted/15 px-1 py-0.5 text-[10px] leading-tight text-ink-soft hover:bg-danger/15 hover:border-danger/30"
-                          style={{ top, height: h }}>
+                        <div key={b.id}
+                          onPointerDown={(e) => startDrag("block", b.id, dur, e)}
+                          onClick={(e) => e.stopPropagation()}
+                          title={`${b.titulo ?? "Compromisso"} · arraste para mover`}
+                          className={`group absolute left-0.5 right-0.5 cursor-grab touch-none select-none overflow-hidden rounded-md border border-ink-muted/20 bg-ink-muted/15 px-1 py-0.5 text-[10px] leading-tight text-ink-soft ${dragging ? "z-50 cursor-grabbing opacity-80 shadow-lg" : ""}`}
+                          style={{ top, height: h, transform: dragging ? `translate(${drag!.dx}px, ${drag!.dy}px)` : undefined }}>
                           <div className="font-medium truncate">{b.titulo ?? "Bloqueado"}</div>
                           <div className="text-ink-muted">{b.hora_inicio}–{b.hora_fim}</div>
                         </div>
                       );
                     })}
 
-                    {/* reuniões desta semana */}
+                    {/* reuniões desta semana — arraste para remarcar */}
                     {(meetingsByDay[wd] ?? []).map(({ m, min }) => {
                       const top = topFor(min);
                       const h = Math.max(18, ((m.duracao_min ?? duracao) / 60) * HOUR_PX);
                       const nome = m.leads?.nome && !/^\d+$/.test(m.leads.nome) ? m.leads.nome : null;
                       const hhmm = `${pad(Math.floor(min / 60))}:${pad(min % 60)}`;
+                      const dragging = drag?.kind === "meeting" && drag.id === m.id && drag.moved;
                       return (
                         <div key={m.id}
-                          title={`${m.titulo ?? "Reunião"} · ${hhmm}`}
-                          className="absolute left-0.5 right-0.5 overflow-hidden rounded-md border border-accent/30 bg-accent/20 px-1 py-0.5 text-[10px] leading-tight text-accent"
-                          style={{ top, height: h }}>
+                          onPointerDown={(e) => startDrag("meeting", m.id, m.duracao_min ?? duracao, e)}
+                          onClick={(e) => e.stopPropagation()}
+                          title={`${m.titulo ?? "Reunião"} · ${hhmm} · arraste para remarcar`}
+                          className={`absolute left-0.5 right-0.5 cursor-grab touch-none select-none overflow-hidden rounded-md border border-accent/30 bg-accent/20 px-1 py-0.5 text-[10px] leading-tight text-accent ${dragging ? "z-50 cursor-grabbing opacity-80 shadow-lg" : ""}`}
+                          style={{ top, height: h, transform: dragging ? `translate(${drag!.dx}px, ${drag!.dy}px)` : undefined }}>
                           <div className="font-medium truncate">{nome ?? m.titulo ?? "Reunião"}</div>
                           <div className="opacity-70">{hhmm}</div>
                         </div>
@@ -339,7 +428,7 @@ export default function Agenda() {
             </div>
           </div>
         </div>
-        <p className="mt-2 text-xs text-ink-muted">Clique num espaço livre de um dia para criar um compromisso fixo. Clique num bloco cinza para removê-lo.</p>
+        <p className="mt-2 text-xs text-ink-muted">Clique num espaço livre para criar um compromisso fixo. Arraste reuniões e blocos para remarcar. Remova um item pela lista abaixo.</p>
       </div>
 
       <div className="grid gap-4 lg:grid-cols-2">
@@ -371,7 +460,13 @@ export default function Agenda() {
         </div>
 
         {/* Reuniões */}
-        <MeetingsCard meetings={meetings} reload={loadAll} userId={userId} duracao={duracao} />
+        <MeetingsCard
+          meetings={meetings}
+          reload={loadAll}
+          userId={userId}
+          duracao={duracao}
+          onJump={(iso) => { if (iso) setWeekStart(startOfWeek(new Date(iso))); }}
+        />
       </div>
     </div>
   );
@@ -379,8 +474,8 @@ export default function Agenda() {
 
 // ---------------------------------------------------------------------
 function MeetingsCard(
-  { meetings, reload, userId, duracao }:
-  { meetings: Meeting[]; reload: () => void; userId: () => Promise<string | null>; duracao: number },
+  { meetings, reload, userId, duracao, onJump }:
+  { meetings: Meeting[]; reload: () => void; userId: () => Promise<string | null>; duracao: number; onJump: (iso: string | null) => void },
 ) {
   const [nome, setNome] = useState("");
   const [data, setData] = useState("");
@@ -423,7 +518,12 @@ function MeetingsCard(
 
       <div className="mb-3 max-h-72 space-y-2 overflow-y-auto">
         {meetings.map((m) => (
-          <div key={m.id} className="flex items-center justify-between rounded-xl bg-white/60 px-3 py-2 text-sm">
+          <div
+            key={m.id}
+            onClick={() => onJump(m.scheduled_for)}
+            title={m.scheduled_for ? "Ver na agenda (vai para a semana da reunião)" : undefined}
+            className={`flex items-center justify-between rounded-xl bg-white/60 px-3 py-2 text-sm ${m.scheduled_for ? "cursor-pointer hover:bg-white" : ""}`}
+          >
             <div>
               <div className="font-medium">{m.titulo ?? (m.leads?.nome ? `Reunião com ${m.leads.nome}` : "Reunião")}</div>
               <div className="text-xs text-ink-muted">
@@ -432,7 +532,7 @@ function MeetingsCard(
                   : m.quando_texto}
               </div>
             </div>
-            <div className="flex items-center gap-1">
+            <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
               <span className={`chip ${cor[m.status] ?? ""}`}>{m.status}</span>
               {m.status === "agendada" && (
                 <>
