@@ -225,7 +225,7 @@ function agoraEmSP(): string {
   }).format(new Date());
 }
 
-function buildSystem(playbook: string, persona: string, empresa: string, leadNome: string, leadEmpresa: string | null, agenda: string) {
+function buildSystem(playbook: string, persona: string, empresa: string, leadNome: string, leadEmpresa: string | null, agenda: string, aprendizados: string) {
   // Substitui as variáveis conhecidas direto no roteiro (evita o modelo
   // copiar "{{Empresa}}"/"{{Nome}}" literalmente quando o valor existe).
   const primeiroNome = leadNome ? leadNome.trim().split(/\s+/)[0] : "";
@@ -247,6 +247,9 @@ function buildSystem(playbook: string, persona: string, empresa: string, leadNom
     "## Agenda em tempo real (já consultada agora — use estes dados ao propor horários)",
     agenda,
     "",
+    aprendizados
+      ? "## Aprendizados (lições de conversas anteriores — aplique sempre que fizer sentido):\n" + aprendizados
+      : "",
     "## Regras de operação (OBRIGATÓRIAS — valem acima do roteiro)",
     "- Responda SEMPRE em uma única mensagem curta de WhatsApp, em português, tom humano e natural. Sem listas, sem markdown.",
     "- Siga o fluxo: cumprimentar → confirmar que fala com o responsável → pegar o nome → gerar interesse → propor uma reunião de 15 min → combinar o horário. Faça UMA pergunta por vez.",
@@ -355,9 +358,17 @@ export async function runSdr(p: RunSdrParams): Promise<void> {
   }
 
   const agenda = await agendaResumo(supabase, p.userId);
+
+  // Aprendizados aprovados (self-reflection loop) injetados no prompt.
+  const { data: licoes } = await supabase
+    .from("sdr_aprendizados").select("texto")
+    .eq("user_id", p.userId).eq("status", "aprovado")
+    .order("created_at", { ascending: false }).limit(25);
+  const aprendizados = (licoes ?? []).map((l) => `- ${l.texto}`).join("\n");
+
   const systemInstruction = buildSystem(
     config.playbook, persona, config.empresa,
-    lead?.nome ?? "", lead?.empresa ?? null, agenda,
+    lead?.nome ?? "", lead?.empresa ?? null, agenda, aprendizados,
   );
 
   // Garante um modelo Gemini válido (rows antigas podem ter modelo de outro provedor)
