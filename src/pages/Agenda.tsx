@@ -20,7 +20,7 @@ interface DragState {
 interface Block { id: string; dia_semana: number; hora_inicio: string; hora_fim: string; titulo: string | null; }
 interface Meeting {
   id: string; titulo: string | null; quando_texto: string; scheduled_for: string | null;
-  duracao_min: number | null; status: string; leads?: { nome: string | null } | null;
+  duracao_min: number | null; status: string; instance_id: string | null; leads?: { nome: string | null } | null;
 }
 
 const pad = (n: number) => String(n).padStart(2, "0");
@@ -96,7 +96,7 @@ export default function Agenda() {
     if (bErr2 && !loadErr) setLoadErr("Não consegui carregar os compromissos: " + bErr2.message);
     setBlocks((b as Block[]) ?? []);
     const { data: m, error: mErr } = await supabase.from("meetings")
-      .select("id, titulo, quando_texto, scheduled_for, duracao_min, status, leads(nome)")
+      .select("id, titulo, quando_texto, scheduled_for, duracao_min, status, instance_id, leads(nome)")
       .order("scheduled_for", { ascending: true, nullsFirst: false });
     if (mErr) setLoadErr((p) => p ?? "Não consegui carregar as reuniões: " + mErr.message);
     setMeetings((m as unknown as Meeting[]) ?? []);
@@ -514,6 +514,10 @@ function MeetingsCard(
     await supabase.from("meetings").delete().eq("id", id);
     reload();
   }
+  async function setInstance(id: string, instanceId: string) {
+    await supabase.from("meetings").update({ instance_id: instanceId || null }).eq("id", id);
+    reload();
+  }
 
   const cor: Record<string, string> = {
     agendada: "bg-accent/15 text-accent", realizada: "bg-success/15 text-[#1b7a35]", cancelada: "bg-black/10 text-ink-muted line-through",
@@ -532,13 +536,25 @@ function MeetingsCard(
             title={m.scheduled_for ? "Ver na agenda (vai para a semana da reunião)" : undefined}
             className={`flex items-center justify-between rounded-xl bg-white/60 px-3 py-2 text-sm ${m.scheduled_for ? "cursor-pointer hover:bg-white" : ""}`}
           >
-            <div>
-              <div className="font-medium">{m.titulo ?? (m.leads?.nome ? `Reunião com ${m.leads.nome}` : "Reunião")}</div>
+            <div className="min-w-0">
+              <div className="truncate font-medium">{m.titulo ?? (m.leads?.nome ? `Reunião com ${m.leads.nome}` : "Reunião")}</div>
               <div className="text-xs text-ink-muted">
                 {m.scheduled_for
                   ? new Date(m.scheduled_for).toLocaleString("pt-BR", { weekday: "short", day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })
                   : m.quando_texto}
               </div>
+              <select
+                className="input mt-1 !w-44 !py-0.5 text-xs"
+                value={m.instance_id ?? ""}
+                onClick={(e) => e.stopPropagation()}
+                onChange={(e) => setInstance(m.id, e.target.value)}
+                title="Chip responsável (conta no relatório)"
+              >
+                <option value="">Sem chip</option>
+                {instancias.map((i) => (
+                  <option key={i.id} value={i.id}>{i.persona_nome?.trim() ? `${i.nome} · ${i.persona_nome}` : i.nome}</option>
+                ))}
+              </select>
             </div>
             <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
               <span className={`chip ${cor[m.status] ?? ""}`}>{m.status}</span>
