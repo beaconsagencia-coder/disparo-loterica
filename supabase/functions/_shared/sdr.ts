@@ -436,6 +436,7 @@ export async function runSdr(p: RunSdrParams): Promise<void> {
             user_id: p.userId,
             lead_id: p.leadId,
             conversation_id: p.conversationId,
+            instance_id: p.instanceId,
             quando_texto: args.quando_texto ?? "(não informado)",
             scheduled_for: args.data_iso ?? null,
             duracao_min: av.settings.duracao,

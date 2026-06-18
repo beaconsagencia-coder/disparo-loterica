@@ -482,6 +482,13 @@ function MeetingsCard(
   const [hora, setHora] = useState("15:00");
   const [titulo, setTitulo] = useState("");
   const [err, setErr] = useState<string | null>(null);
+  const [instancias, setInstancias] = useState<{ id: string; nome: string; persona_nome: string | null }[]>([]);
+  const [instanciaId, setInstanciaId] = useState("");
+
+  useEffect(() => {
+    supabase.from("whatsapp_instances").select("id, nome, persona_nome").order("nome")
+      .then(({ data }) => setInstancias((data as any) ?? []));
+  }, []);
 
   async function add() {
     setErr(null);
@@ -492,6 +499,7 @@ function MeetingsCard(
     const { error } = await supabase.from("meetings").insert({
       user_id: uid, titulo: titulo.trim() || (nome ? `Reunião com ${nome}` : "Reunião"),
       quando_texto: quando, scheduled_for: iso, duracao_min: duracao, status: "agendada",
+      instance_id: instanciaId || null,
     });
     if (error) return setErr("Não foi possível salvar: " + error.message);
     setNome(""); setTitulo("");
@@ -551,6 +559,12 @@ function MeetingsCard(
         <input className="input flex-1 !min-w-[120px]" placeholder="Nome (opcional)" value={nome} onChange={(e) => setNome(e.target.value)} />
         <input type="date" className="input !w-40" value={data} onChange={(e) => setData(e.target.value)} />
         <input type="time" className="input !w-28" value={hora} onChange={(e) => setHora(e.target.value)} />
+        <select className="input !w-44" value={instanciaId} onChange={(e) => setInstanciaId(e.target.value)} title="Chip responsável (para contar no relatório)">
+          <option value="">Chip (responsável)…</option>
+          {instancias.map((i) => (
+            <option key={i.id} value={i.id}>{i.persona_nome?.trim() ? `${i.nome} · ${i.persona_nome}` : i.nome}</option>
+          ))}
+        </select>
         <button className="btn-accent" onClick={add}><Plus size={16} /> Adicionar</button>
       </div>
       {err && <p className="mt-2 flex items-center gap-1 text-sm text-danger"><AlertCircle size={14} /> {err}</p>}
