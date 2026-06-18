@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Send, Search, Bot, Trash2 } from "lucide-react";
+import { Send, Search, Bot, Trash2, ArrowLeft } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import type { Conversation, Message } from "@/lib/types";
 import { maskPhoneBR } from "@/lib/phone";
@@ -94,9 +94,9 @@ export default function Inbox() {
   );
 
   return (
-    <div className="mx-auto flex h-[calc(100vh-3rem)] max-w-6xl gap-4">
-      {/* Lista de conversas */}
-      <div className="glass flex w-80 flex-col rounded-xl2 p-3">
+    <div className="mx-auto flex h-[calc(100vh-7rem)] max-w-6xl gap-4 md:h-[calc(100vh-3rem)]">
+      {/* Lista de conversas — no mobile some quando uma conversa está aberta */}
+      <div className={`glass w-full flex-col rounded-xl2 p-3 md:flex md:w-80 ${activeId ? "hidden md:flex" : "flex"}`}>
         <h1 className="px-2 pb-2 text-lg font-semibold tracking-tight">Inbox</h1>
         <div className="relative mb-2">
           <Search size={15} className="absolute left-3 top-2.5 text-ink-muted" />
@@ -134,16 +134,25 @@ export default function Inbox() {
         </div>
       </div>
 
-      {/* Painel de chat */}
-      <div className="glass flex flex-1 flex-col rounded-xl2">
+      {/* Painel de chat — no mobile só aparece com uma conversa aberta */}
+      <div className={`glass flex-1 flex-col rounded-xl2 md:flex ${active ? "flex" : "hidden md:flex"}`}>
         {active ? (
           <>
-            <header className="flex items-center justify-between border-b border-black/5 px-5 py-3">
-              <div>
-                <div className="font-medium">{active.leads?.nome}</div>
-                <div className="text-xs text-ink-muted">
-                  {active.leads?.telefone && maskPhoneBR(active.leads.telefone)} · responde via{" "}
-                  {active.whatsapp_instances?.nome}
+            <header className="flex items-center justify-between border-b border-black/5 px-4 py-3 md:px-5">
+              <div className="flex min-w-0 items-center gap-2">
+                <button
+                  onClick={() => setActiveId(null)}
+                  className="-ml-1 rounded-full p-2 text-ink-muted hover:bg-black/5 md:hidden"
+                  title="Voltar para as conversas"
+                >
+                  <ArrowLeft size={18} />
+                </button>
+                <div className="min-w-0">
+                  <div className="truncate font-medium">{active.leads?.nome}</div>
+                  <div className="truncate text-xs text-ink-muted">
+                    {active.leads?.telefone && maskPhoneBR(active.leads.telefone)} · responde via{" "}
+                    {active.whatsapp_instances?.nome}
+                  </div>
                 </div>
               </div>
               <div className="flex items-center gap-2">
@@ -164,11 +173,11 @@ export default function Inbox() {
               </div>
             </header>
 
-            <div className="flex-1 space-y-2 overflow-auto px-5 py-4">
+            <div className="flex-1 space-y-2 overflow-auto px-3 py-4 md:px-5">
               {messages.map((m) => (
                 <div
                   key={m.id}
-                  className={`max-w-[70%] rounded-2xl px-4 py-2 text-sm ${
+                  className={`max-w-[85%] rounded-2xl px-4 py-2 text-sm md:max-w-[70%] ${
                     m.direction === "outbound"
                       ? "ml-auto rounded-br-sm bg-accent text-white"
                       : "rounded-bl-sm bg-white/80"
