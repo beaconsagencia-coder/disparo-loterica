@@ -55,7 +55,17 @@ export default function Aprendizado() {
     setAnalisando(true); setErro(null); setMsg(null);
     const { data, error } = await supabase.functions.invoke("self-reflect", { body: {} });
     setAnalisando(false);
-    if (error) return setErro(error.message);
+    if (error) {
+      // Extrai o motivo real do corpo da resposta (a Edge Function devolve { error }).
+      let detalhe = error.message;
+      try {
+        const ctx = (error as any).context;
+        const body = ctx && typeof ctx.json === "function" ? await ctx.json() : null;
+        if (body?.error) detalhe = body.error;
+        else if (body?.motivo) detalhe = body.motivo;
+      } catch { /* mantém a mensagem genérica */ }
+      return setErro(detalhe);
+    }
     const n = data?.sugeridos ?? 0;
     setMsg(n > 0
       ? `${n} nova(s) lição(ões) sugerida(s) a partir de ${data?.analisadas ?? 0} conversa(s).`
