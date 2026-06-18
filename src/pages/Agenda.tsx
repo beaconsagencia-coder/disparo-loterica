@@ -26,6 +26,17 @@ const fmtDM = (d: Date) => `${pad(d.getDate())}/${pad(d.getMonth() + 1)}`;
 const sameDay = (a: Date, b: Date) =>
   a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
 
+// Partes de uma data no fuso de São Paulo — igual ao backend (o bot agenda em -03:00).
+// Posicionar a reunião com o fuso do navegador desalinhava/escondia os horários.
+function spPartsClient(d: Date) {
+  const p = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Sao_Paulo", year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", hour12: false,
+  }).formatToParts(d);
+  const g = (t: string) => Number(p.find((x) => x.type === t)?.value ?? "0");
+  return { y: g("year"), mo: g("month"), da: g("day"), min: g("hour") * 60 + g("minute") };
+}
+
 export default function Agenda() {
   // Configurações
   const [meetLink, setMeetLink] = useState("");
@@ -65,9 +76,10 @@ export default function Agenda() {
     const { data: b, error: bErr2 } = await supabase.from("agenda_blocks").select("*").order("dia_semana").order("hora_inicio");
     if (bErr2 && !loadErr) setLoadErr("Não consegui carregar os compromissos: " + bErr2.message);
     setBlocks((b as Block[]) ?? []);
-    const { data: m } = await supabase.from("meetings")
+    const { data: m, error: mErr } = await supabase.from("meetings")
       .select("id, titulo, quando_texto, scheduled_for, duracao_min, status, leads(nome)")
       .order("scheduled_for", { ascending: true, nullsFirst: false });
+    if (mErr) setLoadErr((p) => p ?? "Não consegui carregar as reuniões: " + mErr.message);
     setMeetings((m as unknown as Meeting[]) ?? []);
   }
   useEffect(() => { loadAll(); }, []);
@@ -105,18 +117,26 @@ export default function Agenda() {
   const gridHeight = (dayEndH - dayStartH) * HOUR_PX;
   const today = new Date();
 
-  // Reuniões desta semana, indexadas por dia da semana
+  const weekDates = useMemo(
+    () => Array.from({ length: 7 }, (_, i) => addDays(weekStart, i)),
+    [weekStart],
+  );
+
+  // Reuniões da semana visível, posicionadas pelo fuso de SP (mesmo do bot).
+  // Casa a data SP da reunião com a coluna do dia correspondente.
   const meetingsByDay = useMemo(() => {
-    const map: Record<number, { m: Meeting; date: Date }[]> = {};
+    const map: Record<number, { m: Meeting; min: number }[]> = {};
     for (const m of meetings) {
       if (!m.scheduled_for || m.status === "cancelada") continue;
-      const date = new Date(m.scheduled_for);
-      if (date < weekStart || date >= addDays(weekStart, 7)) continue;
-      const wd = date.getDay();
-      (map[wd] ??= []).push({ m, date });
+      const sp = spPartsClient(new Date(m.scheduled_for));
+      const idx = weekDates.findIndex(
+        (d) => d.getFullYear() === sp.y && d.getMonth() + 1 === sp.mo && d.getDate() === sp.da,
+      );
+      if (idx === -1) continue;
+      (map[idx] ??= []).push({ m, min: sp.min });
     }
     return map;
-  }, [meetings, weekStart]);
+  }, [meetings, weekDates]);
 
   function topFor(min: number) { return ((min - dayStartH * 60) / 60) * HOUR_PX; }
 
@@ -298,18 +318,18 @@ export default function Agenda() {
                     })}
 
                     {/* reuniões desta semana */}
-                    {(meetingsByDay[wd] ?? []).map(({ m, date }) => {
-                      const min = date.getHours() * 60 + date.getMinutes();
+                    {(meetingsByDay[wd] ?? []).map(({ m, min }) => {
                       const top = topFor(min);
                       const h = Math.max(18, ((m.duracao_min ?? duracao) / 60) * HOUR_PX);
                       const nome = m.leads?.nome && !/^\d+$/.test(m.leads.nome) ? m.leads.nome : null;
+                      const hhmm = `${pad(Math.floor(min / 60))}:${pad(min % 60)}`;
                       return (
                         <div key={m.id}
-                          title={`${m.titulo ?? "Reunião"} · ${pad(date.getHours())}:${pad(date.getMinutes())}`}
+                          title={`${m.titulo ?? "Reunião"} · ${hhmm}`}
                           className="absolute left-0.5 right-0.5 overflow-hidden rounded-md border border-accent/30 bg-accent/20 px-1 py-0.5 text-[10px] leading-tight text-accent"
                           style={{ top, height: h }}>
                           <div className="font-medium truncate">{nome ?? m.titulo ?? "Reunião"}</div>
-                          <div className="opacity-70">{pad(date.getHours())}:{pad(date.getMinutes())}</div>
+                          <div className="opacity-70">{hhmm}</div>
                         </div>
                       );
                     })}

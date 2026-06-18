@@ -1,5 +1,5 @@
 import { Routes, Route } from "react-router-dom";
-import { Sidebar } from "./components/ui/Sidebar";
+import { Sidebar, MobileNav } from "./components/ui/Sidebar";
 import { useSession } from "./lib/useSession";
 import Login from "./pages/Login";
 import Dashboard from "./pages/Dashboard";
@@ -28,7 +28,8 @@ export default function App() {
   return (
     <div className="flex min-h-screen">
       <Sidebar />
-      <main className="flex-1 overflow-x-hidden px-6 py-6 md:px-10">
+      <MobileNav />
+      <main className="flex-1 overflow-x-hidden px-4 pb-8 pt-20 md:px-10 md:py-6">
         <Routes>
           <Route path="/" element={<Dashboard />} />
           <Route path="/upload" element={<UploadPage />} />

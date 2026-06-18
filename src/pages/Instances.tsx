@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Plus, Smartphone, QrCode, RefreshCw } from "lucide-react";
+import { Plus, Smartphone, QrCode, RefreshCw, Trash2 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { InstanceBadge } from "@/components/ui/StatusBadge";
 import type { WhatsappInstance } from "@/lib/types";
@@ -39,6 +39,13 @@ export default function Instances() {
     load();
   }
 
+  async function removeInstance(i: WhatsappInstance) {
+    if (!confirm(`Excluir o chip "${i.nome}"? Isso desconecta o número e remove a instância.`)) return;
+    const { error } = await supabase.functions.invoke("instance-delete", { body: { id: i.id } });
+    if (error) return alert("Falha ao excluir: " + error.message);
+    load();
+  }
+
   return (
     <div className="mx-auto max-w-4xl">
       <header className="mb-6 flex items-center justify-between">
@@ -58,7 +65,16 @@ export default function Instances() {
               <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent/10 text-accent">
                 <Smartphone size={18} />
               </div>
-              <InstanceBadge status={i.status} />
+              <div className="flex items-center gap-1">
+                <InstanceBadge status={i.status} />
+                <button
+                  className="btn-ghost !px-2 !py-1 text-ink-muted hover:text-danger"
+                  title="Excluir chip"
+                  onClick={() => removeInstance(i)}
+                >
+                  <Trash2 size={15} />
+                </button>
+              </div>
             </div>
             <div>
               <div className="font-medium">{i.nome}</div>
