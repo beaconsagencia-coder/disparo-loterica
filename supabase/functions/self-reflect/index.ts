@@ -91,13 +91,17 @@ Deno.serve(async (req) => {
     `CONVERSAS ANALISADAS (${blocos.length}):\n\n${blocos.join("\n\n")}`;
 
   let licoes: { texto?: string; categoria?: string; evidencia?: string }[] = [];
+  let txt = "";
   try {
     const resp = await ai.models.generateContent({
       model: MODEL,
       contents: [{ role: "user", parts: [{ text: prompt }] }],
       config: {
         systemInstruction: system,
-        maxOutputTokens: 1500,
+        maxOutputTokens: 2048,
+        // 2.5-flash usa "thinking" e consome o orçamento de saída — desligamos
+        // para que todo o limite vá para o JSON da resposta (evita texto vazio).
+        thinkingConfig: { thinkingBudget: 0 },
         responseMimeType: "application/json",
         responseSchema: {
           type: Type.OBJECT,
@@ -119,9 +123,22 @@ Deno.serve(async (req) => {
         },
       },
     });
-    licoes = JSON.parse(resp.text ?? "{}")?.licoes ?? [];
+    txt = (resp.text ?? "").trim();
   } catch (e) {
-    return json({ error: "falha na análise: " + (e instanceof Error ? e.message : String(e)) }, 502);
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error("[self-reflect] erro no Gemini:", msg);
+    return json({ error: "falha na análise (Gemini): " + msg }, 502);
+  }
+
+  if (!txt) {
+    console.warn("[self-reflect] Gemini retornou vazio");
+    return json({ ok: true, sugeridos: 0, analisadas: blocos.length, motivo: "o modelo não retornou conteúdo; tente novamente" });
+  }
+  try {
+    licoes = JSON.parse(txt)?.licoes ?? [];
+  } catch {
+    console.error("[self-reflect] JSON inválido do modelo:", txt.slice(0, 300));
+    return json({ error: "a resposta do modelo não veio em JSON válido; tente novamente" }, 502);
   }
 
   licoes = licoes.filter((l) => (l?.texto ?? "").trim()).slice(0, 6);
