@@ -8,7 +8,8 @@
 import { createClient } from "jsr:@supabase/supabase-js@2";
 import { json } from "../_shared/cors.ts";
 import { runSdr, transcribeAudio, extractReferral, handleReferral } from "../_shared/sdr.ts";
-import { getMediaBase64 } from "../_shared/evolution.ts";
+import { getMediaBase64, sendText } from "../_shared/evolution.ts";
+import { isOptOut } from "../_shared/optout.ts";
 
 const supabase = createClient(
   Deno.env.get("SUPABASE_URL")!,
@@ -194,6 +195,30 @@ Deno.serve(async (req) => {
       evolution_message_id: evoId ?? null,
       status: "delivered",
     }).select("id, created_at").maybeSingle(); // unique (instance_id, evolution_message_id) deduplica reentregas
+
+    // Opt-out: cliente pediu para parar ("pare", "sair", "sem interesse"...).
+    // Encerra com respeito: marca perdido, limpa a fila, desliga a IA e manda
+    // UM "ok" educado. Protege os chips de denúncia/bloqueio.
+    if (inserted && text && isOptOut(text)) {
+      console.log("[webhook] opt-out detectado de", numero);
+      await supabase.from("leads").update({ status: "perdido" }).eq("id", leadId);
+      await supabase.from("message_queue")
+        .update({ status: "cancelado", last_error: "opt-out do cliente" })
+        .eq("lead_id", leadId)
+        .in("status", ["pendente", "pausado"]);
+      await supabase.from("conversations").update({ ai_enabled: false }).eq("id", conv);
+      const ack = "Sem problemas, vou encerrar o contato por aqui. Obrigado e desculpe o incômodo! 🙏";
+      try {
+        const { messageId } = await sendText(evolutionInstance, numero, ack);
+        await supabase.from("messages").insert({
+          user_id: inst.user_id, conversation_id: conv, instance_id: inst.id,
+          direction: "outbound", body: ack, evolution_message_id: messageId ?? null, status: "sent",
+        });
+      } catch (e) {
+        console.error("[webhook] falha ao enviar ack de opt-out:", e instanceof Error ? e.message : e);
+      }
+      continue; // não aciona SDR nem referral
+    }
 
     // Indicação de contato: o cliente repassou o número de outra pessoa?
     const referral = inserted ? extractReferral(item, text) : null;
