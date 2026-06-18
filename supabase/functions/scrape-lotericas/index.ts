@@ -21,7 +21,7 @@ const CRON_SECRET = Deno.env.get("DISPATCHER_CRON_SECRET")!;
 const APIFY_TOKEN = Deno.env.get("APIFY_API_TOKEN")!;
 // Actor de Google Maps (padrão); troque por env se quiser outro Actor.
 const APIFY_ACTOR = Deno.env.get("APIFY_ACTOR_ID") ?? "compass~crawler-google-places";
-const LOTE = 5;          // bairros por execução
+const LOTE = 3;          // bairros por execução (menor = menos risco de timeout; o reclaim do claim_bairros cobre o resto)
 const POR_BAIRRO = 20;   // resultados máximos por bairro
 
 // Mensagem padrão caso o usuário não tenha definido um template na aba Prospecção.
