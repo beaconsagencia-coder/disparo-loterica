@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Brain, Sparkles, Check, X, Plus, Trash2, AlertCircle } from "lucide-react";
+import { Brain, Sparkles, Check, X, Plus, Trash2, AlertCircle, TrendingUp, TrendingDown } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 
 interface Licao {
@@ -11,6 +11,17 @@ interface Licao {
   origem: string;
   created_at: string;
 }
+
+interface Impacto {
+  ativas: number;
+  geradas: number;
+  descartadas: number;
+  inicio: string | null;
+  antes: { enviadas: number; respostas: number };
+  depois: { enviadas: number; respostas: number };
+}
+
+const taxa = (r: number, e: number) => (e > 0 ? Math.round((r / e) * 100) : null);
 
 const CAT_COR: Record<string, string> = {
   abertura: "bg-accent/15 text-accent",
@@ -28,14 +39,15 @@ export default function Aprendizado() {
   const [erro, setErro] = useState<string | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
   const [nova, setNova] = useState("");
+  const [imp, setImp] = useState<Impacto | null>(null);
 
   async function load() {
-    const { data } = await supabase
-      .from("sdr_aprendizados")
-      .select("*")
-      .neq("status", "descartado")
-      .order("created_at", { ascending: false });
+    const [{ data }, { data: impData }] = await Promise.all([
+      supabase.from("sdr_aprendizados").select("*").neq("status", "descartado").order("created_at", { ascending: false }),
+      supabase.rpc("aprendizado_impacto"),
+    ]);
     setLicoes((data as Licao[]) ?? []);
+    setImp((impData as Impacto) ?? null);
   }
   useEffect(() => { load(); }, []);
 
@@ -93,6 +105,59 @@ export default function Aprendizado() {
         </div>
       )}
       {msg && <div className="bento-card mb-4 text-sm text-ink-soft">{msg}</div>}
+
+      {/* Impacto do loop */}
+      {imp && (() => {
+        const tAntes = taxa(imp.antes.respostas, imp.antes.enviadas);
+        const tDepois = taxa(imp.depois.respostas, imp.depois.enviadas);
+        const temComparacao = imp.inicio && tAntes !== null && tDepois !== null;
+        const delta = temComparacao ? (tDepois as number) - (tAntes as number) : null;
+        return (
+          <div className="bento-card mb-4">
+            <h2 className="mb-3 font-medium">Impacto</h2>
+            <div className="grid grid-cols-3 gap-3">
+              <div>
+                <div className="text-2xl font-semibold tracking-tight text-accent">{imp.ativas}</div>
+                <div className="text-xs text-ink-muted">lições ativas</div>
+              </div>
+              <div>
+                <div className="text-2xl font-semibold tracking-tight">{imp.geradas}</div>
+                <div className="text-xs text-ink-muted">geradas pelo loop</div>
+              </div>
+              <div>
+                <div className="text-2xl font-semibold tracking-tight text-ink-soft">{imp.descartadas}</div>
+                <div className="text-xs text-ink-muted">descartadas</div>
+              </div>
+            </div>
+
+            <div className="mt-4 border-t border-black/5 pt-3">
+              <div className="mb-1 text-xs font-medium text-ink-soft">Taxa de resposta (indicativa)</div>
+              {temComparacao ? (
+                <div className="flex items-center gap-3 text-sm">
+                  <span className="text-ink-muted">Antes: <strong className="text-ink">{tAntes}%</strong></span>
+                  <span className="text-ink-muted">→</span>
+                  <span className="text-ink-muted">Depois: <strong className="text-ink">{tDepois}%</strong></span>
+                  {delta !== null && delta !== 0 && (
+                    <span className={`inline-flex items-center gap-0.5 font-semibold ${delta > 0 ? "text-[#1b7a35]" : "text-danger"}`}>
+                      {delta > 0 ? <TrendingUp size={14} /> : <TrendingDown size={14} />}
+                      {delta > 0 ? "+" : ""}{delta} p.p.
+                    </span>
+                  )}
+                </div>
+              ) : (
+                <p className="text-sm text-ink-muted">
+                  {imp.inicio
+                    ? "Ainda sem dados suficientes para comparar (poucos disparos antes/depois)."
+                    : "Aprove a primeira lição para começar a medir o impacto."}
+                </p>
+              )}
+              <p className="mt-1 text-[11px] text-ink-muted">
+                Compara a taxa de resposta desde a 1ª lição aprovada com o mesmo período imediatamente anterior.
+              </p>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Sugestões pendentes de revisão */}
       <div className="bento-card mb-4">
