@@ -1,8 +1,61 @@
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import { Send, Search, Bot, Trash2, ArrowLeft } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import type { Conversation, Message } from "@/lib/types";
 import { maskPhoneBR } from "@/lib/phone";
+
+// --- helpers de apresentação ---------------------------------------------
+function initials(name?: string | null): string {
+  const n = (name ?? "").trim();
+  if (!n || /^\d+$/.test(n)) return "#";
+  const p = n.split(/\s+/);
+  return ((p[0]?.[0] ?? "") + (p.length > 1 ? p[p.length - 1][0] : "")).toUpperCase();
+}
+
+const AVATAR_COLORS = [
+  "bg-[#0a84ff]", "bg-[#34c759]", "bg-[#ff9f0a]", "bg-[#ff453a]",
+  "bg-[#5e5ce6]", "bg-[#bf5af2]", "bg-[#64d2ff]", "bg-[#ff375f]",
+];
+function avatarColor(seed?: string | null): string {
+  const s = seed ?? "";
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+  return AVATAR_COLORS[h % AVATAR_COLORS.length];
+}
+
+function Avatar({ name, size = 44 }: { name?: string | null; size?: number }) {
+  return (
+    <div
+      className={`flex shrink-0 items-center justify-center rounded-full font-semibold text-white ${avatarColor(name)}`}
+      style={{ width: size, height: size, fontSize: Math.round(size * 0.38) }}
+    >
+      {initials(name)}
+    </div>
+  );
+}
+
+const isSameDay = (a: Date, b: Date) => a.toDateString() === b.toDateString();
+
+/** Hora (hoje), "Ontem" ou data — para a lista de conversas. */
+function relTime(iso?: string | null): string {
+  if (!iso) return "";
+  const d = new Date(iso), now = new Date();
+  if (isSameDay(d, now)) return d.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
+  const y = new Date(now); y.setDate(now.getDate() - 1);
+  if (isSameDay(d, y)) return "Ontem";
+  return d.toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" });
+}
+
+/** Rótulo do separador de dia dentro do histórico. */
+function dayLabel(iso: string): string {
+  const d = new Date(iso), now = new Date();
+  if (isSameDay(d, now)) return "Hoje";
+  const y = new Date(now); y.setDate(now.getDate() - 1);
+  if (isSameDay(d, y)) return "Ontem";
+  return d.toLocaleDateString("pt-BR", {
+    day: "2-digit", month: "long", ...(d.getFullYear() !== now.getFullYear() ? { year: "numeric" } : {}),
+  });
+}
 
 export default function Inbox() {
   const [conversations, setConversations] = useState<Conversation[]>([]);
@@ -12,6 +65,8 @@ export default function Inbox() {
   const [sending, setSending] = useState(false);
   const [query, setQuery] = useState("");
   const endRef = useRef<HTMLDivElement>(null);
+  const taRef = useRef<HTMLTextAreaElement>(null);
+  const prevActive = useRef<string | null>(null);
 
   // Carrega conversas (Inbox unificado: todas as instâncias num só painel)
   async function loadConversations() {
@@ -31,7 +86,9 @@ export default function Inbox() {
         const msg = payload.new as Message;
         loadConversations();
         setActiveId((curr) => {
-          if (curr === msg.conversation_id) setMessages((m) => [...m, msg]);
+          if (curr === msg.conversation_id) {
+            setMessages((m) => (m.some((x) => x.id === msg.id) ? m : [...m, msg]));
+          }
           return curr;
         });
       })
@@ -53,15 +110,26 @@ export default function Inbox() {
     })();
   }, [activeId]);
 
+  // Rola para o fim: instantâneo ao abrir a conversa, suave em mensagens novas.
   useEffect(() => {
-    endRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
+    const behavior = prevActive.current === activeId ? "smooth" : "auto";
+    prevActive.current = activeId;
+    endRef.current?.scrollIntoView({ behavior });
+  }, [messages, activeId]);
+
+  function resizeTextarea() {
+    const t = taRef.current;
+    if (!t) return;
+    t.style.height = "auto";
+    t.style.height = Math.min(t.scrollHeight, 128) + "px";
+  }
 
   async function send() {
     if (!draft.trim() || !activeId) return;
     setSending(true);
     const body = draft.trim();
     setDraft("");
+    if (taRef.current) taRef.current.style.height = "auto";
     // Roteia pela MESMA instância da conversa (Edge Function send-reply)
     const { error } = await supabase.functions.invoke("send-reply", {
       body: { conversation_id: activeId, body },
@@ -94,42 +162,55 @@ export default function Inbox() {
   );
 
   return (
-    <div className="mx-auto flex h-[calc(100vh-7rem)] max-w-6xl gap-4 md:h-[calc(100vh-3rem)]">
+    <div className="mx-auto flex h-[calc(100dvh-7rem)] max-w-6xl gap-4 md:h-[calc(100vh-3rem)]">
       {/* Lista de conversas — no mobile some quando uma conversa está aberta */}
       <div className={`glass w-full flex-col rounded-xl2 p-3 md:flex md:w-80 ${activeId ? "hidden md:flex" : "flex"}`}>
         <h1 className="px-2 pb-2 text-lg font-semibold tracking-tight">Inbox</h1>
         <div className="relative mb-2">
           <Search size={15} className="absolute left-3 top-2.5 text-ink-muted" />
           <input
-            className="input pl-9 py-2"
+            className="input py-2 pl-9"
             placeholder="Buscar lead…"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
           />
         </div>
-        <div className="flex-1 space-y-1 overflow-auto">
-          {filtered.map((c) => (
-            <button
-              key={c.id}
-              onClick={() => setActiveId(c.id)}
-              className={`flex w-full flex-col rounded-xl px-3 py-2.5 text-left transition-colors ${
-                activeId === c.id ? "bg-accent text-white" : "hover:bg-black/5"
-              }`}
-            >
-              <div className="flex items-center justify-between">
-                <span className="truncate font-medium">{c.leads?.nome ?? "—"}</span>
-                {c.unread_count > 0 && activeId !== c.id && (
-                  <span className="ml-2 rounded-full bg-accent px-1.5 text-xs text-white">{c.unread_count}</span>
-                )}
-              </div>
-              <span className={`truncate text-xs ${activeId === c.id ? "text-white/80" : "text-ink-muted"}`}>
-                {c.last_message_preview ?? "Sem mensagens"}
-              </span>
-              <span className={`mt-0.5 text-[10px] ${activeId === c.id ? "text-white/70" : "text-ink-muted"}`}>
-                via {c.whatsapp_instances?.nome ?? "—"}
-              </span>
-            </button>
-          ))}
+        <div className="flex-1 space-y-0.5 overflow-auto">
+          {filtered.map((c) => {
+            const selected = activeId === c.id;
+            return (
+              <button
+                key={c.id}
+                onClick={() => setActiveId(c.id)}
+                className={`flex w-full items-center gap-3 rounded-xl px-2.5 py-2.5 text-left transition-colors ${
+                  selected ? "bg-accent text-white" : "hover:bg-black/5"
+                }`}
+              >
+                <Avatar name={c.leads?.nome} size={44} />
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="truncate font-medium">{c.leads?.nome ?? "—"}</span>
+                    <span className={`shrink-0 text-[10px] ${selected ? "text-white/70" : "text-ink-muted"}`}>
+                      {relTime(c.last_message_at)}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between gap-2">
+                    <span className={`truncate text-xs ${selected ? "text-white/80" : "text-ink-muted"}`}>
+                      {c.last_message_preview ?? "Sem mensagens"}
+                    </span>
+                    {c.unread_count > 0 && !selected && (
+                      <span className="ml-1 shrink-0 rounded-full bg-accent px-1.5 text-[11px] font-semibold text-white">
+                        {c.unread_count}
+                      </span>
+                    )}
+                  </div>
+                  <span className={`mt-0.5 block text-[10px] ${selected ? "text-white/60" : "text-ink-muted"}`}>
+                    via {c.whatsapp_instances?.nome ?? "—"}
+                  </span>
+                </div>
+              </button>
+            );
+          })}
           {filtered.length === 0 && <p className="px-3 py-4 text-sm text-ink-muted">Nenhuma conversa.</p>}
         </div>
       </div>
@@ -138,30 +219,31 @@ export default function Inbox() {
       <div className={`glass flex-1 flex-col rounded-xl2 md:flex ${active ? "flex" : "hidden md:flex"}`}>
         {active ? (
           <>
-            <header className="flex items-center justify-between border-b border-black/5 px-4 py-3 md:px-5">
+            <header className="flex items-center justify-between gap-2 border-b border-black/5 px-3 py-2.5 md:px-4">
               <div className="flex min-w-0 items-center gap-2">
                 <button
                   onClick={() => setActiveId(null)}
-                  className="-ml-1 rounded-full p-2 text-ink-muted hover:bg-black/5 md:hidden"
+                  className="-ml-1 rounded-full p-1.5 text-ink-muted hover:bg-black/5 md:hidden"
                   title="Voltar para as conversas"
                 >
-                  <ArrowLeft size={18} />
+                  <ArrowLeft size={20} />
                 </button>
+                <Avatar name={active.leads?.nome} size={38} />
                 <div className="min-w-0">
-                  <div className="truncate font-medium">{active.leads?.nome}</div>
+                  <div className="truncate font-medium leading-tight">{active.leads?.nome}</div>
                   <div className="truncate text-xs text-ink-muted">
-                    {active.leads?.telefone && maskPhoneBR(active.leads.telefone)} · responde via{" "}
-                    {active.whatsapp_instances?.nome}
+                    {active.leads?.telefone && maskPhoneBR(active.leads.telefone)} · via {active.whatsapp_instances?.nome}
                   </div>
                 </div>
               </div>
-              <div className="flex items-center gap-2">
+              <div className="flex shrink-0 items-center gap-1.5">
                 <button
                   onClick={() => toggleAi(active.id, !active.ai_enabled)}
                   className={`chip ${active.ai_enabled ? "bg-success/15 text-[#1b7a35]" : "bg-black/10 text-ink-muted"}`}
                   title={active.ai_enabled ? "IA está respondendo — clique para assumir" : "Você está respondendo — clique para devolver à IA"}
                 >
-                  <Bot size={14} /> {active.ai_enabled ? "IA respondendo" : "Manual"}
+                  <Bot size={14} />
+                  <span className="hidden sm:inline">{active.ai_enabled ? "IA respondendo" : "Manual"}</span>
                 </button>
                 <button
                   onClick={() => deleteConversation(active.id)}
@@ -173,40 +255,64 @@ export default function Inbox() {
               </div>
             </header>
 
-            <div className="flex-1 space-y-2 overflow-auto px-3 py-4 md:px-5">
-              {messages.map((m) => (
-                <div
-                  key={m.id}
-                  className={`max-w-[85%] rounded-2xl px-4 py-2 text-sm md:max-w-[70%] ${
-                    m.direction === "outbound"
-                      ? "ml-auto rounded-br-sm bg-accent text-white"
-                      : "rounded-bl-sm bg-white/80"
-                  }`}
-                >
-                  {m.body}
-                  <div className={`mt-0.5 text-[10px] ${m.direction === "outbound" ? "text-white/70" : "text-ink-muted"}`}>
-                    {new Date(m.created_at).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}
-                  </div>
-                </div>
-              ))}
+            <div className="flex-1 space-y-1.5 overflow-auto px-3 py-4 md:px-5">
+              {messages.map((m, i) => {
+                const prev = messages[i - 1];
+                const showSep = !prev || !isSameDay(new Date(prev.created_at), new Date(m.created_at));
+                const out = m.direction === "outbound";
+                return (
+                  <Fragment key={m.id}>
+                    {showSep && (
+                      <div className="my-2 flex justify-center">
+                        <span className="rounded-full bg-black/5 px-3 py-0.5 text-[11px] text-ink-muted">
+                          {dayLabel(m.created_at)}
+                        </span>
+                      </div>
+                    )}
+                    <div
+                      className={`w-fit max-w-[85%] whitespace-pre-wrap break-words rounded-2xl px-3.5 py-2 text-sm md:max-w-[70%] ${
+                        out ? "ml-auto rounded-br-sm bg-accent text-white" : "rounded-bl-sm bg-white/80"
+                      }`}
+                    >
+                      {m.body}
+                      <span className={`ml-2 inline-block align-bottom text-[10px] ${out ? "text-white/70" : "text-ink-muted"}`}>
+                        {new Date(m.created_at).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}
+                      </span>
+                    </div>
+                  </Fragment>
+                );
+              })}
               <div ref={endRef} />
             </div>
 
-            <div className="flex items-center gap-2 border-t border-black/5 p-3">
-              <input
-                className="input"
+            <div
+              className="flex items-end gap-2 border-t border-black/5 p-3"
+              style={{ paddingBottom: "max(0.75rem, env(safe-area-inset-bottom))" }}
+            >
+              <textarea
+                ref={taRef}
+                rows={1}
+                className="input max-h-32 flex-1 resize-none leading-snug"
                 placeholder="Escreva uma resposta…"
                 value={draft}
                 onChange={(e) => setDraft(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && send()}
+                onInput={resizeTextarea}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
+                }}
               />
-              <button className="btn-accent !px-3" disabled={sending || !draft.trim()} onClick={send}>
+              <button
+                className="btn-accent shrink-0 !px-3 !py-2.5"
+                disabled={sending || !draft.trim()}
+                onClick={send}
+                aria-label="Enviar"
+              >
                 <Send size={16} />
               </button>
             </div>
           </>
         ) : (
-          <div className="flex flex-1 items-center justify-center text-sm text-ink-muted">
+          <div className="flex flex-1 items-center justify-center px-6 text-center text-sm text-ink-muted">
             Selecione uma conversa para ver o histórico unificado.
           </div>
         )}
