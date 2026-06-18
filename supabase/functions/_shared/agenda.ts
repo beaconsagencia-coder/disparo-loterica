@@ -78,8 +78,11 @@ export function labelSlot(d: Date): string {
 }
 
 async function fetchMeetings(supabase: SupabaseClient, userId: string): Promise<Meet[]> {
+  // Considera TODAS as reuniões do usuário que não foram canceladas — sejam
+  // marcadas pelo bot ou manualmente na aba Agenda. (Reuniões passadas/realizadas
+  // não conflitam porque o slotConflict casa data e rejeita horário no passado.)
   const { data } = await supabase.from("meetings")
-    .select("scheduled_for, duracao_min").eq("user_id", userId).eq("status", "agendada")
+    .select("scheduled_for, duracao_min").eq("user_id", userId).neq("status", "cancelada")
     .not("scheduled_for", "is", null);
   return data ?? [];
 }
@@ -112,6 +115,20 @@ export async function agendaResumo(supabase: SupabaseClient, userId: string): Pr
       `${DIAS_PT[b.dia_semana]} ${b.hora_inicio}–${b.hora_fim}${b.titulo ? ` (${b.titulo})` : ""}`).join("; ");
     linhas.push(`- BLOQUEADO toda semana (nunca ofereça): ${fix}.`);
   }
+
+  // Reuniões JÁ marcadas (bot OU manuais na aba Agenda) — o bot precisa saber
+  // que esses horários estão ocupados para não oferecer nem confirmar neles.
+  const { data: ocupadas } = await supabase.from("meetings")
+    .select("scheduled_for")
+    .eq("user_id", userId).neq("status", "cancelada")
+    .not("scheduled_for", "is", null)
+    .gte("scheduled_for", new Date().toISOString())
+    .order("scheduled_for", { ascending: true }).limit(15);
+  if (ocupadas?.length) {
+    const lista = ocupadas.map((m) => labelSlot(new Date(m.scheduled_for as string))).join("; ");
+    linhas.push(`- JÁ OCUPADO por reuniões marcadas (NUNCA ofereça nem confirme estes horários): ${lista}.`);
+  }
+
   const livres = await suggestSlots(supabase, userId, undefined, 5);
   if (livres.length) linhas.push(`- Próximos horários LIVRES (ofereça só destes): ${livres.join("; ")}.`);
   return linhas.join("\n");
