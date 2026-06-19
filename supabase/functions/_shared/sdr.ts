@@ -35,12 +35,50 @@ export async function transcribeAudio(base64: string, mimetype: string): Promise
 
 // --- Indicação de contato (cliente repassa o número da "dona/responsável") ---
 
-/** Normaliza um telefone BR para dígitos com DDI 55, ou null se inválido. */
-function normalizeBR(raw: string): string | null {
-  let d = (raw ?? "").replace(/\D/g, "").replace(/^0+/, "");
-  if (d.length === 10 || d.length === 11) d = "55" + d;
-  if (d.length < 12 || d.length > 13) return null;
-  return d;
+/**
+ * Normaliza um telefone BR para dígitos com DDI 55, ou null se inválido.
+ * Se o número vier SEM DDD (8 dígitos fixo / 9 dígitos móvel), usa o DDD do
+ * remetente (senderDDD) — regra de indicação: "usa o mesmo DDD de quem mandou".
+ */
+function normalizeBR(raw: string, senderDDD?: string): string | null {
+  const d = (raw ?? "").replace(/\D/g, "").replace(/^0+/, "");
+  if (d.startsWith("55") && (d.length === 12 || d.length === 13)) return d; // DDI + DDD + número
+  if (d.length === 10 || d.length === 11) return "55" + d;                  // DDD + número
+  if ((d.length === 8 || d.length === 9) && senderDDD && /^\d{2}$/.test(senderDDD)) {
+    return "55" + senderDDD + d;                                            // faltou DDD → usa o do remetente
+  }
+  return null;
+}
+
+/** DDD (2 dígitos) do remetente, a partir do número E.164 dele. */
+function dddDoRemetente(senderNumber: string): string | undefined {
+  const d = (senderNumber ?? "").replace(/\D/g, "");
+  if (d.startsWith("55") && d.length >= 12) return d.slice(2, 4);
+  if (d.length === 10 || d.length === 11) return d.slice(0, 2);
+  return undefined;
+}
+
+// Telefone BR dentro de texto livre: com/sem +55, com/sem (DDD), com/sem
+// separadores — ou uma sequência "crua" de 8 a 11 dígitos (ex: "981157376").
+const PHONE_RE = /(?:\+?55[\s.-]?)?(?:\(?\d{2}\)?[\s.-]?)?\d{4,5}[\s.-]?\d{4}|\d{8,11}/g;
+
+// Palavras comuns ao redor de um número repassado que NÃO são nome próprio.
+const STOP_NOME = new Set([
+  "o", "a", "os", "as", "e", "de", "da", "do", "das", "dos", "que", "pra", "para", "pro",
+  "com", "no", "na", "num", "numa", "meu", "minha", "dela", "dele", "deles", "seu", "sua",
+  "numero", "telefone", "tel", "fone", "celular", "whatsapp", "whats", "zap", "contato",
+  "manda", "mandar", "segue", "fala", "falar", "ligar", "liga", "aqui", "esse", "essa",
+  "isso", "ela", "ele", "responsavel", "loterica", "loteria", "dona", "dono",
+]);
+
+/** Aproveita o nome quando a mensagem é tipo "<número> <nome>" ou "<nome> <número>". */
+function nomeFromText(text: string, phoneMatch: string): string | undefined {
+  const resto = (text || "").replace(phoneMatch, " ").replace(/[^\p{L}\s]/gu, " ").replace(/\s+/g, " ").trim();
+  const palavras = resto.split(" ")
+    .filter((w) => w.length >= 2 && !STOP_NOME.has(w.toLowerCase()));
+  if (palavras.length === 0 || palavras.length > 2) return undefined; // só nomes curtos e claros
+  const nome = palavras.join(" ");
+  return nome.length <= 40 ? nome : undefined;
 }
 
 function saudacaoHora(): string {
@@ -51,12 +89,12 @@ function saudacaoHora(): string {
 }
 
 /** Acha o 1º telefone BR válido numa string (waid tem prioridade). */
-function phoneFromVcard(vcard: string): string | null {
+function phoneFromVcard(vcard: string, senderDDD?: string): string | null {
   const waid = /waid=(\d{10,15})/i.exec(vcard)?.[1];
-  const fromWaid = waid && normalizeBR(waid);
+  const fromWaid = waid && normalizeBR(waid, senderDDD);
   if (fromWaid) return fromWaid;
-  for (const m of String(vcard).matchAll(/[\d][\d().\-\s+]{7,}\d/g)) {
-    const n = normalizeBR(m[0]);
+  for (const m of String(vcard).matchAll(PHONE_RE)) {
+    const n = normalizeBR(m[0], senderDDD);
     if (n) return n;
   }
   return null;
@@ -64,7 +102,8 @@ function phoneFromVcard(vcard: string): string | null {
 
 /** Detecta um contato repassado: cartão de contato (vCard) ou número no texto. */
 // deno-lint-ignore no-explicit-any
-export function extractReferral(item: any, text: string): { numero: string; nome?: string } | null {
+export function extractReferral(item: any, text: string, senderNumber?: string): { numero: string; nome?: string } | null {
+  const senderDDD = dddDoRemetente(senderNumber ?? "");
   const msg = item?.message ?? {};
   // deno-lint-ignore no-explicit-any
   const cards: any[] = [];
@@ -73,15 +112,15 @@ export function extractReferral(item: any, text: string): { numero: string; nome
 
   for (const card of cards) {
     const vcard = card?.vcard ?? card?.vCard ?? "";
-    const numero = vcard ? phoneFromVcard(vcard) : null;
+    const numero = vcard ? phoneFromVcard(vcard, senderDDD) : null;
     if (numero) return { numero, nome: card?.displayName ?? card?.fullName ?? undefined };
     console.log("[referral] contato sem número extraível. card:", JSON.stringify(card).slice(0, 300));
   }
 
-  // Número digitado no texto (pega a 1ª sequência que vire um telefone válido).
-  for (const m of (text ?? "").matchAll(/[\d][\d().\-\s+]{8,}\d/g)) {
-    const numero = normalizeBR(m[0]);
-    if (numero) return { numero };
+  // Número digitado no texto — mesmo acompanhado de palavras (ex: "981157376 leila").
+  for (const m of (text ?? "").matchAll(PHONE_RE)) {
+    const numero = normalizeBR(m[0], senderDDD);
+    if (numero) return { numero, nome: nomeFromText(text, m[0]) };
   }
   return null;
 }

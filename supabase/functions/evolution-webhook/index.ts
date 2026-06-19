@@ -221,7 +221,7 @@ Deno.serve(async (req) => {
     }
 
     // Indicação de contato: o cliente repassou o número de outra pessoa?
-    const referral = inserted ? extractReferral(item, text) : null;
+    const referral = inserted ? extractReferral(item, text, numero) : null;
     const isHandoff = !!referral && referral.numero !== numero;
     if (isContact && !isHandoff) console.log("[webhook] contato compartilhado mas sem número extraível");
 
