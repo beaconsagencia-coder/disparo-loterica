@@ -34,8 +34,14 @@ Deno.serve(async (req) => {
     .eq("ativo", true);
   if (!configs?.length) return json({ ok: true, nudged: 0, reason: "nenhum SDR ativo" });
 
+  // Interruptor mestre: pula usuários com disparos pausados (sem cutucadas proativas).
+  const { data: pausados } = await supabase
+    .from("dispatch_settings").select("user_id").eq("disparos_ativos", false);
+  const pausedUsers = new Set((pausados ?? []).map((r) => r.user_id));
+
   let nudged = 0;
   for (const cfg of configs) {
+    if (pausedUsers.has(cfg.user_id)) continue;
     const inatividade = Number(cfg.followup_inatividade_min ?? 30);
     const followupMax = Number(cfg.followup_max ?? 2);
     if (followupMax <= 0) continue;

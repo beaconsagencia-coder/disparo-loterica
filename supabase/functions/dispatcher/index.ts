@@ -52,9 +52,18 @@ Deno.serve(async (req) => {
   if (instErr) return json({ error: instErr.message }, 500);
   if (!instances?.length) return json({ ok: true, sent: 0, reason: "no eligible instances" });
 
+  // Interruptor mestre: usuários com disparos pausados não enviam nada.
+  const { data: pausados } = await supabase
+    .from("dispatch_settings").select("user_id").eq("disparos_ativos", false);
+  const pausedUsers = new Set((pausados ?? []).map((r) => r.user_id));
+
   const results: Array<Record<string, unknown>> = [];
 
   for (const inst of instances) {
+    if (pausedUsers.has(inst.user_id)) {
+      results.push({ instance: inst.nome, skipped: "disparos pausados" });
+      continue;
+    }
     // 1b) Teto diário anti-ban: pula chip que já atingiu o limite hoje.
     //     (count zera quando daily_count_date != hoje, no fuso de SP)
     const usedToday = inst.daily_count_date === today ? inst.daily_count : 0;

@@ -27,6 +27,28 @@ export default function Dashboard() {
     leads: 0, pendentes: 0, emNegociacao: 0, disparosPeriodo: 0, reunioesPeriodo: 0, reunioesHoje: 0,
   });
   const [instances, setInstances] = useState<WhatsappInstance[]>([]);
+  const [disparosAtivos, setDisparosAtivos] = useState(true);
+  const [savingDisparo, setSavingDisparo] = useState(false);
+
+  // Estado do interruptor mestre de disparos (independe do período).
+  useEffect(() => {
+    supabase.from("dispatch_settings").select("disparos_ativos").maybeSingle()
+      .then(({ data }) => { if (data) setDisparosAtivos(data.disparos_ativos); });
+  }, []);
+
+  async function toggleDisparos() {
+    const novo = !disparosAtivos;
+    setDisparosAtivos(novo); // otimista
+    setSavingDisparo(true);
+    const { data: u } = await supabase.auth.getUser();
+    if (!u?.user) { setSavingDisparo(false); return; }
+    const { error } = await supabase.from("dispatch_settings").upsert(
+      { user_id: u.user.id, disparos_ativos: novo, updated_at: new Date().toISOString() },
+      { onConflict: "user_id" },
+    );
+    if (error) { setDisparosAtivos(!novo); alert("Não foi possível salvar: " + error.message); }
+    setSavingDisparo(false);
+  }
 
   useEffect(() => {
     (async () => {
@@ -161,13 +183,25 @@ export default function Dashboard() {
 
         <BentoCard colSpan={2}>
           <div className="flex h-full items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent/10 text-accent">
+            <div className={`flex h-10 w-10 items-center justify-center rounded-xl ${disparosAtivos ? "bg-accent/10 text-accent" : "bg-black/10 text-ink-muted"}`}>
               <Clock size={20} />
             </div>
-            <div>
-              <div className="text-sm font-medium">Dispatcher ativo</div>
-              <div className="text-xs text-ink-muted">Cron de 1 min · round-robin entre chips</div>
+            <div className="flex-1">
+              <div className="text-sm font-medium">Disparos {disparosAtivos ? "ativos" : "pausados"}</div>
+              <div className="text-xs text-ink-muted">
+                {disparosAtivos
+                  ? "Cron de 1 min · round-robin entre chips"
+                  : "Fila parada — nada sai até reativar"}
+              </div>
             </div>
+            <button
+              onClick={toggleDisparos}
+              disabled={savingDisparo}
+              title={disparosAtivos ? "Pausar disparos" : "Retomar disparos"}
+              className={`relative h-7 w-12 shrink-0 rounded-full transition-colors ${disparosAtivos ? "bg-accent" : "bg-black/15"}`}
+            >
+              <span className={`absolute top-1 h-5 w-5 rounded-full bg-white shadow transition-all ${disparosAtivos ? "left-6" : "left-1"}`} />
+            </button>
           </div>
         </BentoCard>
       </BentoGrid>
