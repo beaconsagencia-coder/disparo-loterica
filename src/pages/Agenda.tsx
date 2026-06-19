@@ -540,6 +540,8 @@ function MeetingsCard(
       instance_id: inst || null, lead_id: leadId || null, conversation_id,
     });
     if (error) return setErr("Não foi possível salvar: " + error.message);
+    // Lead vinculado entra em "reunião agendada" (evita o follow-up cutucar).
+    if (leadId) await supabase.from("leads").update({ status: "reuniao_agendada" }).eq("id", leadId);
     clearLead(); setTitulo("");
     reload();
   }

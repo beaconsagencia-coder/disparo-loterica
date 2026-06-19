@@ -144,7 +144,7 @@ Deno.serve(async (req) => {
     // Match do lead pelo telefone (dentro do tenant).
     const { data: lead } = await supabase
       .from("leads")
-      .select("id, nome")
+      .select("id, nome, status")
       .eq("user_id", inst.user_id)
       .eq("telefone", numero)
       .maybeSingle();
@@ -164,7 +164,10 @@ Deno.serve(async (req) => {
         .select("id")
         .single();
       leadId = novo?.id;
-    } else {
+    } else if (!["reuniao_agendada", "ganho", "perdido"].includes(lead!.status)) {
+      // Cliente respondeu → entra em negociação. MAS nunca rebaixa quem já tem
+      // reunião marcada (senão o follow-up volta a cutucar durante/após a call),
+      // nem mexe em ganho/perdido.
       await supabase.from("leads")
         .update({ status: "em_negociacao" })
         .eq("id", leadId);
