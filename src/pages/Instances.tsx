@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Plus, Smartphone, QrCode, RefreshCw, Trash2, ShieldCheck } from "lucide-react";
+import { Plus, Smartphone, QrCode, RefreshCw, Trash2, ShieldCheck, Power } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { InstanceBadge } from "@/components/ui/StatusBadge";
 import type { WhatsappInstance } from "@/lib/types";
@@ -11,6 +11,8 @@ export default function Instances() {
   const [qr, setQr] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [syncing, setSyncing] = useState(false);
+  // Quando preenchido, o modal está em modo "reconectar a mesma instância".
+  const [reconnectTarget, setReconnectTarget] = useState<WhatsappInstance | null>(null);
 
   async function load() {
     const { data } = await supabase.from("whatsapp_instances").select("*").order("nome");
@@ -40,6 +42,31 @@ export default function Instances() {
     load();
   }
 
+  // Reconecta NA MESMA instância (mantém id/atribuição). Abre o modal já com o QR.
+  async function reconnect(i: WhatsappInstance) {
+    setReconnectTarget(i);
+    setNome(i.nome);
+    setModalOpen(true);
+    setQr(null);
+    setLoading(true);
+    const { data, error } = await supabase.functions.invoke("instance-reconnect", { body: { id: i.id } });
+    setLoading(false);
+    if (error) return alert("Falha ao reconectar: " + error.message);
+    setQr(data?.qrcode ?? null);
+    load();
+  }
+
+  // Botão "Gerar (novo) QR" do modal: reconecta ou cria conforme o modo.
+  function regenQr() {
+    if (reconnectTarget) reconnect(reconnectTarget);
+    else connect();
+  }
+
+  function closeModal() {
+    setModalOpen(false);
+    setReconnectTarget(null);
+  }
+
   async function removeInstance(i: WhatsappInstance) {
     if (!confirm(`Excluir o chip "${i.nome}"? Isso desconecta o número e remove a instância.`)) return;
     const { error } = await supabase.functions.invoke("instance-delete", { body: { id: i.id } });
@@ -67,7 +94,7 @@ export default function Instances() {
             title="Re-registra o webhook (com token) em todos os chips. Rode após definir o segredo do webhook.">
             <ShieldCheck size={16} /> {syncing ? "Sincronizando…" : "Re-sincronizar webhooks"}
           </button>
-          <button className="btn-accent" onClick={() => { setModalOpen(true); setQr(null); setNome(""); }}>
+          <button className="btn-accent" onClick={() => { setModalOpen(true); setQr(null); setNome(""); setReconnectTarget(null); }}>
             <Plus size={16} /> Conectar chip
           </button>
         </div>
@@ -107,6 +134,11 @@ export default function Instances() {
                 />
               </div>
             </div>
+            {i.status !== "conectado" && (
+              <button className="btn-accent w-full !py-1.5" onClick={() => reconnect(i)}>
+                <Power size={15} /> Reconectar
+              </button>
+            )}
             <PersonaField key={`persona-${i.id}`} instance={i} />
           </div>
         ))}
@@ -119,30 +151,40 @@ export default function Instances() {
       {modalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/20 p-4">
           <div className="glass-strong w-full max-w-md rounded-xl2 p-6">
-            <h2 className="mb-1 text-lg font-semibold">Conectar novo chip</h2>
-            <p className="mb-4 text-sm text-ink-muted">Dê um nome e escaneie o QR Code no WhatsApp do celular.</p>
-
-            <label className="mb-1 block text-xs font-medium text-ink-soft">Nome do chip</label>
-            <input
-              className="input mb-4"
-              placeholder="Ex: Chip 1 — Comercial"
-              value={nome}
-              onChange={(e) => setNome(e.target.value)}
-            />
+            {reconnectTarget ? (
+              <>
+                <h2 className="mb-1 text-lg font-semibold">Reconectar “{reconnectTarget.nome}”</h2>
+                <p className="mb-4 text-sm text-ink-muted">
+                  Escaneie o QR com o <strong>mesmo número</strong>. A instância, o histórico e os relatórios são mantidos — nada é recriado.
+                </p>
+              </>
+            ) : (
+              <>
+                <h2 className="mb-1 text-lg font-semibold">Conectar novo chip</h2>
+                <p className="mb-4 text-sm text-ink-muted">Dê um nome e escaneie o QR Code no WhatsApp do celular.</p>
+                <label className="mb-1 block text-xs font-medium text-ink-soft">Nome do chip</label>
+                <input
+                  className="input mb-4"
+                  placeholder="Ex: Chip 1 — Comercial"
+                  value={nome}
+                  onChange={(e) => setNome(e.target.value)}
+                />
+              </>
+            )}
 
             {qr ? (
               <div className="flex flex-col items-center gap-2">
                 <img src={qr} alt="QR Code" className="h-56 w-56 rounded-xl border border-black/5" />
                 <p className="text-xs text-ink-muted">Aguardando leitura… a tela atualiza sozinha.</p>
-                <button className="btn-ghost" onClick={connect}><RefreshCw size={14} /> Gerar novo QR</button>
+                <button className="btn-ghost" onClick={regenQr}><RefreshCw size={14} /> Gerar novo QR</button>
               </div>
             ) : (
-              <button className="btn-accent w-full" disabled={loading || !nome.trim()} onClick={connect}>
+              <button className="btn-accent w-full" disabled={loading || (!reconnectTarget && !nome.trim())} onClick={regenQr}>
                 <QrCode size={16} /> {loading ? "Gerando QR…" : "Gerar QR Code"}
               </button>
             )}
 
-            <button className="btn-ghost mt-3 w-full" onClick={() => setModalOpen(false)}>Fechar</button>
+            <button className="btn-ghost mt-3 w-full" onClick={closeModal}>Fechar</button>
           </div>
         </div>
       )}
