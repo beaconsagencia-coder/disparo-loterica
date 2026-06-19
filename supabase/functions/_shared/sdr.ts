@@ -218,6 +218,31 @@ const agendarReuniao = {
   },
 };
 
+// Ferramenta de REMARCAÇÃO: usar APENAS quando o cliente já tem uma reunião
+// marcada e pede para trocar o horário. Cancela a antiga e cria a nova.
+const remarcarReuniao = {
+  name: "remarcar_reuniao",
+  description:
+    "Remarca a reunião JÁ EXISTENTE deste cliente para um novo horário, quando ELE pedir para mudar. " +
+    "Cancela a reunião anterior e cria a nova. O sistema valida a disponibilidade: se o novo horário " +
+    "estiver ocupado, retorna alternativas — nesse caso ofereça uma delas em vez de confirmar. Sempre informe data_iso.",
+  parameters: {
+    type: Type.OBJECT,
+    properties: {
+      quando_texto: {
+        type: Type.STRING,
+        description: "O NOVO horário combinado em linguagem natural (ex: 'sábado às 10h').",
+      },
+      data_iso: {
+        type: Type.STRING,
+        description: "Nova data e hora em ISO 8601 com fuso -03:00 (ex: 2026-06-20T10:00:00-03:00). OBRIGATÓRIO.",
+      },
+      observacao: { type: Type.STRING, description: "Detalhe relevante combinado. Opcional." },
+    },
+    required: ["quando_texto", "data_iso"],
+  },
+};
+
 function agoraEmSP(): string {
   return new Intl.DateTimeFormat("pt-BR", {
     weekday: "long", day: "2-digit", month: "long", year: "numeric",
@@ -260,7 +285,8 @@ function buildSystem(playbook: string, persona: string, empresa: string, leadNom
     "- PEDIDO DE LIGAÇÃO ('me liga', 'liga para X'): não ligue. Explique com naturalidade que precisa mostrar o mecanismo na tela, por isso é uma rápida reunião online, e proponha um horário.",
     "- MENSAGEM AUTOMÁTICA DO CLIENTE: se a última mensagem parecer um auto-atendimento da empresa (ex: 'seja bem-vindo', 'horário de atendimento', 'deixe sua mensagem', menu de opções/números), NÃO dispare a proposta de valor. Apenas cumprimente de forma curta e pergunte se está falando com o responsável.",
     "- AGENDAMENTO: sugira horários exatos (ex: 14:30 ou 15h) e seja flexível para remarcar. Quando o cliente confirmar, chame a função agendar_reuniao e confirme calorosamente.",
-    "- REUNIÃO JÁ MARCADA: se o contexto da agenda indicar que ESTE cliente já tem uma reunião marcada, o agendamento está ENCERRADO. NUNCA ofereça novos horários, NUNCA chame agendar_reuniao de novo e NUNCA remarque por conta própria — mesmo que o cliente só diga 'ok'/'combinado'. Apenas confirme/relembre o horário já combinado. Se o cliente PEDIR para remarcar, diga que vai passar para um atendente fazer o ajuste.",
+    "- REUNIÃO JÁ MARCADA: se o contexto da agenda indicar que ESTE cliente já tem uma reunião marcada, NUNCA ofereça novos horários nem chame agendar_reuniao por conta própria — mesmo que o cliente só diga 'ok'/'combinado'. Apenas confirme/relembre o horário já combinado.",
+    "- REMARCAÇÃO (só se o cliente PEDIR para mudar): quando o cliente já tem reunião marcada e pede outro horário, use consultar_disponibilidade para confirmar que o novo horário está livre e então chame remarcar_reuniao (ela cancela a anterior e cria a nova — nunca ficam duas). NÃO use agendar_reuniao para remarcar. Se o novo horário estiver ocupado, ofereça as alternativas livres.",
     "- DISPONIBILIDADE (tempo real): SEMPRE chame consultar_disponibilidade ANTES de sugerir ou confirmar qualquer horário. Ofereça apenas horários livres. Se o cliente pedir um horário ocupado, avise que nele não dá e ofereça as opções livres mais próximas que a função retornar. Se agendar_reuniao responder que está ocupado, NÃO confirme: ofereça uma das alternativas.",
     "- NUNCA PROMETA RESPONDER DEPOIS: você NÃO consegue voltar sozinho à conversa mais tarde. É PROIBIDO dizer 'vou verificar com a equipe', 'deixa eu confirmar a agenda e já te retorno', 'já te aviso', 'volto já', 'aguarde um momento' ou qualquer promessa de resposta futura. Você TEM acesso à agenda AGORA: chame consultar_disponibilidade e, no MESMO turno, já responda ao cliente com os horários livres ou confirme a reunião. Resolva o agendamento sempre na hora, sem deixar o cliente esperando.",
     "- LINK DA REUNIÃO: o link é enviado NO DIA da reunião, 15 minutos antes do horário — NUNCA diga 'amanhã' por padrão. Use a data/hora atual acima para descobrir o dia certo: diga 'no dia, uns 15 minutinhos antes, te envio o link' ou cite o dia exato (ex: 'na sexta, 15 min antes'). Só fale 'amanhã' se a reunião for realmente no dia seguinte.",
@@ -289,7 +315,7 @@ export async function runSdr(p: RunSdrParams): Promise<void> {
 
   // Reunião já marcada para ESTA conversa? Vincula o agendamento ao contato e
   // muda o comportamento: nunca remarcar/re-oferecer; no follow-up, nem cutucar.
-  const reuniaoExistente = await activeMeetingFor(supabase, p.userId, p.conversationId, p.leadId);
+  let reuniaoExistente = await activeMeetingFor(supabase, p.userId, p.conversationId, p.leadId);
   if ((p.mode ?? "reply") === "followup" && reuniaoExistente) {
     console.log("[sdr] follow-up ignorado: já há reunião marcada nesta conversa");
     return;
@@ -371,8 +397,8 @@ export async function runSdr(p: RunSdrParams): Promise<void> {
     const quando = reuniaoExistente.quando_texto?.trim() ||
       (reuniaoExistente.scheduled_for ? labelSlot(new Date(reuniaoExistente.scheduled_for)) : "horário já combinado");
     agenda +=
-      `\n- ⚠️ ESTE CLIENTE JÁ TEM REUNIÃO MARCADA (${quando}). NÃO agende outra, ` +
-      "NÃO ofereça novos horários e NÃO use agendar_reuniao. Apenas confirme/relembre esse horário e responda o que ele perguntar.";
+      `\n- ⚠️ ESTE CLIENTE JÁ TEM REUNIÃO MARCADA (${quando}). NÃO agende outra nem ofereça novos horários por conta própria; ` +
+      "apenas confirme/relembre esse horário. SÓ se o cliente PEDIR para mudar, use remarcar_reuniao (consulte a disponibilidade antes) — nunca agendar_reuniao.";
   }
 
   // Aprendizados aprovados (self-reflection loop) injetados no prompt.
@@ -405,7 +431,7 @@ export async function runSdr(p: RunSdrParams): Promise<void> {
       config: {
         systemInstruction,
         maxOutputTokens: 1024,
-        tools: [{ functionDeclarations: [consultarDisponibilidade, agendarReuniao] }],
+        tools: [{ functionDeclarations: [consultarDisponibilidade, agendarReuniao, remarcarReuniao] }],
       },
     });
 
@@ -480,6 +506,46 @@ export async function runSdr(p: RunSdrParams): Promise<void> {
             functionResponse: {
               name: "agendar_reuniao",
               response: { agendado: true, quando: args.quando_texto, instrucao: "Confirme calorosamente. NÃO mande o link agora — ele será enviado automaticamente 15 min antes." },
+            },
+          });
+        }
+      } else if (call.name === "remarcar_reuniao") {
+        const args = (call.args ?? {}) as { quando_texto?: string; data_iso?: string; observacao?: string };
+        // Valida o NOVO horário (exclui a própria conversa: a reunião antiga,
+        // que será cancelada, não pode bloquear o novo horário).
+        const av = await checkAvailability(supabase, p.userId, args.data_iso ?? "", undefined, p.conversationId);
+        if (!av.ok) {
+          const alternativas = await suggestSlots(supabase, p.userId, args.data_iso, 3, p.conversationId);
+          responseParts.push({
+            functionResponse: {
+              name: "remarcar_reuniao",
+              response: { remarcado: false, motivo: av.motivo, alternativas, instrucao: "O novo horário não está livre. Ofereça uma destas alternativas; não confirme a mudança." },
+            },
+          });
+        } else {
+          // Cancela a reunião antiga deste contato (se houver) e cria a nova.
+          if (reuniaoExistente) {
+            await supabase.from("meetings").update({ status: "cancelada" }).eq("id", reuniaoExistente.id);
+          }
+          await supabase.from("meetings").insert({
+            user_id: p.userId,
+            lead_id: p.leadId,
+            conversation_id: p.conversationId,
+            instance_id: p.instanceId,
+            quando_texto: args.quando_texto ?? "(não informado)",
+            scheduled_for: args.data_iso ?? null,
+            duracao_min: av.settings.duracao,
+            meet_link: av.settings.meetLink || null,
+            observacao: args.observacao ?? null,
+            titulo: `Reunião com ${lead?.nome ?? p.numero}`,
+          });
+          await supabase.from("leads").update({ status: "reuniao_agendada" }).eq("id", p.leadId);
+          // A partir daqui a "reunião existente" desta conversa é a NOVA.
+          reuniaoExistente = { id: "", quando_texto: args.quando_texto ?? null, scheduled_for: args.data_iso ?? null };
+          responseParts.push({
+            functionResponse: {
+              name: "remarcar_reuniao",
+              response: { remarcado: true, quando: args.quando_texto, instrucao: "Confirme calorosamente o NOVO horário. A reunião anterior foi cancelada. NÃO mande o link agora — ele vai automaticamente 15 min antes." },
             },
           });
         }
