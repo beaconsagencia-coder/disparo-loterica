@@ -477,18 +477,43 @@ function MeetingsCard(
   { meetings, reload, userId, duracao, onJump }:
   { meetings: Meeting[]; reload: () => void; userId: () => Promise<string | null>; duracao: number; onJump: (iso: string | null) => void },
 ) {
-  const [nome, setNome] = useState("");
   const [data, setData] = useState("");
   const [hora, setHora] = useState("15:00");
   const [titulo, setTitulo] = useState("");
   const [err, setErr] = useState<string | null>(null);
   const [instancias, setInstancias] = useState<{ id: string; nome: string; persona_nome: string | null }[]>([]);
   const [instanciaId, setInstanciaId] = useState("");
+  // Vínculo com lead (evita o bot marcar uma 2ª reunião com o mesmo contato).
+  const [leads, setLeads] = useState<{ id: string; nome: string; empresa: string | null; telefone: string }[]>([]);
+  const [leadBusca, setLeadBusca] = useState("");
+  const [leadId, setLeadId] = useState("");
+  const [showLeads, setShowLeads] = useState(false);
 
   useEffect(() => {
     supabase.from("whatsapp_instances").select("id, nome, persona_nome").order("nome")
       .then(({ data }) => setInstancias((data as any) ?? []));
+    supabase.from("leads").select("id, nome, empresa, telefone").order("nome")
+      .then(({ data }) => setLeads((data as any) ?? []));
   }, []);
+
+  // Sugestões filtradas pelo texto (nome/empresa/telefone), no máximo 8.
+  const sugestoes = (() => {
+    const q = leadBusca.trim().toLowerCase();
+    if (!q || leadId) return [];
+    return leads
+      .filter((l) => `${l.nome} ${l.empresa ?? ""} ${l.telefone}`.toLowerCase().includes(q))
+      .slice(0, 8);
+  })();
+
+  function pickLead(l: { id: string; nome: string }) {
+    setLeadId(l.id);
+    setLeadBusca(l.nome);
+    setShowLeads(false);
+  }
+  function clearLead() {
+    setLeadId("");
+    setLeadBusca("");
+  }
 
   async function add() {
     setErr(null);
@@ -496,13 +521,26 @@ function MeetingsCard(
     if (!uid || !data || !hora) return setErr("Preencha data e hora.");
     const iso = `${data}T${hora}:00-03:00`;
     const quando = new Date(iso).toLocaleString("pt-BR", { weekday: "short", day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+
+    // Se um lead foi vinculado, busca a conversa dele para gravar conversation_id
+    // (e herdar o chip, se não escolhido) — assim o bot reconhece a reunião.
+    let conversation_id: string | null = null;
+    let inst = instanciaId;
+    if (leadId) {
+      const { data: c } = await supabase.from("conversations")
+        .select("id, instance_id").eq("lead_id", leadId).maybeSingle();
+      conversation_id = c?.id ?? null;
+      if (!inst && c?.instance_id) inst = c.instance_id;
+    }
+    const displayName = leadId ? (leads.find((l) => l.id === leadId)?.nome ?? "") : leadBusca.trim();
+
     const { error } = await supabase.from("meetings").insert({
-      user_id: uid, titulo: titulo.trim() || (nome ? `Reunião com ${nome}` : "Reunião"),
+      user_id: uid, titulo: titulo.trim() || (displayName ? `Reunião com ${displayName}` : "Reunião"),
       quando_texto: quando, scheduled_for: iso, duracao_min: duracao, status: "agendada",
-      instance_id: instanciaId || null,
+      instance_id: inst || null, lead_id: leadId || null, conversation_id,
     });
     if (error) return setErr("Não foi possível salvar: " + error.message);
-    setNome(""); setTitulo("");
+    clearLead(); setTitulo("");
     reload();
   }
   async function setStatus(id: string, status: string) {
@@ -572,7 +610,42 @@ function MeetingsCard(
       </div>
 
       <div className="flex flex-wrap items-end gap-2">
-        <input className="input flex-1 !min-w-[120px]" placeholder="Nome (opcional)" value={nome} onChange={(e) => setNome(e.target.value)} />
+        <div className="relative flex-1 !min-w-[160px]">
+          <input
+            className={`input w-full ${leadId ? "pr-8" : ""}`}
+            placeholder="Vincular lead (ou nome avulso)"
+            value={leadBusca}
+            onChange={(e) => { setLeadBusca(e.target.value); if (leadId) setLeadId(""); setShowLeads(true); }}
+            onFocus={() => setShowLeads(true)}
+            onBlur={() => setTimeout(() => setShowLeads(false), 150)}
+            title="Escolha um lead para o bot não marcar reunião duplicada com ele"
+          />
+          {leadId && (
+            <button
+              type="button"
+              onClick={clearLead}
+              title="Desvincular lead"
+              className="absolute right-2 top-1/2 -translate-y-1/2 text-ink-muted hover:text-danger"
+            >
+              <Ban size={14} />
+            </button>
+          )}
+          {showLeads && sugestoes.length > 0 && (
+            <div className="glass-strong absolute z-20 mt-1 max-h-56 w-full overflow-y-auto rounded-xl border border-black/5 p-1 shadow-lg">
+              {sugestoes.map((l) => (
+                <button
+                  key={l.id}
+                  type="button"
+                  onMouseDown={(e) => { e.preventDefault(); pickLead(l); }}
+                  className="flex w-full flex-col items-start rounded-lg px-2.5 py-1.5 text-left text-sm hover:bg-black/5"
+                >
+                  <span className="font-medium">{l.nome}</span>
+                  <span className="text-xs text-ink-muted">{l.empresa ? `${l.empresa} · ` : ""}{l.telefone}</span>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
         <input type="date" className="input !w-40" value={data} onChange={(e) => setData(e.target.value)} />
         <input type="time" className="input !w-28" value={hora} onChange={(e) => setHora(e.target.value)} />
         <select className="input !w-44" value={instanciaId} onChange={(e) => setInstanciaId(e.target.value)} title="Chip responsável (para contar no relatório)">

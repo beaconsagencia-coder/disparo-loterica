@@ -289,7 +289,7 @@ export async function runSdr(p: RunSdrParams): Promise<void> {
 
   // Reunião já marcada para ESTA conversa? Vincula o agendamento ao contato e
   // muda o comportamento: nunca remarcar/re-oferecer; no follow-up, nem cutucar.
-  const reuniaoExistente = await activeMeetingFor(supabase, p.userId, p.conversationId);
+  const reuniaoExistente = await activeMeetingFor(supabase, p.userId, p.conversationId, p.leadId);
   if ((p.mode ?? "reply") === "followup" && reuniaoExistente) {
     console.log("[sdr] follow-up ignorado: já há reunião marcada nesta conversa");
     return;

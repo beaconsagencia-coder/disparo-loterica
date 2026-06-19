@@ -96,13 +96,20 @@ async function fetchMeetings(
   return rows;
 }
 
-/** Reunião ativa (não cancelada, futura ou sem data) da conversa, se houver. */
+/**
+ * Reunião ativa (não cancelada, futura ou sem data) deste contato, se houver.
+ * Casa por conversation_id OU lead_id — assim uma reunião MANUAL vinculada ao
+ * lead (mesmo sem conversa ainda) também é reconhecida e evita duplicação.
+ */
 export async function activeMeetingFor(
-  supabase: SupabaseClient, userId: string, conversationId: string,
+  supabase: SupabaseClient, userId: string, conversationId: string, leadId?: string,
 ): Promise<ActiveMeeting | null> {
+  const ors = [`conversation_id.eq.${conversationId}`];
+  if (leadId) ors.push(`lead_id.eq.${leadId}`);
   const { data } = await supabase.from("meetings")
     .select("id, quando_texto, scheduled_for")
-    .eq("user_id", userId).eq("conversation_id", conversationId).neq("status", "cancelada")
+    .eq("user_id", userId).neq("status", "cancelada")
+    .or(ors.join(","))
     .order("scheduled_for", { ascending: true });
   const corte = Date.now() - 3_600_000; // 1h de tolerância após o horário
   const m = (data ?? []).find((r) => !r.scheduled_for || new Date(r.scheduled_for).getTime() >= corte);
