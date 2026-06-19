@@ -8,6 +8,7 @@ import Campaigns from "./pages/Campaigns";
 import Cadences from "./pages/Cadences";
 import AiSdr from "./pages/AiSdr";
 import Prospeccao from "./pages/Prospeccao";
+import Crm from "./pages/Crm";
 import Relatorios from "./pages/Relatorios";
 import Aprendizado from "./pages/Aprendizado";
 import Agenda from "./pages/Agenda";
@@ -40,6 +41,7 @@ export default function App() {
           <Route path="/ia-sdr" element={<AiSdr />} />
           <Route path="/aprendizado" element={<Aprendizado />} />
           <Route path="/prospeccao" element={<Prospeccao />} />
+          <Route path="/crm" element={<Crm />} />
           <Route path="/relatorios" element={<Relatorios />} />
           <Route path="/agenda" element={<Agenda />} />
           <Route path="/inbox" element={<Inbox />} />

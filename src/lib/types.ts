@@ -4,6 +4,8 @@ export type LeadStatus =
   | "novo"
   | "na_fila"
   | "aguardando_resposta"
+  | "respondeu"
+  | "em_followup"
   | "em_negociacao"
   | "reuniao_agendada"
   | "sem_whatsapp"
@@ -93,6 +95,8 @@ export const LEAD_STATUS_LABEL: Record<LeadStatus, string> = {
   novo: "Novo",
   na_fila: "Na fila",
   aguardando_resposta: "Aguardando resposta",
+  respondeu: "Respondeu",
+  em_followup: "Em follow-up",
   em_negociacao: "Em negociação",
   reuniao_agendada: "Reunião agendada",
   sem_whatsapp: "Sem WhatsApp",
