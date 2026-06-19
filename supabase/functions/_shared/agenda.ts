@@ -46,7 +46,9 @@ export async function loadAgenda(supabase: SupabaseClient, userId: string): Prom
 }
 
 interface Block { dia_semana: number; hora_inicio: string; hora_fim: string }
-interface Meet { scheduled_for: string | null; duracao_min: number | null }
+interface Meet { scheduled_for: string | null; duracao_min: number | null; conversation_id?: string | null }
+
+export interface ActiveMeeting { id: string; quando_texto: string | null; scheduled_for: string | null }
 
 /** Retorna o motivo do conflito, ou null se o horário está livre. */
 export function slotConflict(
@@ -77,32 +79,54 @@ export function labelSlot(d: Date): string {
   return `${DIAS_PT[sp.weekday]} ${pad(sp.da)}/${pad(sp.mo)} às ${pad(sp.h)}:${pad(sp.mi)}`;
 }
 
-async function fetchMeetings(supabase: SupabaseClient, userId: string): Promise<Meet[]> {
+async function fetchMeetings(
+  supabase: SupabaseClient, userId: string, excludeConversationId?: string,
+): Promise<Meet[]> {
   // Considera TODAS as reuniões do usuário que não foram canceladas — sejam
   // marcadas pelo bot ou manualmente na aba Agenda. (Reuniões passadas/realizadas
   // não conflitam porque o slotConflict casa data e rejeita horário no passado.)
   const { data } = await supabase.from("meetings")
-    .select("scheduled_for, duracao_min").eq("user_id", userId).neq("status", "cancelada")
+    .select("scheduled_for, duracao_min, conversation_id").eq("user_id", userId).neq("status", "cancelada")
     .not("scheduled_for", "is", null);
-  return data ?? [];
+  let rows = (data ?? []) as Meet[];
+  // A reunião da PRÓPRIA conversa não conflita com ela mesma (senão o bot
+  // remarca o horário que acabou de combinar). Reuniões manuais (sem conversa)
+  // são preservadas — só removemos as desta conversa específica.
+  if (excludeConversationId) rows = rows.filter((m) => m.conversation_id !== excludeConversationId);
+  return rows;
+}
+
+/** Reunião ativa (não cancelada, futura ou sem data) da conversa, se houver. */
+export async function activeMeetingFor(
+  supabase: SupabaseClient, userId: string, conversationId: string,
+): Promise<ActiveMeeting | null> {
+  const { data } = await supabase.from("meetings")
+    .select("id, quando_texto, scheduled_for")
+    .eq("user_id", userId).eq("conversation_id", conversationId).neq("status", "cancelada")
+    .order("scheduled_for", { ascending: true });
+  const corte = Date.now() - 3_600_000; // 1h de tolerância após o horário
+  const m = (data ?? []).find((r) => !r.scheduled_for || new Date(r.scheduled_for).getTime() >= corte);
+  return (m as ActiveMeeting) ?? null;
 }
 
 /** Valida um horário específico. */
 export async function checkAvailability(
-  supabase: SupabaseClient, userId: string, startISO: string, duracaoMin?: number,
+  supabase: SupabaseClient, userId: string, startISO: string, duracaoMin?: number, excludeConversationId?: string,
 ): Promise<{ ok: boolean; motivo: string | null; settings: AgendaSettings }> {
   const settings = await loadAgenda(supabase, userId);
   const start = new Date(startISO);
   if (isNaN(start.getTime())) return { ok: false, motivo: "data inválida", settings };
   const { data: blocks } = await supabase.from("agenda_blocks")
     .select("dia_semana, hora_inicio, hora_fim").eq("user_id", userId);
-  const meetings = await fetchMeetings(supabase, userId);
+  const meetings = await fetchMeetings(supabase, userId, excludeConversationId);
   const motivo = slotConflict(settings, blocks ?? [], meetings, start, duracaoMin ?? settings.duracao);
   return { ok: !motivo, motivo, settings };
 }
 
 /** Resumo da agenda para injetar no contexto do SDR (validação sem depender de tool call). */
-export async function agendaResumo(supabase: SupabaseClient, userId: string): Promise<string> {
+export async function agendaResumo(
+  supabase: SupabaseClient, userId: string, excludeConversationId?: string,
+): Promise<string> {
   const settings = await loadAgenda(supabase, userId);
   const { data: blocks } = await supabase.from("agenda_blocks")
     .select("dia_semana, hora_inicio, hora_fim, titulo").eq("user_id", userId).order("dia_semana");
@@ -118,30 +142,33 @@ export async function agendaResumo(supabase: SupabaseClient, userId: string): Pr
 
   // Reuniões JÁ marcadas (bot OU manuais na aba Agenda) — o bot precisa saber
   // que esses horários estão ocupados para não oferecer nem confirmar neles.
-  const { data: ocupadas } = await supabase.from("meetings")
-    .select("scheduled_for")
+  const { data: ocupadasRaw } = await supabase.from("meetings")
+    .select("scheduled_for, conversation_id")
     .eq("user_id", userId).neq("status", "cancelada")
     .not("scheduled_for", "is", null)
     .gte("scheduled_for", new Date().toISOString())
-    .order("scheduled_for", { ascending: true }).limit(15);
-  if (ocupadas?.length) {
+    .order("scheduled_for", { ascending: true }).limit(20);
+  // Não lista a reunião da própria conversa como "ocupada" (senão o bot tenta
+  // remarcar o horário que ele mesmo acabou de combinar com este cliente).
+  const ocupadas = (ocupadasRaw ?? []).filter((m) => m.conversation_id !== excludeConversationId);
+  if (ocupadas.length) {
     const lista = ocupadas.map((m) => labelSlot(new Date(m.scheduled_for as string))).join("; ");
     linhas.push(`- JÁ OCUPADO por reuniões marcadas (NUNCA ofereça nem confirme estes horários): ${lista}.`);
   }
 
-  const livres = await suggestSlots(supabase, userId, undefined, 5);
+  const livres = await suggestSlots(supabase, userId, undefined, 5, excludeConversationId);
   if (livres.length) linhas.push(`- Próximos horários LIVRES (ofereça só destes): ${livres.join("; ")}.`);
   return linhas.join("\n");
 }
 
 /** Sugere os próximos N horários livres a partir de uma data. */
 export async function suggestSlots(
-  supabase: SupabaseClient, userId: string, fromISO?: string, count = 3,
+  supabase: SupabaseClient, userId: string, fromISO?: string, count = 3, excludeConversationId?: string,
 ): Promise<string[]> {
   const settings = await loadAgenda(supabase, userId);
   const { data: blocks } = await supabase.from("agenda_blocks")
     .select("dia_semana, hora_inicio, hora_fim").eq("user_id", userId);
-  const meetings = await fetchMeetings(supabase, userId);
+  const meetings = await fetchMeetings(supabase, userId, excludeConversationId);
   const dur = settings.duracao;
   const startMinDay = hhmmToMin(settings.inicio);
   const endMinDay = hhmmToMin(settings.fim);

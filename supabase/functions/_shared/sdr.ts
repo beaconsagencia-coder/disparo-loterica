@@ -6,7 +6,7 @@
 import { GoogleGenAI, Type } from "npm:@google/genai@2.8.0";
 import type { SupabaseClient } from "jsr:@supabase/supabase-js@2";
 import { sendText } from "./evolution.ts";
-import { agendaResumo, checkAvailability, suggestSlots } from "./agenda.ts";
+import { agendaResumo, checkAvailability, suggestSlots, activeMeetingFor, labelSlot } from "./agenda.ts";
 
 const DEFAULT_MODEL = "gemini-2.5-flash";
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -260,6 +260,7 @@ function buildSystem(playbook: string, persona: string, empresa: string, leadNom
     "- PEDIDO DE LIGAÇÃO ('me liga', 'liga para X'): não ligue. Explique com naturalidade que precisa mostrar o mecanismo na tela, por isso é uma rápida reunião online, e proponha um horário.",
     "- MENSAGEM AUTOMÁTICA DO CLIENTE: se a última mensagem parecer um auto-atendimento da empresa (ex: 'seja bem-vindo', 'horário de atendimento', 'deixe sua mensagem', menu de opções/números), NÃO dispare a proposta de valor. Apenas cumprimente de forma curta e pergunte se está falando com o responsável.",
     "- AGENDAMENTO: sugira horários exatos (ex: 14:30 ou 15h) e seja flexível para remarcar. Quando o cliente confirmar, chame a função agendar_reuniao e confirme calorosamente.",
+    "- REUNIÃO JÁ MARCADA: se o contexto da agenda indicar que ESTE cliente já tem uma reunião marcada, o agendamento está ENCERRADO. NUNCA ofereça novos horários, NUNCA chame agendar_reuniao de novo e NUNCA remarque por conta própria — mesmo que o cliente só diga 'ok'/'combinado'. Apenas confirme/relembre o horário já combinado. Se o cliente PEDIR para remarcar, diga que vai passar para um atendente fazer o ajuste.",
     "- DISPONIBILIDADE (tempo real): SEMPRE chame consultar_disponibilidade ANTES de sugerir ou confirmar qualquer horário. Ofereça apenas horários livres. Se o cliente pedir um horário ocupado, avise que nele não dá e ofereça as opções livres mais próximas que a função retornar. Se agendar_reuniao responder que está ocupado, NÃO confirme: ofereça uma das alternativas.",
     "- NUNCA PROMETA RESPONDER DEPOIS: você NÃO consegue voltar sozinho à conversa mais tarde. É PROIBIDO dizer 'vou verificar com a equipe', 'deixa eu confirmar a agenda e já te retorno', 'já te aviso', 'volto já', 'aguarde um momento' ou qualquer promessa de resposta futura. Você TEM acesso à agenda AGORA: chame consultar_disponibilidade e, no MESMO turno, já responda ao cliente com os horários livres ou confirme a reunião. Resolva o agendamento sempre na hora, sem deixar o cliente esperando.",
     "- LINK DA REUNIÃO: o link é enviado NO DIA da reunião, 15 minutos antes do horário — NUNCA diga 'amanhã' por padrão. Use a data/hora atual acima para descobrir o dia certo: diga 'no dia, uns 15 minutinhos antes, te envio o link' ou cite o dia exato (ex: 'na sexta, 15 min antes'). Só fale 'amanhã' se a reunião for realmente no dia seguinte.",
@@ -285,6 +286,14 @@ export async function runSdr(p: RunSdrParams): Promise<void> {
   const { data: conv } = await supabase
     .from("conversations").select("ai_enabled").eq("id", p.conversationId).maybeSingle();
   if (!conv || conv.ai_enabled === false) { console.log("[sdr] conversa com IA desligada (ai_enabled=false)"); return; }
+
+  // Reunião já marcada para ESTA conversa? Vincula o agendamento ao contato e
+  // muda o comportamento: nunca remarcar/re-oferecer; no follow-up, nem cutucar.
+  const reuniaoExistente = await activeMeetingFor(supabase, p.userId, p.conversationId);
+  if ((p.mode ?? "reply") === "followup" && reuniaoExistente) {
+    console.log("[sdr] follow-up ignorado: já há reunião marcada nesta conversa");
+    return;
+  }
 
   // Anti-loop / mensagens picadas: ao responder, espera alguns segundos para o
   // cliente terminar de digitar. Se chegar mensagem nova nesse meio, aborta —
@@ -357,7 +366,14 @@ export async function runSdr(p: RunSdrParams): Promise<void> {
     });
   }
 
-  const agenda = await agendaResumo(supabase, p.userId);
+  let agenda = await agendaResumo(supabase, p.userId, p.conversationId);
+  if (reuniaoExistente) {
+    const quando = reuniaoExistente.quando_texto?.trim() ||
+      (reuniaoExistente.scheduled_for ? labelSlot(new Date(reuniaoExistente.scheduled_for)) : "horário já combinado");
+    agenda +=
+      `\n- ⚠️ ESTE CLIENTE JÁ TEM REUNIÃO MARCADA (${quando}). NÃO agende outra, ` +
+      "NÃO ofereça novos horários e NÃO use agendar_reuniao. Apenas confirme/relembre esse horário e responda o que ele perguntar.";
+  }
 
   // Aprendizados aprovados (self-reflection loop) injetados no prompt.
   const { data: licoes } = await supabase
@@ -411,20 +427,35 @@ export async function runSdr(p: RunSdrParams): Promise<void> {
         const args = (call.args ?? {}) as { data_iso?: string };
         let result: Record<string, unknown>;
         if (args.data_iso) {
-          const av = await checkAvailability(supabase, p.userId, args.data_iso);
+          const av = await checkAvailability(supabase, p.userId, args.data_iso, undefined, p.conversationId);
           result = av.ok
             ? { disponivel: true }
-            : { disponivel: false, motivo: av.motivo, alternativas: await suggestSlots(supabase, p.userId, args.data_iso) };
+            : { disponivel: false, motivo: av.motivo, alternativas: await suggestSlots(supabase, p.userId, args.data_iso, 3, p.conversationId) };
         } else {
-          result = { proximos_horarios_livres: await suggestSlots(supabase, p.userId) };
+          result = { proximos_horarios_livres: await suggestSlots(supabase, p.userId, undefined, 3, p.conversationId) };
         }
         responseParts.push({ functionResponse: { name: "consultar_disponibilidade", response: result } });
       } else if (call.name === "agendar_reuniao") {
         const args = (call.args ?? {}) as { quando_texto?: string; data_iso?: string; observacao?: string };
-        const av = await checkAvailability(supabase, p.userId, args.data_iso ?? "");
+        // Já existe reunião nesta conversa? Não confirme nem remarque por conta
+        // própria — só o atendente humano remarca. Rede de segurança anti-loop.
+        if (reuniaoExistente) {
+          const quando = reuniaoExistente.quando_texto?.trim() ||
+            (reuniaoExistente.scheduled_for ? labelSlot(new Date(reuniaoExistente.scheduled_for)) : "horário já combinado");
+          responseParts.push({
+            functionResponse: {
+              name: "agendar_reuniao",
+              response: { agendado: false, ja_marcada: true, quando, instrucao: `Este cliente JÁ TEM reunião marcada (${quando}). NÃO marque outra nem remarque — apenas confirme calorosamente esse mesmo horário.` },
+            },
+          });
+          continue;
+        }
+        // Exclui a própria conversa do conflito (não há reunião dela ainda, mas
+        // mantém consistente caso uma corrida tenha criado uma).
+        const av = await checkAvailability(supabase, p.userId, args.data_iso ?? "", undefined, p.conversationId);
         if (!av.ok) {
           // Horário ocupado/ inválido → devolve alternativas e NÃO agenda.
-          const alternativas = await suggestSlots(supabase, p.userId, args.data_iso);
+          const alternativas = await suggestSlots(supabase, p.userId, args.data_iso, 3, p.conversationId);
           responseParts.push({
             functionResponse: {
               name: "agendar_reuniao",
