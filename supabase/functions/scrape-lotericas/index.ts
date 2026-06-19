@@ -209,6 +209,7 @@ Deno.serve(async (req) => {
   let novosLeads = 0, enfileirados = 0;
   let semCredito = false;
   let motivoPausa = "";
+  const userIds = [...new Set((bairros as Bairro[]).map((b) => b.user_id))];
   for (const b of bairros as Bairro[]) {
     try {
       const instance = await instanciaDe(b.user_id);
@@ -281,6 +282,12 @@ Deno.serve(async (req) => {
     console.warn(`[scrape] extração pausada (${USA_GOOGLE ? "google" : "apify"}):`, motivoPausa);
     return json({ ok: false, motivo: motivoPausa, novos: novosLeads, enfileirados });
   }
+
+  // Ciclo rodou sem pausa: limpa avisos antigos (ex.: "Apify sem créditos")
+  // que ficaram gravados nos bairros ainda 'pendente' desses usuários, para
+  // o banner não mentir depois de trocar de fonte / repor créditos.
+  await supabase.from("fila_bairros")
+    .update({ erro: null }).in("user_id", userIds).eq("status", "pendente").not("erro", "is", null);
 
   return json({ ok: true, bairros: bairros.length, novos: novosLeads, enfileirados });
 });
