@@ -2,7 +2,9 @@
 // scrape-lotericas · acionado pelo Supabase Cron (a cada 5 min)
 // ---------------------------------------------------------------------
 // 1) Reivindica um lote de bairros 'pendente' (RPC claim_bairros, SKIP LOCKED)
-// 2) Extrai lotéricas no Google Maps (Apify) por bairro
+// 2) Extrai lotéricas no Google Maps por bairro.
+//    Fonte: Google Places API (New) se GOOGLE_MAPS_API_KEY existir;
+//            senão, cai no Apify (actor pago). Chave-mestra = troca sem deploy.
 // 3) Normaliza telefones (Regex -> 55DDDXXXXXYYYY)
 // 4) Valida no WhatsApp (Evolution) e grava como lead (origem 'prospeccao')
 // 5) Se o auto-disparo estiver ligado, já enfileira a 1ª mensagem
@@ -21,6 +23,9 @@ const CRON_SECRET = Deno.env.get("DISPATCHER_CRON_SECRET")!;
 const APIFY_TOKEN = Deno.env.get("APIFY_API_TOKEN")!;
 // Actor de Google Maps (padrão); troque por env se quiser outro Actor.
 const APIFY_ACTOR = Deno.env.get("APIFY_ACTOR_ID") ?? "compass~crawler-google-places";
+// Google Places API (New): se a chave existir, vira a fonte preferida (mais barata).
+const GOOGLE_KEY = (Deno.env.get("GOOGLE_MAPS_API_KEY") ?? "").trim();
+const USA_GOOGLE = GOOGLE_KEY.length > 0;
 const LOTE = 3;          // bairros por execução (menor = menos risco de timeout; o reclaim do claim_bairros cobre o resto)
 const POR_BAIRRO = 20;   // resultados máximos por bairro
 
@@ -61,20 +66,42 @@ function nomePrincipal(raw: string): string {
   return s || (raw ?? "").trim();
 }
 
-// Mensagem mostrada na fila quando o Apify está sem créditos (fica visível na UI).
-const QUOTA_MSG = "Apify sem créditos (402). Adicione créditos no Apify para retomar — a fila volta sozinha.";
-
 /**
- * Erro de cota/créditos do Apify (ex.: 402 not-enough-usage-to-run-paid-actor,
- * limite mensal atingido). Não adianta insistir — é problema de conta, não do bairro.
+ * Erro "de conta" (cota/créditos/billing/permissão) — vale para Apify e Google.
+ * Esses problemas afetam TODOS os bairros, não um específico: não adianta marcar
+ * 'erro' (queimaria a fila). A gente devolve o bairro pra 'pendente' e pausa,
+ * guardando o motivo para a UI avisar. A fila retoma sozinha quando resolver.
  */
-function isQuotaError(msg: string): boolean {
+function isPauseError(msg: string): boolean {
   const m = msg.toLowerCase();
-  return m.includes("not-enough-usage") ||
+  return (
+    // Apify (actor pago sem créditos / limite mensal)
+    m.includes("not-enough-usage") ||
     m.includes("monthly-usage-hard-limit") ||
     m.includes("usage hard limit") ||
     m.includes("payment required") ||
-    /\bapify 402\b/.test(m);
+    /\bapify 402\b/.test(m) ||
+    // Google Places API (New)
+    m.includes("resource_exhausted") ||      // cota esgotada (429)
+    m.includes("billing") ||                 // BILLING_DISABLED / faturamento não ativado
+    m.includes("api_key_service_blocked") || // chave não liberada p/ a Places API
+    m.includes("service_disabled") ||        // API não ativada no projeto
+    m.includes("permission_denied") ||
+    /\bgoogle 4(0[13]|29)\b/.test(m)         // 401/403/429 do Google
+  );
+}
+
+/** Motivo amigável (mostrado na fila) a partir da mensagem técnica de erro. */
+function pauseMessage(msg: string): string {
+  const m = msg.toLowerCase();
+  if (m.includes("billing"))
+    return "Google: billing não ativado. Ative o faturamento no Google Cloud para a Places API (New) funcionar.";
+  if (m.includes("api_key_service_blocked") || m.includes("service_disabled") ||
+      m.includes("permission_denied") || /\bgoogle 40[13]\b/.test(m))
+    return "Google: a chave não tem permissão para a Places API (New). Ative a API e libere a chave para ela.";
+  if (m.includes("resource_exhausted") || /\bgoogle 429\b/.test(m))
+    return "Google: cota da Places API esgotada no período. A fila volta sozinha quando renovar.";
+  return "Apify sem créditos (402). Adicione créditos no Apify para retomar — a fila volta sozinha.";
 }
 
 /** Limpa e formata um telefone BR para 55DDDXXXXXYYYY (12–13 dígitos). */
@@ -85,8 +112,47 @@ function normalizePhone(raw: string): string | null {
   return d;
 }
 
-/** Busca lotéricas no Google Maps via Apify (run-sync: roda o Actor e já devolve os itens). */
+/** Fonte de leads: Google Places (New) se houver chave; senão Apify. */
 async function buscarLotericas(bairro: string, cidade: string, estado: string): Promise<Place[]> {
+  return USA_GOOGLE
+    ? await buscarGoogle(bairro, cidade, estado)
+    : await buscarApify(bairro, cidade, estado);
+}
+
+/**
+ * Google Places API (New) · Text Search.
+ * 1 chamada por bairro, até POR_BAIRRO resultados. O telefone vem no field mask
+ * (nationalPhoneNumber/internationalPhoneNumber) — sem precisar de Place Details.
+ */
+async function buscarGoogle(bairro: string, cidade: string, estado: string): Promise<Place[]> {
+  const textQuery = `Lotérica, ${bairro}, ${cidade} - ${estado}`;
+  const res = await fetch("https://places.googleapis.com/v1/places:searchText", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Goog-Api-Key": GOOGLE_KEY,
+      // Só os campos que usamos -> mantém a chamada no SKU mais barato possível.
+      "X-Goog-FieldMask": "places.displayName,places.nationalPhoneNumber,places.internationalPhoneNumber",
+    },
+    body: JSON.stringify({
+      textQuery,
+      languageCode: "pt-BR",
+      regionCode: "BR",
+      maxResultCount: POR_BAIRRO, // Text Search (New) aceita 1..20
+    }),
+  });
+  if (!res.ok) throw new Error(`Google ${res.status}: ${(await res.text()).slice(0, 200)}`);
+  const data = await res.json();
+  const places = Array.isArray(data?.places) ? data.places : [];
+  // Normaliza para o shape Place (title + phone) usado adiante.
+  return places.map((p: Record<string, unknown>) => ({
+    title: (p.displayName as { text?: string })?.text ?? "",
+    phone: (p.internationalPhoneNumber as string) ?? (p.nationalPhoneNumber as string) ?? "",
+  })) as Place[];
+}
+
+/** Apify · busca lotéricas no Google Maps (run-sync: roda o Actor e já devolve os itens). */
+async function buscarApify(bairro: string, cidade: string, estado: string): Promise<Place[]> {
   const query = `Lotérica, ${bairro}, ${cidade} - ${estado}`;
   // run-sync-get-dataset-items: executa o Actor e retorna o dataset direto (sem polling).
   const url = `https://api.apify.com/v2/acts/${APIFY_ACTOR}/run-sync-get-dataset-items?token=${APIFY_TOKEN}`;
@@ -142,6 +208,7 @@ Deno.serve(async (req) => {
 
   let novosLeads = 0, enfileirados = 0;
   let semCredito = false;
+  let motivoPausa = "";
   for (const b of bairros as Bairro[]) {
     try {
       const instance = await instanciaDe(b.user_id);
@@ -194,10 +261,11 @@ Deno.serve(async (req) => {
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       console.error(`[scrape] bairro ${b.id} falhou:`, msg);
-      if (isQuotaError(msg)) {
-        // Sem créditos no Apify: não marca 'erro' (senão a fila inteira "queima").
-        // Volta pra 'pendente' mas guarda o motivo, para a UI avisar o usuário.
-        await supabase.from("fila_bairros").update({ status: "pendente", erro: QUOTA_MSG }).eq("id", b.id);
+      if (isPauseError(msg)) {
+        // Problema de conta (cota/créditos/billing/permissão): não marca 'erro'
+        // (senão a fila inteira "queima"). Volta pra 'pendente' guardando o motivo.
+        motivoPausa = pauseMessage(msg);
+        await supabase.from("fila_bairros").update({ status: "pendente", erro: motivoPausa }).eq("id", b.id);
         semCredito = true;
         break;
       }
@@ -209,13 +277,9 @@ Deno.serve(async (req) => {
     // Devolve os demais bairros reivindicados (ainda 'processando') para a fila.
     const ids = (bairros as Bairro[]).map((b) => b.id);
     await supabase.from("fila_bairros")
-      .update({ status: "pendente", erro: QUOTA_MSG }).in("id", ids).eq("status", "processando");
-    console.warn("[scrape] Apify sem créditos — lote devolvido à fila.");
-    return json({
-      ok: false,
-      motivo: "Apify sem créditos (402 not-enough-usage). Bairros mantidos na fila; adicione créditos no Apify ou troque o APIFY_ACTOR_ID.",
-      novos: novosLeads, enfileirados,
-    });
+      .update({ status: "pendente", erro: motivoPausa }).in("id", ids).eq("status", "processando");
+    console.warn(`[scrape] extração pausada (${USA_GOOGLE ? "google" : "apify"}):`, motivoPausa);
+    return json({ ok: false, motivo: motivoPausa, novos: novosLeads, enfileirados });
   }
 
   return json({ ok: true, bairros: bairros.length, novos: novosLeads, enfileirados });
