@@ -367,6 +367,25 @@ export async function runSdr(p: RunSdrParams): Promise<void> {
       return;
     }
   } else {
+    // TETO ANTI-SPAM: nunca acumular muitas mensagens sem resposta. Conta as
+    // mensagens outbound consecutivas desde a última resposta do cliente (ou
+    // desde o início, se ele nunca respondeu) — abertura + follow-ups. Ao bater
+    // o teto, para de cutucar. (followup_max = nº de follow-ups; +1 = a abertura.)
+    let semResposta = 0;
+    for (let i = (hist?.length ?? 0) - 1; i >= 0; i--) {
+      if (hist![i].direction === "outbound") semResposta++;
+      else break; // achou uma resposta do cliente: zera a contagem
+    }
+    const followupMax = Number(config.followup_max ?? 2);
+    const maxSemResposta = followupMax + 1;
+    if (semResposta >= maxSemResposta) {
+      console.log(`[sdr] follow-up ignorado: ${semResposta} mensagens sem resposta (teto ${maxSemResposta})`);
+      // Trava o agendador para não reprocessar esta conversa a cada ciclo.
+      // (Zera quando o cliente responder — o webhook reseta followup_count.)
+      await supabase.from("conversations").update({ followup_count: followupMax }).eq("id", p.conversationId);
+      return;
+    }
+
     // Follow-up por inatividade. ATENÇÃO: pode NÃO haver turno do cliente ainda
     // (ele nunca respondeu à abertura). Nesse caso 'contents' fica vazio porque a
     // abertura (outbound) é descartada — mas ainda queremos cutucar. Recuperamos
