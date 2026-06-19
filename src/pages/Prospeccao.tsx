@@ -117,6 +117,12 @@ export default function Prospeccao() {
     return c;
   }, [fila]);
 
+  // Detecta a fila travada por falta de créditos no Apify (motivo guardado no erro).
+  const semCreditoApify = useMemo(
+    () => fila.some((f) => f.erro && /apify|402|cr[eé]dito/i.test(f.erro)),
+    [fila],
+  );
+
   return (
     <div className="mx-auto max-w-5xl">
       <header className="mb-6 flex items-center gap-2">
@@ -198,6 +204,18 @@ export default function Prospeccao() {
       </div>
 
       {msg && <p className="mt-3 flex items-center gap-1 text-sm text-ink-soft"><CheckCircle2 size={14} className="text-success" /> {msg}</p>}
+
+      {/* Aviso: fila parada por falta de créditos no Apify */}
+      {semCreditoApify && (
+        <div className="bento-card mt-4 flex items-start gap-2 border-danger/30 !bg-danger/5 text-sm text-[#b4231b]">
+          <AlertCircle size={18} className="mt-0.5 shrink-0" />
+          <div>
+            <strong>Extração pausada: Apify sem créditos.</strong> A busca no Google Maps usa um actor pago do Apify e a conta está sem créditos/uso.
+            Adicione créditos em <em>console.apify.com → Billing</em> (ou troque o actor) — a fila <strong>retoma sozinha</strong> e nada é perdido:
+            os bairros seguem como “pendente”.
+          </div>
+        </div>
+      )}
 
       {/* Fila de regiões */}
       <div className="bento-card mt-4">

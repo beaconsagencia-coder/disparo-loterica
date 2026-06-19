@@ -61,6 +61,9 @@ function nomePrincipal(raw: string): string {
   return s || (raw ?? "").trim();
 }
 
+// Mensagem mostrada na fila quando o Apify está sem créditos (fica visível na UI).
+const QUOTA_MSG = "Apify sem créditos (402). Adicione créditos no Apify para retomar — a fila volta sozinha.";
+
 /**
  * Erro de cota/créditos do Apify (ex.: 402 not-enough-usage-to-run-paid-actor,
  * limite mensal atingido). Não adianta insistir — é problema de conta, não do bairro.
@@ -192,9 +195,9 @@ Deno.serve(async (req) => {
       const msg = e instanceof Error ? e.message : String(e);
       console.error(`[scrape] bairro ${b.id} falhou:`, msg);
       if (isQuotaError(msg)) {
-        // Sem créditos no Apify: não marca erro (senão a fila inteira "queima").
-        // Devolve este bairro à fila e para — retoma sozinho quando houver crédito.
-        await supabase.from("fila_bairros").update({ status: "pendente", erro: null }).eq("id", b.id);
+        // Sem créditos no Apify: não marca 'erro' (senão a fila inteira "queima").
+        // Volta pra 'pendente' mas guarda o motivo, para a UI avisar o usuário.
+        await supabase.from("fila_bairros").update({ status: "pendente", erro: QUOTA_MSG }).eq("id", b.id);
         semCredito = true;
         break;
       }
@@ -206,7 +209,7 @@ Deno.serve(async (req) => {
     // Devolve os demais bairros reivindicados (ainda 'processando') para a fila.
     const ids = (bairros as Bairro[]).map((b) => b.id);
     await supabase.from("fila_bairros")
-      .update({ status: "pendente", erro: null }).in("id", ids).eq("status", "processando");
+      .update({ status: "pendente", erro: QUOTA_MSG }).in("id", ids).eq("status", "processando");
     console.warn("[scrape] Apify sem créditos — lote devolvido à fila.");
     return json({
       ok: false,
