@@ -598,7 +598,7 @@ function MeetingsCard(
               <span className={`chip ${cor[m.status] ?? ""}`}>{m.status}</span>
               {m.status === "agendada" && (
                 <>
-                  <button className="btn-ghost !px-2 !py-1" title="Marcar como realizada" onClick={() => setStatus(m.id, "realizada")}><Check size={14} /></button>
+                  <button className="btn-ghost !px-2 !py-1" title="Marcar como realizada (passa o atendimento para manual e desliga a IA dessa conversa)" onClick={() => setStatus(m.id, "realizada")}><Check size={14} /></button>
                   <button className="btn-ghost !px-2 !py-1" title="Cancelar" onClick={() => setStatus(m.id, "cancelada")}><Ban size={14} /></button>
                 </>
               )}
