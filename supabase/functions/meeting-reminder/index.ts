@@ -31,12 +31,32 @@ function spParts(iso: string) {
 const horaSP = (iso: string) =>
   new Intl.DateTimeFormat("pt-BR", { timeZone: "America/Sao_Paulo", hour: "2-digit", minute: "2-digit" }).format(new Date(iso));
 
-/** Quando a CONFIRMAÇÃO antecipada deve sair (ms epoch). */
-function confirmAtMs(iso: string): number {
+interface AgendaCfg { meetLink: string; confirmAtivo: boolean; manhaHoras: number; tardeHora: string; noiteHora: string }
+const cfgCache = new Map<string, AgendaCfg>();
+async function agendaCfg(userId: string): Promise<AgendaCfg> {
+  if (cfgCache.has(userId)) return cfgCache.get(userId)!;
+  const { data } = await supabase.from("agenda_settings")
+    .select("meet_link, confirm_ativo, confirm_manha_horas, confirm_tarde_hora, confirm_noite_hora")
+    .eq("user_id", userId).maybeSingle();
+  const c: AgendaCfg = {
+    meetLink: data?.meet_link ?? "",
+    confirmAtivo: data?.confirm_ativo ?? true,
+    manhaHoras: Number(data?.confirm_manha_horas ?? 2),
+    tardeHora: data?.confirm_tarde_hora || "09:00",
+    noiteHora: data?.confirm_noite_hora || "14:00",
+  };
+  cfgCache.set(userId, c);
+  return c;
+}
+
+const hhmm = (s: string, fb: string) => (/^\d{1,2}:\d{2}$/.test(s) ? s.padStart(5, "0") : fb);
+
+/** Quando a CONFIRMAÇÃO antecipada deve sair (ms epoch), conforme a config. */
+function confirmAtMs(iso: string, cfg: AgendaCfg): number {
   const sp = spParts(iso);
-  if (sp.h < 12) return new Date(iso).getTime() - 2 * 3_600_000; // manhã  -> 2h antes
-  if (sp.h < 18) return new Date(`${sp.y}-${sp.mo}-${sp.da}T09:00:00-03:00`).getTime(); // tarde -> manhã (09h)
-  return new Date(`${sp.y}-${sp.mo}-${sp.da}T14:00:00-03:00`).getTime(); // noite -> tarde (14h)
+  if (sp.h < 12) return new Date(iso).getTime() - cfg.manhaHoras * 3_600_000; // manhã -> X h antes
+  const hora = sp.h < 18 ? hhmm(cfg.tardeHora, "09:00") : hhmm(cfg.noiteHora, "14:00");
+  return new Date(`${sp.y}-${sp.mo}-${sp.da}T${hora}:00-03:00`).getTime();
 }
 
 Deno.serve(async (req) => {
@@ -66,12 +86,13 @@ Deno.serve(async (req) => {
     const evolutionInstance = inst?.evolution_instance;
     const schedMs = new Date(m.scheduled_for as string).getTime();
     const nome = (lead?.nome && !/^\d+$/.test(lead.nome)) ? lead.nome.split(/\s+/)[0] : "";
+    const cfg = await agendaCfg(m.user_id);
 
     // Decide qual aviso enviar AGORA (lembrete tem prioridade quando está perto).
     let tipo: "lembrete" | "confirmacao" | null = null;
     if (!m.reminder_sent && schedMs - now <= 15 * 60_000 && schedMs - now >= -60_000) {
       tipo = "lembrete";
-    } else if (!m.confirm_sent && now >= confirmAtMs(m.scheduled_for as string) && now <= schedMs - 20 * 60_000) {
+    } else if (cfg.confirmAtivo && !m.confirm_sent && now >= confirmAtMs(m.scheduled_for as string, cfg) && now <= schedMs - 20 * 60_000) {
       tipo = "confirmacao";
     }
     if (!tipo) continue;
@@ -89,11 +110,7 @@ Deno.serve(async (req) => {
       texto = `Oi${nome ? ` ${nome}` : ""}! Passando pra confirmar nossa reunião de hoje às ${horaSP(m.scheduled_for as string)}. Posso contar com você? 🙌`;
     } else {
       // Link: o da reunião ou o link fixo das configurações.
-      let link = m.meet_link as string | null;
-      if (!link) {
-        const { data: ag } = await supabase.from("agenda_settings").select("meet_link").eq("user_id", m.user_id).maybeSingle();
-        link = ag?.meet_link || null;
-      }
+      const link = (m.meet_link as string | null) || cfg.meetLink || null;
       texto = link
         ? `Oi${nome ? ` ${nome}` : ""}! Daqui a pouco temos nossa reunião 🙌\nSegue o link da chamada: ${link}`
         : `Oi${nome ? ` ${nome}` : ""}! Daqui a pouco temos nossa reunião 🙌 Já já te mando o link por aqui.`;

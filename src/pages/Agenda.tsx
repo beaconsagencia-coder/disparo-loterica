@@ -56,6 +56,11 @@ export default function Agenda() {
   const [inicio, setInicio] = useState("08:00");
   const [fim, setFim] = useState("22:00");
   const [duracao, setDuracao] = useState(30);
+  // Confirmação antecipada (reduz no-show) — horários configuráveis.
+  const [confirmAtivo, setConfirmAtivo] = useState(true);
+  const [confirmManhaHoras, setConfirmManhaHoras] = useState(2);
+  const [confirmTardeHora, setConfirmTardeHora] = useState("09:00");
+  const [confirmNoiteHora, setConfirmNoiteHora] = useState("14:00");
   const [savingCfg, setSavingCfg] = useState(false);
   const [cfgMsg, setCfgMsg] = useState<string | null>(null);
   const [showCfg, setShowCfg] = useState(false);
@@ -91,6 +96,10 @@ export default function Agenda() {
       setInicio(cfg.inicio ?? "08:00");
       setFim(cfg.fim ?? "22:00");
       setDuracao(cfg.duracao_min ?? 30);
+      setConfirmAtivo(cfg.confirm_ativo ?? true);
+      setConfirmManhaHoras(cfg.confirm_manha_horas ?? 2);
+      setConfirmTardeHora(cfg.confirm_tarde_hora ?? "09:00");
+      setConfirmNoiteHora(cfg.confirm_noite_hora ?? "14:00");
     }
     const { data: b, error: bErr2 } = await supabase.from("agenda_blocks").select("*").order("dia_semana").order("hora_inicio");
     if (bErr2 && !loadErr) setLoadErr("Não consegui carregar os compromissos: " + bErr2.message);
@@ -113,7 +122,11 @@ export default function Agenda() {
     const uid = await userId();
     if (!uid) { setSavingCfg(false); return setCfgMsg("Sessão expirada."); }
     const { error } = await supabase.from("agenda_settings").upsert(
-      { user_id: uid, meet_link: meetLink.trim(), dias, inicio, fim, duracao_min: duracao },
+      {
+        user_id: uid, meet_link: meetLink.trim(), dias, inicio, fim, duracao_min: duracao,
+        confirm_ativo: confirmAtivo, confirm_manha_horas: confirmManhaHoras,
+        confirm_tarde_hora: confirmTardeHora, confirm_noite_hora: confirmNoiteHora,
+      },
       { onConflict: "user_id" },
     );
     setSavingCfg(false);
@@ -309,6 +322,37 @@ export default function Agenda() {
               <label className="mb-1 block text-xs font-medium text-ink-soft">Duração da reunião (min)</label>
               <input type="number" min={5} step={5} className="input" value={duracao} onChange={(e) => setDuracao(Number(e.target.value))} />
             </div>
+          </div>
+
+          <div className="mt-4 border-t border-black/5 pt-4">
+            <div className="mb-2 flex items-center justify-between">
+              <div>
+                <h3 className="text-sm font-medium">Confirmação antecipada (anti no-show)</h3>
+                <p className="text-xs text-ink-muted">Além do lembrete com link (15 min antes), envia uma confirmação mais cedo.</p>
+              </div>
+              <button onClick={() => setConfirmAtivo((v) => !v)}
+                className={`relative h-7 w-12 shrink-0 rounded-full transition-colors ${confirmAtivo ? "bg-accent" : "bg-black/15"}`}
+                title={confirmAtivo ? "Desativar confirmação" : "Ativar confirmação"}>
+                <span className={`absolute top-1 h-5 w-5 rounded-full bg-white shadow transition-all ${confirmAtivo ? "left-6" : "left-1"}`} />
+              </button>
+            </div>
+            {confirmAtivo && (
+              <div className="grid gap-3 sm:grid-cols-3">
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-ink-soft">Reunião de manhã → confirmar antes (h)</label>
+                  <input type="number" min={1} max={12} className="input" value={confirmManhaHoras}
+                    onChange={(e) => setConfirmManhaHoras(Math.max(1, Math.floor(Number(e.target.value) || 1)))} />
+                </div>
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-ink-soft">Reunião à tarde → confirmar às</label>
+                  <input type="time" className="input" value={confirmTardeHora} onChange={(e) => setConfirmTardeHora(e.target.value)} />
+                </div>
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-ink-soft">Reunião à noite → confirmar às</label>
+                  <input type="time" className="input" value={confirmNoiteHora} onChange={(e) => setConfirmNoiteHora(e.target.value)} />
+                </div>
+              </div>
+            )}
           </div>
 
           <div className="mt-4 flex items-center gap-3">
