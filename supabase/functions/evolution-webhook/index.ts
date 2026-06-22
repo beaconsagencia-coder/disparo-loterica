@@ -10,6 +10,7 @@ import { json } from "../_shared/cors.ts";
 import { runSdr, transcribeAudio, extractReferral, handleReferral } from "../_shared/sdr.ts";
 import { getMediaBase64, sendText } from "../_shared/evolution.ts";
 import { isOptOut } from "../_shared/optout.ts";
+import { isAutoReply, proximoDiaUtilSP } from "../_shared/autoreply.ts";
 
 const supabase = createClient(
   Deno.env.get("SUPABASE_URL")!,
@@ -186,8 +187,9 @@ Deno.serve(async (req) => {
     const conv = await upsertConversation(inst.user_id, leadId, inst.id);
     if (!conv) continue;
 
-    // Cliente respondeu: zera o contador de follow-ups automáticos.
-    await supabase.from("conversations").update({ followup_count: 0 }).eq("id", conv);
+    // Cliente respondeu: zera o contador de follow-ups e limpa eventual
+    // período de silêncio (será re-setado abaixo se for um auto-reply).
+    await supabase.from("conversations").update({ followup_count: 0, quiet_until: null }).eq("id", conv);
 
     const { data: inserted } = await supabase.from("messages").insert({
       user_id: inst.user_id,
@@ -220,6 +222,18 @@ Deno.serve(async (req) => {
       } catch (e) {
         console.error("[webhook] falha ao enviar ack de opt-out:", e instanceof Error ? e.message : e);
       }
+      continue; // não aciona SDR nem referral
+    }
+
+    // Auto-reply de "fora do horário / fechado": NÃO insistir. Marca a conversa
+    // para retomar no próximo dia útil e deixa o BOT como "à espera" (outbound),
+    // para o follow-up reativar sozinho quando o silêncio passar.
+    if (inserted && text && isAutoReply(text)) {
+      const retomar = proximoDiaUtilSP();
+      await supabase.from("conversations")
+        .update({ quiet_until: retomar.toISOString(), last_direction: "outbound" })
+        .eq("id", conv);
+      console.log("[webhook] auto-reply (fora do horário) de", numero, "— retoma em", retomar.toISOString());
       continue; // não aciona SDR nem referral
     }
 

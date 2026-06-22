@@ -57,6 +57,8 @@ Deno.serve(async (req) => {
       .eq("last_direction", "outbound")
       .lt("followup_count", followupMax)
       .lt("last_message_at", cutoff)
+      // Respeita o silêncio do auto-reply: só retoma após o próximo dia útil.
+      .or(`quiet_until.is.null,quiet_until.lte.${new Date().toISOString()}`)
       .order("last_message_at", { ascending: true })
       .limit(20);
 
