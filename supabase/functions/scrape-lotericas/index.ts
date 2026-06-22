@@ -37,8 +37,34 @@ const DEFAULT_TEMPLATE =
   "{É por esse número que falo com o responsável?|É por aqui que consigo falar com o responsável?|Consigo falar com o responsável por esse número?}";
 
 interface Bairro { id: string; user_id: string; bairro: string; cidade: string; estado: string; }
-interface Place { title?: string; name?: string; phone?: string; phoneUnformatted?: string }
+interface Place {
+  title?: string; name?: string; phone?: string; phoneUnformatted?: string;
+  primaryType?: string; types?: string[]; categoryName?: string; categories?: string[];
+}
 interface Prosp { autoDisparo: boolean; template: string }
+
+// --- Filtro de relevância: barra supermercado/farmácia/posto/etc. ---
+// Tipos do Google Places claramente NÃO-lotérica.
+const BLOCK_TYPES = new Set([
+  "supermarket", "grocery_store", "pharmacy", "drugstore", "gas_station", "restaurant",
+  "bakery", "meal_takeaway", "meal_delivery", "bank", "butcher_shop", "hardware_store",
+  "clothing_store", "department_store", "shopping_mall", "liquor_store", "cafe", "bar",
+  "beauty_salon", "hair_care", "car_repair", "furniture_store",
+]);
+// Palavras (nome ou categoria) que indicam outro ramo.
+const BLOCK_NOME =
+  /(supermerc|mercad(o|inho|ao|inha)|hipermerc|atacad|farm[aá]cia|drogaria|drogasil|drogal|pague\s*menos|padaria|a[cç]ougue|hortifruti|posto\s*(de)?\s*(gasolina|combust)|conveni[eê]ncia|restaurante|lanchonete|pizzaria|churrascaria|sorveteria|banco\b|ag[eê]ncia\s*banc|magazine|papelaria|pet\s*shop|petshop|supermarket|grocery|pharmacy|drugstore|bakery|restaurant|gas\s*station|butcher|hardware|clothing)/i;
+// Nome que confirma ser lotérica -> mantém mesmo que caia numa palavra acima.
+const NOME_LOTERICA = /(lot[eé]rica|loteria|lotec|casa\s*lot|caixa\s*econ|\bloto\b|bol[aã]o)/i;
+
+/** True se o local NÃO deve entrar na fila (supermercado, farmácia, etc.). */
+function ehBloqueado(nome: string, cats: string[]): boolean {
+  const n = nome ?? "";
+  if (NOME_LOTERICA.test(n)) return false;                 // claramente lotérica -> mantém
+  if (cats.some((c) => BLOCK_TYPES.has(c))) return true;   // tipo do Google
+  if (BLOCK_NOME.test(`${n} ${cats.join(" ")}`)) return true; // nome/categoria de outro ramo
+  return false;
+}
 
 /**
  * Extrai o "nome principal" do estabelecimento (para usar em {{Empresa}}),
@@ -131,8 +157,9 @@ async function buscarGoogle(bairro: string, cidade: string, estado: string): Pro
     headers: {
       "Content-Type": "application/json",
       "X-Goog-Api-Key": GOOGLE_KEY,
-      // Só os campos que usamos -> mantém a chamada no SKU mais barato possível.
-      "X-Goog-FieldMask": "places.displayName,places.nationalPhoneNumber,places.internationalPhoneNumber",
+      // Campos usados + tipo (para filtrar supermercado/farmácia). types/primaryType
+      // são SKU Pro; como já pedimos telefone (Enterprise), não sobe o custo.
+      "X-Goog-FieldMask": "places.displayName,places.nationalPhoneNumber,places.internationalPhoneNumber,places.primaryType,places.types",
     },
     body: JSON.stringify({
       textQuery,
@@ -148,6 +175,8 @@ async function buscarGoogle(bairro: string, cidade: string, estado: string): Pro
   return places.map((p: Record<string, unknown>) => ({
     title: (p.displayName as { text?: string })?.text ?? "",
     phone: (p.internationalPhoneNumber as string) ?? (p.nationalPhoneNumber as string) ?? "",
+    primaryType: (p.primaryType as string) ?? "",
+    types: Array.isArray(p.types) ? (p.types as string[]) : [],
   })) as Place[];
 }
 
@@ -243,8 +272,12 @@ Deno.serve(async (req) => {
       for (const p of places) {
         const tel = normalizePhone(p.phoneUnformatted ?? p.phone ?? "");
         if (!tel || vistos.has(tel)) continue;
+        const nome = (p.title ?? p.name ?? "").trim();
+        const cats = [p.primaryType, ...(p.types ?? []), p.categoryName, ...(p.categories ?? [])]
+          .filter(Boolean) as string[];
+        if (ehBloqueado(nome, cats)) continue; // supermercado/farmácia/etc. fora da fila
         vistos.add(tel);
-        candidatos.push({ nome: (p.title ?? p.name ?? "").trim() || "Lotérica", telefone: tel });
+        candidatos.push({ nome: nome || "Lotérica", telefone: tel });
       }
 
       // 4) Valida no WhatsApp e monta os leads (descarta quem não tem WhatsApp)

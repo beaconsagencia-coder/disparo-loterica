@@ -12,6 +12,7 @@ import { getMediaBase64, sendText } from "../_shared/evolution.ts";
 import { isOptOut } from "../_shared/optout.ts";
 import { isAutoReply, proximoDiaUtilSP } from "../_shared/autoreply.ts";
 import { detectMedia, uploadBase64 } from "../_shared/media.ts";
+import { isNotLoteria } from "../_shared/notloteria.ts";
 
 const supabase = createClient(
   Deno.env.get("SUPABASE_URL")!,
@@ -246,6 +247,29 @@ Deno.serve(async (req) => {
         .update({ quiet_until: retomar.toISOString(), last_direction: "outbound" })
         .eq("id", conv);
       console.log("[webhook] auto-reply (fora do horário) de", numero, "— retoma em", retomar.toISOString());
+      continue; // não aciona SDR nem referral
+    }
+
+    // "Aqui não é lotérica / número errado": encerra e cancela os follow-ups.
+    // (Exceção já tratada no detector: se a pessoa vai REPASSAR ao responsável,
+    // isNotLoteria retorna false e o fluxo segue normal.)
+    if (inserted && text && isNotLoteria(text)) {
+      console.log("[webhook] 'não é lotérica' de", numero, "— encerrando e cancelando follow-ups");
+      await supabase.from("leads").update({ status: "perdido" }).eq("id", leadId);
+      await supabase.from("message_queue")
+        .update({ status: "cancelado", last_error: "não é lotérica" })
+        .eq("lead_id", leadId).in("status", ["pendente", "pausado"]);
+      await supabase.from("conversations").update({ ai_enabled: false }).eq("id", conv);
+      const ack = "Ah, entendi! Desculpe o engano e obrigado pela atenção. 🙏";
+      try {
+        const { messageId } = await sendText(evolutionInstance, numero, ack);
+        await supabase.from("messages").insert({
+          user_id: inst.user_id, conversation_id: conv, instance_id: inst.id,
+          direction: "outbound", body: ack, evolution_message_id: messageId ?? null, status: "sent",
+        });
+      } catch (e) {
+        console.error("[webhook] ack 'não é lotérica' falhou:", e instanceof Error ? e.message : e);
+      }
       continue; // não aciona SDR nem referral
     }
 
