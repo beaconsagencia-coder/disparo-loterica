@@ -134,6 +134,13 @@ export default function Prospeccao() {
     if (!cidadeCat) return;
     enfileirar(cidadeCat.bairros.map((b) => ({ bairro: b, cidade: cidadeCat.cidade, estado: cidadeCat.estado })));
   }
+  function addEstadoInteiro() {
+    if (!estadoSel) return;
+    const rows = CATALOGO_BRASIL
+      .filter((c) => c.estado === estadoSel)
+      .flatMap((c) => c.bairros.map((b) => ({ bairro: b, cidade: c.cidade, estado: c.estado })));
+    enfileirar(rows);
+  }
   function addFree() {
     const cidade = freeCidade.trim(), estado = freeEstado.trim().toUpperCase();
     if (!cidade || estado.length !== 2) return setMsg("Informe a cidade e a UF (2 letras).");
@@ -215,6 +222,18 @@ export default function Prospeccao() {
               ))}
             </select>
           </div>
+
+          {estadoSel && (
+            <button
+              className="mt-2 flex w-full items-center justify-center gap-1.5 rounded-xl border border-accent/30 py-1.5 text-sm font-medium text-accent transition-colors hover:bg-accent hover:text-white disabled:opacity-60"
+              onClick={addEstadoInteiro}
+              disabled={adding}
+              title={`Enfileira os bairros de todas as cidades de ${estadoSel} do catálogo`}
+            >
+              {adding ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />}
+              Adicionar todas as cidades de {estadoSel} ({cidades.length})
+            </button>
+          )}
 
           {cidadeCat && (
             <div className="mt-3">
