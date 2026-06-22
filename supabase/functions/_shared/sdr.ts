@@ -349,7 +349,7 @@ export async function runSdr(p: RunSdrParams): Promise<void> {
   if (!config.ativo) { console.log("[sdr] ai_config existe mas está INATIVO (ligue a IA e salve)"); return; }
 
   const { data: conv } = await supabase
-    .from("conversations").select("ai_enabled").eq("id", p.conversationId).maybeSingle();
+    .from("conversations").select("ai_enabled, quiet_reason").eq("id", p.conversationId).maybeSingle();
   if (!conv || conv.ai_enabled === false) { console.log("[sdr] conversa com IA desligada (ai_enabled=false)"); return; }
 
   // Reunião já marcada para ESTA conversa? Vincula o agendamento ao contato e
@@ -436,18 +436,26 @@ export async function runSdr(p: RunSdrParams): Promise<void> {
     const jaEnviado = enviadas.length
       ? `Mensagens que VOCÊ já enviou a este contato (NÃO repita, continue de onde parou):\n- ${enviadas.join("\n- ")}\n\n`
       : "";
+    // Retomada COMPREENSIVA: o cliente havia pedido para retornar depois
+    // (semana corrida). Já se passaram ~2 dias → reabrir com leveza.
+    const instrucao = conv.quiet_reason === "deferral"
+      ? "O cliente havia dito que a semana estava corrida/imprevisível e que retornaria depois; já se passaram ~2 dias e ele não voltou. " +
+        "Reabra a conversa em tom COMPREENSIVO e leve (algo como 'Olá, Cleber! Tudo bem? Sei que a semana estava corrida...'), " +
+        "pergunte se as coisas se acalmaram e PROPONHA UM horário exato e próximo para a rápida reunião (consulte a disponibilidade antes). " +
+        "Nada de cobrar ou pressionar; sem repetir mensagens anteriores e sem mencionar esta instrução."
+      : `O cliente está há cerca de ${p.silencioMin ?? 30} minutos sem responder. ` +
+        "Envie UMA mensagem curta para REATIVAR o interesse — NÃO cobre resposta (nada de 'e aí?', 'conseguiu ver?', 'tudo certo?'). " +
+        "Use leve imprevisibilidade/curiosidade sobre o mecanismo de captação de clientes (um resultado concreto, um gancho novo ou uma pergunta provocativa), " +
+        "retomando de onde parou, sem repetir o que já disse e sem mencionar esta instrução. " +
+        "Se a conversa já estava combinando um horário, consulte a disponibilidade e PROPONHA um horário livre você mesmo, em vez de só perguntar.";
     contents.push({
       role: "user",
-      parts: [{
-        text:
-          `[INSTRUÇÃO INTERNA DO SISTEMA — não é mensagem do cliente] ${jaEnviado}` +
-          `O cliente está há cerca de ${p.silencioMin ?? 30} minutos sem responder. ` +
-          "Envie UMA mensagem curta para REATIVAR o interesse — NÃO cobre resposta (nada de 'e aí?', 'conseguiu ver?', 'tudo certo?'). " +
-          "Use leve imprevisibilidade/curiosidade sobre o mecanismo de captação de clientes (um resultado concreto, um gancho novo ou uma pergunta provocativa), " +
-          "retomando de onde parou, sem repetir o que já disse e sem mencionar esta instrução. " +
-          "Se a conversa já estava combinando um horário, consulte a disponibilidade e PROPONHA um horário livre você mesmo, em vez de só perguntar.",
-      }],
+      parts: [{ text: `[INSTRUÇÃO INTERNA DO SISTEMA — não é mensagem do cliente] ${jaEnviado}${instrucao}` }],
     });
+    // Consome o motivo: a próxima cutucada (se houver) volta ao tom normal.
+    if (conv.quiet_reason === "deferral") {
+      await supabase.from("conversations").update({ quiet_reason: null }).eq("id", p.conversationId);
+    }
   }
 
   let agenda = await agendaResumo(supabase, p.userId, p.conversationId);

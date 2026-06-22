@@ -13,6 +13,7 @@ import { isOptOut } from "../_shared/optout.ts";
 import { isAutoReply, proximoDiaUtilSP } from "../_shared/autoreply.ts";
 import { detectMedia, uploadBase64 } from "../_shared/media.ts";
 import { isNotLoteria } from "../_shared/notloteria.ts";
+import { isDeferral, emDias } from "../_shared/defer.ts";
 
 const supabase = createClient(
   Deno.env.get("SUPABASE_URL")!,
@@ -196,9 +197,9 @@ Deno.serve(async (req) => {
     const conv = await upsertConversation(inst.user_id, leadId, inst.id);
     if (!conv) continue;
 
-    // Cliente respondeu: zera o contador de follow-ups e limpa eventual
-    // período de silêncio (será re-setado abaixo se for um auto-reply).
-    await supabase.from("conversations").update({ followup_count: 0, quiet_until: null }).eq("id", conv);
+    // Cliente respondeu: zera o contador de follow-ups e limpa o período de
+    // silêncio/motivo (serão re-setados abaixo se for auto-reply/deferral).
+    await supabase.from("conversations").update({ followup_count: 0, quiet_until: null, quiet_reason: null }).eq("id", conv);
 
     const { data: inserted } = await supabase.from("messages").insert({
       user_id: inst.user_id,
@@ -271,6 +272,17 @@ Deno.serve(async (req) => {
         console.error("[webhook] ack 'não é lotérica' falhou:", e instanceof Error ? e.message : e);
       }
       continue; // não aciona SDR nem referral
+    }
+
+    // Cliente pediu para RETORNAR DEPOIS (semana corrida/imprevisível): não
+    // cutuca em 30 min. Aguarda ~2 dias e retoma em tom compreensivo. O bot
+    // ainda RESPONDE a esta mensagem (reconhecimento) — só suspende o nudge.
+    if (inserted && text && isDeferral(text)) {
+      await supabase.from("conversations")
+        .update({ quiet_until: emDias(2), quiet_reason: "deferral", last_direction: "outbound" })
+        .eq("id", conv);
+      console.log("[webhook] cliente pediu retorno depois — pausa 2 dias, retomada compreensiva");
+      // sem 'continue': deixa o SDR responder normalmente.
     }
 
     // Indicação de contato: o cliente repassou o número de outra pessoa?
