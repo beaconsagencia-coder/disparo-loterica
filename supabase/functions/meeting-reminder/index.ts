@@ -2,8 +2,9 @@
 // meeting-reminder · acionado pelo Supabase Cron (a cada 1 min)
 // ---------------------------------------------------------------------
 // Dois avisos por reunião, para reduzir no-show:
-//   1) CONFIRMAÇÃO antecipada: se a reunião é à TARDE, confirma de manhã
-//      (09h, fuso SP); se é de MANHÃ, confirma 2h antes. (confirm_sent)
+//   1) CONFIRMAÇÃO antecipada (confirm_sent), por faixa (fuso SP):
+//      MANHÃ (<12h) -> 2h antes; TARDE (12–17h) -> de manhã (09h);
+//      NOITE (>=18h) -> à tarde (14h).
 //   2) LEMBRETE com o link ~15 min antes do horário. (reminder_sent)
 // Tudo pelo mesmo chip da conversa, registrado no histórico.
 // =====================================================================
@@ -33,8 +34,9 @@ const horaSP = (iso: string) =>
 /** Quando a CONFIRMAÇÃO antecipada deve sair (ms epoch). */
 function confirmAtMs(iso: string): number {
   const sp = spParts(iso);
-  if (sp.h < 12) return new Date(iso).getTime() - 2 * 3_600_000; // manhã -> 2h antes
-  return new Date(`${sp.y}-${sp.mo}-${sp.da}T09:00:00-03:00`).getTime(); // tarde -> 09h da manhã
+  if (sp.h < 12) return new Date(iso).getTime() - 2 * 3_600_000; // manhã  -> 2h antes
+  if (sp.h < 18) return new Date(`${sp.y}-${sp.mo}-${sp.da}T09:00:00-03:00`).getTime(); // tarde -> manhã (09h)
+  return new Date(`${sp.y}-${sp.mo}-${sp.da}T14:00:00-03:00`).getTime(); // noite -> tarde (14h)
 }
 
 Deno.serve(async (req) => {
