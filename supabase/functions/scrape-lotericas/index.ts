@@ -210,11 +210,32 @@ Deno.serve(async (req) => {
   let semCredito = false;
   let motivoPausa = "";
   const userIds = [...new Set((bairros as Bairro[]).map((b) => b.user_id))];
+
+  // Teto diário de buscas por usuário (trava de custo). 0 = sem limite.
+  const hoje = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Sao_Paulo" }).format(new Date());
+  const budget = new Map<string, { max: number; usadas: number }>();
+  for (const uid of userIds) {
+    const { data } = await supabase.from("prospeccao_config")
+      .select("buscas_max_dia, buscas_dia_count, buscas_dia_data").eq("user_id", uid).maybeSingle();
+    const max = Number(data?.buscas_max_dia ?? 0);
+    const usadas = data?.buscas_dia_data === hoje ? Number(data?.buscas_dia_count ?? 0) : 0;
+    budget.set(uid, { max, usadas });
+  }
+
   for (const b of bairros as Bairro[]) {
+    // Atingiu o teto diário deste usuário? Devolve à fila para amanhã.
+    const bud = budget.get(b.user_id);
+    if (bud && bud.max > 0 && bud.usadas >= bud.max) {
+      await supabase.from("fila_bairros")
+        .update({ status: "pendente", erro: `Limite diário de buscas atingido (${bud.max}/dia) — retoma amanhã.` })
+        .eq("id", b.id);
+      continue;
+    }
     try {
       const instance = await instanciaDe(b.user_id);
       const cfg = await prospConfig(b.user_id);
       const places = await buscarLotericas(b.bairro, b.cidade, b.estado);
+      if (bud) bud.usadas++; // a busca foi feita (custa 1 chamada)
 
       // 3) Normaliza + dedupe dentro do lote
       const vistos = new Set<string>();
@@ -274,6 +295,14 @@ Deno.serve(async (req) => {
     }
   }
 
+  // Persiste o consumo diário de buscas por usuário (trava de custo).
+  for (const [uid, b] of budget) {
+    if (b.max > 0) {
+      await supabase.from("prospeccao_config")
+        .update({ buscas_dia_count: b.usadas, buscas_dia_data: hoje }).eq("user_id", uid);
+    }
+  }
+
   if (semCredito) {
     // Devolve os demais bairros reivindicados (ainda 'processando') para a fila.
     const ids = (bairros as Bairro[]).map((b) => b.id);
@@ -287,7 +316,8 @@ Deno.serve(async (req) => {
   // que ficaram gravados nos bairros ainda 'pendente' desses usuários, para
   // o banner não mentir depois de trocar de fonte / repor créditos.
   await supabase.from("fila_bairros")
-    .update({ erro: null }).in("user_id", userIds).eq("status", "pendente").not("erro", "is", null);
+    .update({ erro: null }).in("user_id", userIds).eq("status", "pendente")
+    .not("erro", "is", null).not("erro", "ilike", "%Limite di%");
 
   return json({ ok: true, bairros: bairros.length, novos: novosLeads, enfileirados });
 });

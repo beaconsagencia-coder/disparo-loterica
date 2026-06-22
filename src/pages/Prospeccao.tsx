@@ -15,6 +15,8 @@ const STATUS_FILA: Record<string, string> = {
 export default function Prospeccao() {
   const [autoDisparo, setAutoDisparo] = useState(true);
   const [template, setTemplate] = useState(DEFAULT_TEMPLATE);
+  const [buscasMaxDia, setBuscasMaxDia] = useState(0);
+  const [buscasHoje, setBuscasHoje] = useState(0);
   const [savingCfg, setSavingCfg] = useState(false);
   const [cfgMsg, setCfgMsg] = useState<string | null>(null);
 
@@ -41,6 +43,9 @@ export default function Prospeccao() {
     if (cfg) {
       setAutoDisparo(cfg.auto_disparo ?? true);
       if (cfg.spintax_template?.trim()) setTemplate(cfg.spintax_template);
+      setBuscasMaxDia(cfg.buscas_max_dia ?? 0);
+      const hoje = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Sao_Paulo" }).format(new Date());
+      setBuscasHoje(cfg.buscas_dia_data === hoje ? (cfg.buscas_dia_count ?? 0) : 0);
     }
     const { data: f } = await supabase.from("fila_bairros")
       .select("id, bairro, cidade, estado, status, erro").order("created_at", { ascending: false }).limit(500);
@@ -57,7 +62,7 @@ export default function Prospeccao() {
     const uid = await userId();
     if (!uid) { setSavingCfg(false); return setCfgMsg("Sessão expirada."); }
     const { error } = await supabase.from("prospeccao_config").upsert(
-      { user_id: uid, auto_disparo: autoDisparo, spintax_template: template.trim() },
+      { user_id: uid, auto_disparo: autoDisparo, spintax_template: template.trim(), buscas_max_dia: buscasMaxDia },
       { onConflict: "user_id" },
     );
     setSavingCfg(false);
@@ -214,6 +219,21 @@ export default function Prospeccao() {
         </div>
         <label className="mb-1 mt-3 block text-xs font-medium text-ink-soft">Mensagem (Spintax · use {"{a|b}"}, {"{{Nome}}"}, {"{{Saudacao}}"})</label>
         <textarea className="input min-h-[110px] font-mono text-xs leading-relaxed" value={template} onChange={(e) => setTemplate(e.target.value)} />
+
+        <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-black/5 pt-3">
+          <label className="text-xs font-medium text-ink-soft">Limite de buscas por dia (trava de custo · 0 = sem limite)</label>
+          <input
+            type="number" min={0} step={10}
+            className="input !w-24 !py-1 text-sm"
+            value={buscasMaxDia}
+            onChange={(e) => setBuscasMaxDia(Math.max(0, Math.floor(Number(e.target.value) || 0)))}
+          />
+          <span className="text-xs text-ink-muted">
+            Hoje: {buscasHoje}{buscasMaxDia > 0 ? `/${buscasMaxDia}` : ""} buscas
+            {buscasMaxDia > 0 && buscasHoje >= buscasMaxDia && <span className="ml-1 text-[#9a6400]">· teto atingido, retoma amanhã</span>}
+          </span>
+        </div>
+
         <div className="mt-3 flex items-center gap-3">
           <button className="btn-accent" onClick={saveCfg} disabled={savingCfg}>
             <Save size={16} /> {savingCfg ? "Salvando…" : "Salvar"}
