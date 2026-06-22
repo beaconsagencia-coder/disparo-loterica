@@ -128,7 +128,10 @@ Deno.serve(async (req) => {
     if (media) {
       const dl = await getMediaBase64(evolutionInstance, item);
       if (dl) {
-        mediaUrl = await uploadBase64(supabase, dl.base64, dl.mimetype || media.mime, `${inst.user_id}/inbound`, media.name);
+        // Prioriza o mimetype REAL da mensagem (imageMessage/documentMessage…);
+        // o do download cai p/ "audio/ogg" por padrão e quebraria imagens/docs.
+        const mime = media.mime || dl.mimetype;
+        mediaUrl = await uploadBase64(supabase, dl.base64, mime, `${inst.user_id}/inbound`, media.name);
         if (media.kind === "audio" && !text) {
           try {
             const transcrito = await transcribeAudio(dl.base64, dl.mimetype || media.mime);
