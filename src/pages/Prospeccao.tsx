@@ -96,6 +96,15 @@ export default function Prospeccao() {
     return done;
   }, [statusPorLocal]);
 
+  // Quantos bairros do catálogo inteiro AINDA não entraram na fila (status nulo).
+  const novasDisponiveis = useMemo(() => {
+    let n = 0;
+    for (const c of CATALOGO_BRASIL)
+      for (const b of c.bairros)
+        if (statusPorLocal.get(`${norm(c.estado)}|${norm(c.cidade)}|${norm(b)}`) == null) n++;
+    return n;
+  }, [statusPorLocal]);
+
   // Resumo de progresso da cidade selecionada (para o cabeçalho dos bairros).
   const resumoCidade = useMemo(() => {
     if (!cidadeCat) return null;
@@ -139,6 +148,15 @@ export default function Prospeccao() {
     const rows = CATALOGO_BRASIL
       .filter((c) => c.estado === estadoSel)
       .flatMap((c) => c.bairros.map((b) => ({ bairro: b, cidade: c.cidade, estado: c.estado })));
+    enfileirar(rows);
+  }
+  // Enfileira, de todo o catálogo, só os bairros que ainda não foram para a fila.
+  function addNaoProcessadas() {
+    const rows = CATALOGO_BRASIL.flatMap((c) =>
+      c.bairros
+        .filter((b) => localStatus(c.estado, c.cidade, b) == null)
+        .map((b) => ({ bairro: b, cidade: c.cidade, estado: c.estado })),
+    );
     enfileirar(rows);
   }
   function addFree() {
@@ -278,6 +296,18 @@ export default function Prospeccao() {
               </div>
             </div>
           )}
+
+          <button
+            className="mt-3 flex w-full items-center justify-center gap-1.5 rounded-xl bg-accent py-2 text-sm font-medium text-white transition-colors hover:bg-accent/90 disabled:opacity-50"
+            onClick={addNaoProcessadas}
+            disabled={adding || novasDisponiveis === 0}
+            title="Enfileira, de todo o catálogo do Brasil, só os bairros que ainda não foram para a fila"
+          >
+            {adding ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />}
+            {novasDisponiveis > 0
+              ? `Adicionar não processadas — Brasil (${novasDisponiveis})`
+              : "Tudo do catálogo já está na fila ✓"}
+          </button>
         </div>
 
         <div className="bento-card">
