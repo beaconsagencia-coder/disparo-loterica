@@ -41,6 +41,24 @@ function normalizeNumber(remoteJid: string): string {
   return (remoteJid || "").split("@")[0].split(":")[0].replace(/\D/g, "");
 }
 
+/**
+ * Variações do 9º dígito (Brasil). O disparo costuma usar o número COM o 9
+ * (13 díg.) e a resposta chega SEM o 9 (12 díg.) — ou vice-versa. Geramos as
+ * duas formas para casar SEMPRE o mesmo lead/conversa (evita duplicação).
+ */
+function phoneVariants(num: string): string[] {
+  const d = (num || "").replace(/\D/g, "");
+  const out = new Set<string>([d]);
+  if (d.startsWith("55") && d.length === 13) {
+    const dd = d.slice(2, 4), rest = d.slice(4); // rest = 9 dígitos (com o 9)
+    if (rest.startsWith("9")) out.add("55" + dd + rest.slice(1)); // remove o 9 -> 12 díg.
+  } else if (d.startsWith("55") && d.length === 12) {
+    const dd = d.slice(2, 4), rest = d.slice(4); // rest = 8 dígitos (sem o 9)
+    out.add("55" + dd + "9" + rest); // insere o 9 -> 13 díg.
+  }
+  return [...out];
+}
+
 function extractText(message: any): string {
   return (
     message?.conversation ??
@@ -152,13 +170,16 @@ Deno.serve(async (req) => {
     const ROTULO: Record<string, string> = { image: "📷 [imagem]", audio: "🎤 [áudio]", video: "🎥 [vídeo]", document: "📄 [documento]" };
     const bodyToSave = text || (media ? ROTULO[media.kind] : isContact ? "📇 [contato compartilhado]" : "");
 
-    // Match do lead pelo telefone (dentro do tenant).
-    const { data: lead } = await supabase
+    // Match do lead pelo telefone (dentro do tenant), tolerando o 9º dígito:
+    // o lead pode ter sido salvo com/sem o 9. Pega o mais antigo (o do disparo).
+    const { data: leadRows } = await supabase
       .from("leads")
       .select("id, nome, status")
       .eq("user_id", inst.user_id)
-      .eq("telefone", numero)
-      .maybeSingle();
+      .in("telefone", phoneVariants(numero))
+      .order("created_at", { ascending: true })
+      .limit(1);
+    const lead = leadRows?.[0] ?? null;
 
     // Se não conhecemos o lead, cria um "inbound" para não perder o contato.
     let leadId = lead?.id;
