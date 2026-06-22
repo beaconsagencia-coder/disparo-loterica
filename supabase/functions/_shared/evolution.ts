@@ -39,6 +39,45 @@ export async function sendText(
   return { messageId: data?.key?.id ?? data?.messageId };
 }
 
+/** Envia imagem/vídeo/documento por URL. Lança em erro HTTP. */
+export async function sendMedia(
+  instance: string,
+  numero: string,
+  opts: { url: string; mediatype: "image" | "video" | "document"; mimetype?: string; fileName?: string; caption?: string },
+): Promise<{ messageId?: string }> {
+  const res = await fetch(`${BASE}/message/sendMedia/${instance}`, {
+    method: "POST",
+    headers: headers(),
+    body: JSON.stringify({
+      number: numero,
+      mediatype: opts.mediatype,
+      media: opts.url,
+      ...(opts.mimetype ? { mimetype: opts.mimetype } : {}),
+      ...(opts.fileName ? { fileName: opts.fileName } : {}),
+      ...(opts.caption ? { caption: opts.caption } : {}),
+    }),
+  });
+  if (!res.ok) throw new Error(`Evolution sendMedia ${res.status}: ${(await res.text()).slice(0, 200)}`);
+  const data = await res.json().catch(() => ({}));
+  return { messageId: data?.key?.id ?? data?.messageId };
+}
+
+/** Envia áudio como nota de voz (PTT) por URL. */
+export async function sendWhatsAppAudio(
+  instance: string,
+  numero: string,
+  url: string,
+): Promise<{ messageId?: string }> {
+  const res = await fetch(`${BASE}/message/sendWhatsAppAudio/${instance}`, {
+    method: "POST",
+    headers: headers(),
+    body: JSON.stringify({ number: numero, audio: url }),
+  });
+  if (!res.ok) throw new Error(`Evolution sendWhatsAppAudio ${res.status}: ${(await res.text()).slice(0, 200)}`);
+  const data = await res.json().catch(() => ({}));
+  return { messageId: data?.key?.id ?? data?.messageId };
+}
+
 /**
  * Baixa o conteúdo de uma mensagem de mídia (ex: áudio) em base64.
  * Recebe o objeto bruto da mensagem vindo do webhook (com `key`).

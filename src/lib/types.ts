@@ -74,6 +74,10 @@ export interface Message {
   body: string | null;
   status: string;
   created_at: string;
+  media_url?: string | null;
+  media_kind?: "image" | "audio" | "video" | "document" | null;
+  media_mime?: string | null;
+  media_name?: string | null;
 }
 
 export interface Cadence {

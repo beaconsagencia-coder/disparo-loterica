@@ -8,7 +8,7 @@
 // =====================================================================
 import { createClient } from "jsr:@supabase/supabase-js@2";
 import { json, corsHeaders } from "../_shared/cors.ts";
-import { sendText } from "../_shared/evolution.ts";
+import { sendText, sendMedia, sendWhatsAppAudio } from "../_shared/evolution.ts";
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
@@ -24,8 +24,12 @@ Deno.serve(async (req) => {
   const { data: auth } = await userClient.auth.getUser();
   if (!auth?.user) return json({ error: "unauthorized" }, 401);
 
-  const { conversation_id, body } = await req.json().catch(() => ({}));
-  if (!conversation_id || !body) return json({ error: "conversation_id e body são obrigatórios" }, 400);
+  const { conversation_id, body, media } = await req.json().catch(() => ({}));
+  // media (opcional): { url, kind: image|audio|video|document, mime?, name? }
+  const temMidia = media?.url && media?.kind;
+  if (!conversation_id || (!body && !temMidia)) {
+    return json({ error: "conversation_id e (body ou media) são obrigatórios" }, 400);
+  }
 
   // RLS garante que esta conversa pertence ao usuário autenticado.
   const { data: conv, error } = await userClient
@@ -43,16 +47,31 @@ Deno.serve(async (req) => {
   }
 
   try {
-    const { messageId } = await sendText(evolutionInstance, numero, body);
+    let messageId: string | undefined;
+    if (temMidia) {
+      if (media.kind === "audio") {
+        ({ messageId } = await sendWhatsAppAudio(evolutionInstance, numero, media.url));
+      } else {
+        ({ messageId } = await sendMedia(evolutionInstance, numero, {
+          url: media.url, mediatype: media.kind, mimetype: media.mime, fileName: media.name, caption: body || undefined,
+        }));
+      }
+    } else {
+      ({ messageId } = await sendText(evolutionInstance, numero, body));
+    }
 
     await userClient.from("messages").insert({
       user_id: auth.user.id,
       conversation_id: conv.id,
       instance_id: conv.instance_id,
       direction: "outbound",
-      body,
+      body: body || null,
       evolution_message_id: messageId ?? null,
       status: "sent",
+      media_url: temMidia ? media.url : null,
+      media_kind: temMidia ? media.kind : null,
+      media_mime: temMidia ? (media.mime ?? null) : null,
+      media_name: temMidia ? (media.name ?? null) : null,
     });
 
     // Atendente assumiu: desliga a IA nesta conversa (pode religar no Inbox).

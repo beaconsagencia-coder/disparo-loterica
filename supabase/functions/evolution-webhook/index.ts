@@ -11,6 +11,7 @@ import { runSdr, transcribeAudio, extractReferral, handleReferral } from "../_sh
 import { getMediaBase64, sendText } from "../_shared/evolution.ts";
 import { isOptOut } from "../_shared/optout.ts";
 import { isAutoReply, proximoDiaUtilSP } from "../_shared/autoreply.ts";
+import { detectMedia, uploadBase64 } from "../_shared/media.ts";
 
 const supabase = createClient(
   Deno.env.get("SUPABASE_URL")!,
@@ -119,28 +120,32 @@ Deno.serve(async (req) => {
     if (!numero) continue;
     let text = extractText(item?.message);
     const evoId = key.id as string | undefined;
-    const isAudio = !!(item?.message?.audioMessage || item?.message?.pttMessage);
+    const media = detectMedia(item?.message);
 
-    // Áudio (nota de voz): baixa a mídia e transcreve com o Gemini.
-    if (!text && isAudio) {
-      console.log("[webhook] áudio recebido — baixando mídia da Evolution…");
-      const media = await getMediaBase64(evolutionInstance, item);
-      if (!media) {
-        console.error("[webhook] não consegui baixar o áudio (getBase64FromMediaMessage).");
-      } else {
-        try {
-          const transcrito = await transcribeAudio(media.base64, media.mimetype);
-          if (transcrito) { text = transcrito; console.log("[webhook] áudio transcrito:", text.slice(0, 80)); }
-          else console.warn("[webhook] transcrição do áudio veio vazia.");
-        } catch (e) {
-          console.error("[webhook] falha ao transcrever áudio:", e instanceof Error ? e.message : e);
+    // Mídia recebida (imagem/áudio/vídeo/documento): baixa da Evolution e sobe
+    // ao Storage para aparecer no Inbox. Áudio sem legenda também é transcrito.
+    let mediaUrl: string | null = null;
+    if (media) {
+      const dl = await getMediaBase64(evolutionInstance, item);
+      if (dl) {
+        mediaUrl = await uploadBase64(supabase, dl.base64, dl.mimetype || media.mime, `${inst.user_id}/inbound`, media.name);
+        if (media.kind === "audio" && !text) {
+          try {
+            const transcrito = await transcribeAudio(dl.base64, dl.mimetype || media.mime);
+            if (transcrito) { text = transcrito; console.log("[webhook] áudio transcrito:", text.slice(0, 80)); }
+          } catch (e) {
+            console.error("[webhook] falha ao transcrever áudio:", e instanceof Error ? e.message : e);
+          }
         }
+      } else {
+        console.error("[webhook] não consegui baixar a mídia da Evolution.");
       }
     }
 
-    // Corpo a salvar: áudio/contato SEMPRE aparecem no chat, mesmo sem texto.
+    // Corpo a salvar: mídia/contato SEMPRE aparecem no chat, mesmo sem texto.
     const isContact = !!(item?.message?.contactMessage || item?.message?.contactsArrayMessage);
-    const bodyToSave = text || (isAudio ? "🎤 [áudio recebido]" : isContact ? "📇 [contato compartilhado]" : "");
+    const ROTULO: Record<string, string> = { image: "📷 [imagem]", audio: "🎤 [áudio]", video: "🎥 [vídeo]", document: "📄 [documento]" };
+    const bodyToSave = text || (media ? ROTULO[media.kind] : isContact ? "📇 [contato compartilhado]" : "");
 
     // Match do lead pelo telefone (dentro do tenant).
     const { data: lead } = await supabase
@@ -199,6 +204,10 @@ Deno.serve(async (req) => {
       body: bodyToSave,
       evolution_message_id: evoId ?? null,
       status: "delivered",
+      media_url: mediaUrl,
+      media_kind: media?.kind ?? null,
+      media_mime: media?.mime ?? null,
+      media_name: media?.name ?? null,
     }).select("id, created_at").maybeSingle(); // unique (instance_id, evolution_message_id) deduplica reentregas
 
     // Opt-out: cliente pediu para parar ("pare", "sair", "sem interesse"...).

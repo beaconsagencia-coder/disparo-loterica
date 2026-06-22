@@ -1,8 +1,31 @@
 import { Fragment, useEffect, useRef, useState } from "react";
-import { Send, Search, Bot, Trash2, ArrowLeft } from "lucide-react";
+import { Send, Search, Bot, Trash2, ArrowLeft, Paperclip, Mic, Square, FileText, Loader2 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import type { Conversation, Message } from "@/lib/types";
 import { maskPhoneBR } from "@/lib/phone";
+
+type MediaKind = "image" | "audio" | "video" | "document";
+function kindFromMime(mime: string): MediaKind {
+  if (mime.startsWith("image/")) return "image";
+  if (mime.startsWith("audio/")) return "audio";
+  if (mime.startsWith("video/")) return "video";
+  return "document";
+}
+
+/** Renderiza o anexo de uma mensagem (imagem/áudio/vídeo/documento). */
+function MediaContent({ m }: { m: Message }) {
+  const u = m.media_url!;
+  if (m.media_kind === "image") {
+    return <a href={u} target="_blank" rel="noreferrer"><img src={u} alt="imagem" className="max-h-64 max-w-full rounded-lg" /></a>;
+  }
+  if (m.media_kind === "video") return <video src={u} controls className="max-h-64 max-w-full rounded-lg" />;
+  if (m.media_kind === "audio") return <audio src={u} controls className="w-52 max-w-full" />;
+  return (
+    <a href={u} target="_blank" rel="noreferrer" className="flex items-center gap-2 underline underline-offset-2">
+      <FileText size={16} className="shrink-0" /> {m.media_name || "documento"}
+    </a>
+  );
+}
 
 // --- helpers de apresentação ---------------------------------------------
 function initials(name?: string | null): string {
@@ -64,9 +87,13 @@ export default function Inbox() {
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
   const [query, setQuery] = useState("");
+  const [recording, setRecording] = useState(false);
   const endRef = useRef<HTMLDivElement>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
   const prevActive = useRef<string | null>(null);
+  const mediaRecRef = useRef<MediaRecorder | null>(null);
+  const chunksRef = useRef<Blob[]>([]);
 
   // Carrega conversas (Inbox unificado: todas as instâncias num só painel)
   async function loadConversations() {
@@ -139,6 +166,62 @@ export default function Inbox() {
       alert("Falha ao enviar: " + error.message);
     }
     setSending(false);
+  }
+
+  // Sobe um arquivo ao Storage e devolve a URL pública.
+  async function uploadToStorage(file: File): Promise<{ url: string; mime: string; name: string } | null> {
+    const { data: u } = await supabase.auth.getUser();
+    const uid = u.user?.id ?? "anon";
+    const ext = file.name.includes(".") ? file.name.split(".").pop() : (file.type.split("/")[1] || "bin");
+    const path = `${uid}/outbound/${crypto.randomUUID()}.${ext}`;
+    const { error } = await supabase.storage.from("chat-media").upload(path, file, { contentType: file.type || "application/octet-stream", upsert: false });
+    if (error) { alert("Falha no upload: " + error.message); return null; }
+    const { data } = supabase.storage.from("chat-media").getPublicUrl(path);
+    return { url: data.publicUrl, mime: file.type || "application/octet-stream", name: file.name };
+  }
+
+  // Envia um arquivo (imagem/áudio/vídeo/documento) pela conversa ativa.
+  async function sendFile(file: File) {
+    if (!activeId) return;
+    setSending(true);
+    const up = await uploadToStorage(file);
+    if (!up) { setSending(false); return; }
+    const kind = kindFromMime(up.mime);
+    const caption = draft.trim();
+    const { error } = await supabase.functions.invoke("send-reply", {
+      body: { conversation_id: activeId, body: caption || undefined, media: { url: up.url, kind, mime: up.mime, name: up.name } },
+    });
+    if (error) alert("Falha ao enviar: " + error.message);
+    else { setDraft(""); if (taRef.current) taRef.current.style.height = "auto"; }
+    setSending(false);
+  }
+
+  function onPickFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const f = e.target.files?.[0];
+    e.target.value = ""; // permite reescolher o mesmo arquivo depois
+    if (f) sendFile(f);
+  }
+
+  // Grava uma nota de voz pelo microfone e envia ao parar.
+  async function toggleRecord() {
+    if (recording) { mediaRecRef.current?.stop(); return; }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mr = new MediaRecorder(stream);
+      chunksRef.current = [];
+      mr.ondataavailable = (ev) => { if (ev.data.size) chunksRef.current.push(ev.data); };
+      mr.onstop = async () => {
+        stream.getTracks().forEach((t) => t.stop());
+        const blob = new Blob(chunksRef.current, { type: mr.mimeType || "audio/webm" });
+        await sendFile(new File([blob], `audio-${Date.now()}.webm`, { type: blob.type }));
+        setRecording(false);
+      };
+      mr.start();
+      mediaRecRef.current = mr;
+      setRecording(true);
+    } catch {
+      alert("Não consegui acessar o microfone. Verifique a permissão do navegador.");
+    }
   }
 
   async function toggleAi(id: string, value: boolean) {
@@ -274,7 +357,9 @@ export default function Inbox() {
                         out ? "ml-auto rounded-br-sm bg-accent text-white" : "rounded-bl-sm bg-white/80"
                       }`}
                     >
-                      {m.body}
+                      {m.media_url && <div className="mb-1"><MediaContent m={m} /></div>}
+                      {/* Não repete o rótulo de placeholder quando a mídia já é exibida. */}
+                      {(!m.media_url || !/^(📷|🎤|🎥|📄|📇)\s?\[/.test(m.body ?? "")) && m.body}
                       <span className={`ml-2 inline-block align-bottom text-[10px] ${out ? "text-white/70" : "text-ink-muted"}`}>
                         {new Date(m.created_at).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}
                       </span>
@@ -289,26 +374,57 @@ export default function Inbox() {
               className="flex items-end gap-2 border-t border-black/5 p-3"
               style={{ paddingBottom: "max(0.75rem, env(safe-area-inset-bottom))" }}
             >
+              <input
+                ref={fileRef}
+                type="file"
+                className="hidden"
+                accept="image/*,audio/*,video/*,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.csv,.zip"
+                onChange={onPickFile}
+              />
+              <button
+                className="shrink-0 rounded-full p-2.5 text-ink-muted transition-colors hover:bg-black/5 disabled:opacity-50"
+                disabled={sending || recording}
+                onClick={() => fileRef.current?.click()}
+                aria-label="Anexar arquivo"
+                title="Anexar imagem, áudio ou documento"
+              >
+                {sending ? <Loader2 size={18} className="animate-spin" /> : <Paperclip size={18} />}
+              </button>
               <textarea
                 ref={taRef}
                 rows={1}
                 className="input max-h-32 flex-1 resize-none leading-snug"
-                placeholder="Escreva uma resposta…"
+                placeholder={recording ? "Gravando áudio…" : "Escreva uma resposta…"}
                 value={draft}
+                disabled={recording}
                 onChange={(e) => setDraft(e.target.value)}
                 onInput={resizeTextarea}
                 onKeyDown={(e) => {
                   if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
                 }}
               />
-              <button
-                className="btn-accent shrink-0 !px-3 !py-2.5"
-                disabled={sending || !draft.trim()}
-                onClick={send}
-                aria-label="Enviar"
-              >
-                <Send size={16} />
-              </button>
+              {draft.trim() ? (
+                <button
+                  className="btn-accent shrink-0 !px-3 !py-2.5"
+                  disabled={sending}
+                  onClick={send}
+                  aria-label="Enviar"
+                >
+                  <Send size={16} />
+                </button>
+              ) : (
+                <button
+                  className={`shrink-0 rounded-full !px-3 !py-2.5 transition-colors ${
+                    recording ? "bg-danger text-white" : "btn-accent"
+                  }`}
+                  disabled={sending}
+                  onClick={toggleRecord}
+                  aria-label={recording ? "Parar e enviar" : "Gravar áudio"}
+                  title={recording ? "Parar e enviar" : "Gravar nota de voz"}
+                >
+                  {recording ? <Square size={16} /> : <Mic size={16} />}
+                </button>
+              )}
             </div>
           </>
         ) : (
