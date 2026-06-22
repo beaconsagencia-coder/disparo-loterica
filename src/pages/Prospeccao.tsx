@@ -75,17 +75,58 @@ export default function Prospeccao() {
     [estadoSel, cidadeSel],
   );
 
+  // ---- trava de segurança: status do que já está na fila/concluído ----
+  const norm = (s: string) => s.trim().toLowerCase();
+  const statusPorLocal = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const f of fila) m.set(`${norm(f.estado)}|${norm(f.cidade)}|${norm(f.bairro)}`, f.status);
+    return m;
+  }, [fila]);
+  const localStatus = (estado: string, cidade: string, bairro: string) =>
+    statusPorLocal.get(`${norm(estado)}|${norm(cidade)}|${norm(bairro)}`) ?? null;
+
+  // Cidades do catálogo 100% concluídas (todos os bairros 'concluido').
+  const cidadesConcluidas = useMemo(() => {
+    const done = new Set<string>();
+    for (const c of CATALOGO_BRASIL) {
+      if (c.bairros.length && c.bairros.every((b) => statusPorLocal.get(`${norm(c.estado)}|${norm(c.cidade)}|${norm(b)}`) === "concluido")) {
+        done.add(`${norm(c.estado)}|${norm(c.cidade)}`);
+      }
+    }
+    return done;
+  }, [statusPorLocal]);
+
+  // Resumo de progresso da cidade selecionada (para o cabeçalho dos bairros).
+  const resumoCidade = useMemo(() => {
+    if (!cidadeCat) return null;
+    let concluidos = 0, naFila = 0;
+    for (const b of cidadeCat.bairros) {
+      const s = localStatus(cidadeCat.estado, cidadeCat.cidade, b);
+      if (s === "concluido") concluidos++;
+      else if (s === "pendente" || s === "processando" || s === "erro") naFila++;
+    }
+    return { total: cidadeCat.bairros.length, concluidos, naFila };
+  }, [cidadeCat, statusPorLocal]);
+
   async function enfileirar(rows: { bairro: string; cidade: string; estado: string }[]) {
     setMsg(null);
     const uid = await userId();
     if (!uid || !rows.length) return;
     setAdding(true);
     const payload = rows.map((r) => ({ user_id: uid, bairro: r.bairro, cidade: r.cidade, estado: r.estado, status: "pendente" }));
-    const { error } = await supabase.from("fila_bairros")
-      .upsert(payload, { onConflict: "user_id,bairro,cidade,estado", ignoreDuplicates: true });
+    // ignoreDuplicates + .select() => retorna só as linhas REALMENTE inseridas.
+    // Assim não reprocessamos o que já está na fila ou concluído (trava de segurança).
+    const { data, error } = await supabase.from("fila_bairros")
+      .upsert(payload, { onConflict: "user_id,bairro,cidade,estado", ignoreDuplicates: true })
+      .select("id");
     setAdding(false);
     if (error) return setMsg("Erro: " + error.message);
-    setMsg(`${rows.length} região(ões) enviada(s) para a fila ✅`);
+    const novas = data?.length ?? 0;
+    const ignoradas = rows.length - novas;
+    setMsg(
+      `${novas} adicionada(s) à fila` +
+      (ignoradas ? ` · ${ignoradas} já estava(m) na fila ou concluída(s) e foi(ram) ignorada(s)` : "") + " ✅",
+    );
     loadAll();
   }
 
@@ -167,26 +208,54 @@ export default function Prospeccao() {
             </select>
             <select className="input" value={cidadeSel} onChange={(e) => setCidadeSel(e.target.value)} disabled={!estadoSel}>
               <option value="">Cidade…</option>
-              {cidades.map((c) => <option key={c} value={c}>{c}</option>)}
+              {cidades.map((c) => (
+                <option key={c} value={c}>
+                  {cidadesConcluidas.has(`${norm(estadoSel)}|${norm(c)}`) ? "✓ " : ""}{c}
+                </option>
+              ))}
             </select>
           </div>
 
           {cidadeCat && (
             <div className="mt-3">
-              <div className="mb-2 flex items-center justify-between">
-                <span className="text-sm text-ink-muted">{cidadeCat.bairros.length} bairros</span>
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <span className="text-sm text-ink-muted">
+                  {cidadeCat.bairros.length} bairros
+                  {resumoCidade && resumoCidade.concluidos > 0 && (
+                    <span className="ml-1.5 font-medium text-[#1b7a35]">· {resumoCidade.concluidos} concluído{resumoCidade.concluidos > 1 ? "s" : ""}</span>
+                  )}
+                  {resumoCidade && resumoCidade.concluidos === resumoCidade.total && (
+                    <span className="ml-1.5">✓ cidade 100% processada</span>
+                  )}
+                </span>
                 <button className="btn-accent !py-1.5" onClick={addCidadeInteira} disabled={adding}>
                   {adding ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />} Adicionar todos
                 </button>
               </div>
               <div className="flex max-h-40 flex-wrap gap-1.5 overflow-y-auto">
-                {cidadeCat.bairros.map((b) => (
-                  <button key={b}
-                    onClick={() => enfileirar([{ bairro: b, cidade: cidadeCat.cidade, estado: cidadeCat.estado }])}
-                    className="chip bg-black/[0.06] text-ink-soft hover:bg-accent hover:text-white">
-                    <MapPin size={11} /> {b}
-                  </button>
-                ))}
+                {cidadeCat.bairros.map((b) => {
+                  const s = localStatus(cidadeCat.estado, cidadeCat.cidade, b);
+                  if (s === "concluido") {
+                    return (
+                      <span key={b} className="chip bg-success/15 text-[#1b7a35]" title="Já processado — não será refeito">
+                        <CheckCircle2 size={11} /> {b}
+                      </span>
+                    );
+                  }
+                  const naFila = s === "pendente" || s === "processando";
+                  return (
+                    <button key={b}
+                      onClick={() => enfileirar([{ bairro: b, cidade: cidadeCat.cidade, estado: cidadeCat.estado }])}
+                      title={naFila ? "Já está na fila" : s === "erro" ? "Falhou — clique para reenfileirar" : "Adicionar à fila"}
+                      className={`chip ${
+                        naFila ? "bg-accent/15 text-accent"
+                          : s === "erro" ? "bg-danger/15 text-[#b4231b]"
+                          : "bg-black/[0.06] text-ink-soft hover:bg-accent hover:text-white"
+                      }`}>
+                      <MapPin size={11} /> {b}
+                    </button>
+                  );
+                })}
               </div>
             </div>
           )}
