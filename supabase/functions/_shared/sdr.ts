@@ -526,22 +526,23 @@ export async function runSdr(p: RunSdrParams): Promise<void> {
 
   // 3) Loop de function calling até a IA terminar o turno
   let finalText = "";
+  let truncado = false; // resposta cortada por limite de tokens?
   for (let i = 0; i < 4; i++) {
     const resp = await ai.models.generateContent({
       model,
       contents,
       config: {
         systemInstruction,
-        maxOutputTokens: 1536,
-        // Desliga o "thinking" do 2.5-flash: senão o raciocínio consome o
-        // orçamento de tokens e a resposta sai CORTADA no meio da frase.
-        thinkingConfig: { thinkingBudget: 0 },
+        // Thinking MÉDIO para decidir melhor agenda/ferramentas. O orçamento de
+        // saída precisa caber thinking (~1024) + resposta — senão corta a frase.
+        maxOutputTokens: 3072,
+        thinkingConfig: { thinkingBudget: 1024 },
         tools: [{ functionDeclarations: [consultarDisponibilidade, agendarReuniao, remarcarReuniao] }],
       },
     });
 
     const text = (resp.text ?? "").trim();
-    if (text) finalText = text;
+    if (text) { finalText = text; truncado = resp.candidates?.[0]?.finishReason === "MAX_TOKENS"; }
 
     const calls = resp.functionCalls ?? [];
     if (!calls.length) break;
@@ -670,6 +671,14 @@ export async function runSdr(p: RunSdrParams): Promise<void> {
     .replace(/\s{2,}/g, " ")
     .replace(/\s+([!?.,;:])/g, "$1")
     .trim();
+
+  // Rede de segurança: se a resposta veio cortada por limite de tokens, apara
+  // até a última frase completa — nunca enviar uma frase pela metade.
+  if (truncado) {
+    const completo = finalText.match(/^[\s\S]*[.!?…](?=\s|$)/);
+    if (completo && completo[0].trim().length >= 20) finalText = completo[0].trim();
+    console.warn("[sdr] resposta truncada (MAX_TOKENS) — aparada até a última frase.");
+  }
 
   if (!finalText) { console.log("[sdr] Gemini não retornou texto (ou só placeholder)"); return; }
   console.log("[sdr] resposta gerada:", finalText.slice(0, 80));
