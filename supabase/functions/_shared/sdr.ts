@@ -282,6 +282,33 @@ const remarcarReuniao = {
   },
 };
 
+/**
+ * Quebra uma mensagem longa em 2–3 bolhas (em fronteiras de frase), para
+ * leitura mais natural. Mensagens curtas voltam inteiras (1 bolha). Nunca
+ * corta no meio de uma frase.
+ */
+function splitMessage(text: string): string[] {
+  const t = (text ?? "").trim();
+  if (t.length <= 220) return [t];
+  const target = t.length > 460 ? 3 : 2;
+  const frases = t.replace(/\s*\n+\s*/g, " ")
+    .match(/[^.!?]+[.!?]+(\s|$)|[^.!?]+$/g)?.map((s) => s.trim()).filter(Boolean) ?? [t];
+  if (frases.length <= 1) return [t]; // frase única gigante: não corta no meio
+  const alvo = t.length / target;
+  const partes: string[] = [];
+  let buf = "";
+  for (const f of frases) {
+    if (buf && buf.length + f.length > alvo && partes.length < target - 1) {
+      partes.push(buf.trim());
+      buf = f;
+    } else {
+      buf = buf ? `${buf} ${f}` : f;
+    }
+  }
+  if (buf.trim()) partes.push(buf.trim());
+  return partes;
+}
+
 function agoraEmSP(): string {
   return new Intl.DateTimeFormat("pt-BR", {
     weekday: "long", day: "2-digit", month: "long", year: "numeric",
@@ -384,7 +411,7 @@ export async function runSdr(p: RunSdrParams): Promise<void> {
   const persona = inst?.persona_nome?.trim() || config.persona_nome;
 
   const { data: hist } = await supabase
-    .from("messages").select("direction, body, created_at")
+    .from("messages").select("direction, body, created_at, is_continuation")
     .eq("conversation_id", p.conversationId)
     .order("created_at", { ascending: true })
     .limit(40);
@@ -414,7 +441,8 @@ export async function runSdr(p: RunSdrParams): Promise<void> {
     // o teto, para de cutucar. (followup_max = nº de follow-ups; +1 = a abertura.)
     let semResposta = 0;
     for (let i = (hist?.length ?? 0) - 1; i >= 0; i--) {
-      if (hist![i].direction === "outbound") semResposta++;
+      const m = hist![i];
+      if (m.direction === "outbound") { if (!m.is_continuation) semResposta++; } // continuação não conta
       else break; // achou uma resposta do cliente: zera a contagem
     }
     const followupMax = Number(config.followup_max ?? 2);
@@ -652,25 +680,36 @@ export async function runSdr(p: RunSdrParams): Promise<void> {
   const porTamanho = Math.min(dmax, finalText.length / 25); // textos maiores "demoram" mais a digitar
   const delayMs = Math.round(Math.max(dmin, Math.max(base, porTamanho)) * 1000);
 
-  // 6) Envia pela mesma instância e registra no histórico
+  // 6) Envia pela mesma instância, fragmentando mensagens longas em 2–3 bolhas.
+  //    Só a 1ª bolha conta no histórico/teto (as demais são is_continuation).
+  const partes = splitMessage(finalText);
+  let enviouAlgo = false;
   try {
-    const { messageId } = await sendText(p.evolutionInstance, p.numero, finalText, delayMs);
-    await supabase.from("messages").insert({
-      user_id: p.userId,
-      conversation_id: p.conversationId,
-      instance_id: p.instanceId,
-      direction: "outbound",
-      body: finalText,
-      evolution_message_id: messageId ?? null,
-      status: "sent",
-    });
-    if (mode === "followup") {
-      const { data: c } = await supabase
-        .from("conversations").select("followup_count").eq("id", p.conversationId).maybeSingle();
-      await supabase.from("conversations")
-        .update({ followup_count: (c?.followup_count ?? 0) + 1 }).eq("id", p.conversationId);
+    for (let i = 0; i < partes.length; i++) {
+      const parte = partes[i];
+      // 1ª bolha usa o delay humanizado; as seguintes, um delay menor proporcional.
+      const d = i === 0 ? delayMs : Math.round(Math.min(dmax, Math.max(1.5, parte.length / 28)) * 1000);
+      const { messageId } = await sendText(p.evolutionInstance, p.numero, parte, d);
+      await supabase.from("messages").insert({
+        user_id: p.userId,
+        conversation_id: p.conversationId,
+        instance_id: p.instanceId,
+        direction: "outbound",
+        body: parte,
+        evolution_message_id: messageId ?? null,
+        status: "sent",
+        is_continuation: i > 0, // continuação não conta no teto anti-spam
+      });
+      enviouAlgo = true;
     }
   } catch (e) {
     console.error("SDR sendText falhou:", e instanceof Error ? e.message : e);
+  }
+  // Follow-up conta UMA vez por turno (não por bolha).
+  if (enviouAlgo && mode === "followup") {
+    const { data: c } = await supabase
+      .from("conversations").select("followup_count").eq("id", p.conversationId).maybeSingle();
+    await supabase.from("conversations")
+      .update({ followup_count: (c?.followup_count ?? 0) + 1 }).eq("id", p.conversationId);
   }
 }
