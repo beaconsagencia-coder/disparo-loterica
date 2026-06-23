@@ -201,6 +201,11 @@ export async function handleReferral(p: ReferralParams): Promise<void> {
       direction: "outbound", body: ack, evolution_message_id: messageId ?? null, status: "sent",
     });
   } catch { /* ack é opcional */ }
+
+  // Quem repassou já cumpriu o papel: ENCERRA o atendimento nesse número.
+  // Desliga a IA (sem follow-up nem novo pitch) e trava o agendador de follow-up.
+  await supabase.from("conversations")
+    .update({ ai_enabled: false, followup_count: 999 }).eq("id", p.indicadorConversationId);
 }
 
 interface RunSdrParams {
