@@ -532,7 +532,10 @@ export async function runSdr(p: RunSdrParams): Promise<void> {
       contents,
       config: {
         systemInstruction,
-        maxOutputTokens: 1024,
+        maxOutputTokens: 1536,
+        // Desliga o "thinking" do 2.5-flash: senão o raciocínio consome o
+        // orçamento de tokens e a resposta sai CORTADA no meio da frase.
+        thinkingConfig: { thinkingBudget: 0 },
         tools: [{ functionDeclarations: [consultarDisponibilidade, agendarReuniao, remarcarReuniao] }],
       },
     });
