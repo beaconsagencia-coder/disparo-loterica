@@ -51,6 +51,7 @@ export interface Lead {
   status: LeadStatus;
   origem: string;
   created_at: string;
+  crm_stage?: string | null;
 }
 
 export interface Conversation {
