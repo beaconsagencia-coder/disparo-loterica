@@ -2,13 +2,16 @@ import { useEffect, useMemo, useState } from "react";
 import {
   Wallet, Layers, CircleDollarSign, TrendingUp, LineChart, Plus, Ban,
   AlertCircle, Loader2, X, CheckCircle2, CalendarClock, CalendarDays, Pencil, Trash2, Percent,
+  Receipt, Settings2, Save, Send,
 } from "lucide-react";
 import {
   useContracts, endMonthIndex, daysUntilDue, nextDueDate, vigenciaProgress,
   commissionAmount, netValue,
 } from "@/lib/useContracts";
+import { useBilling } from "@/lib/useBilling";
 import {
   CONTRACT_STATUS_LABEL, type Contract, type ContractInput, type ContractStatus, type CommissionType,
+  type BillingSettings, type Invoice,
 } from "@/lib/types";
 
 // --- formatadores ---
@@ -52,14 +55,19 @@ function dueTone(dias: number): { chip: string; box: string; label: string } {
 
 export default function Financeiro() {
   const { contracts, loading, error, metrics, addContract, updateContract, cancelContract, deleteContract } = useContracts();
+  const { settings: billing, porContrato, saveSettings, setPaga } = useBilling();
   const [filtro, setFiltro] = useState<ContractStatus | "all">("active");
   const [aCancelar, setACancelar] = useState<Contract | null>(null);
   const [aExcluir, setAExcluir] = useState<Contract | null>(null);
   const [drawer, setDrawer] = useState(false);
   const [editando, setEditando] = useState<Contract | null>(null);
+  const [showCobranca, setShowCobranca] = useState(false);
 
   function abrirNovo() { setEditando(null); setDrawer(true); }
   function abrirEdicao(c: Contract) { setEditando(c); setDrawer(true); }
+  async function togglePago(c: Contract, paga: boolean) {
+    try { await setPaga(c, paga); } catch (e) { alert("Não consegui atualizar a fatura: " + (e instanceof Error ? e.message : String(e))); }
+  }
 
   const lista = useMemo(
     () => contracts.filter((c) => (filtro === "all" ? true : c.status === filtro)),
@@ -94,10 +102,17 @@ export default function Financeiro() {
             <p className="text-sm text-ink-muted">Carteira, fluxo de caixa e previsibilidade. Tudo recalcula em tempo real.</p>
           </div>
         </div>
-        <button className="btn-accent shrink-0" onClick={abrirNovo}>
-          <Plus size={16} /> <span className="hidden sm:inline">Novo contrato</span>
-        </button>
+        <div className="flex shrink-0 items-center gap-2">
+          <button className={`btn-ghost ${showCobranca ? "bg-black/5" : ""}`} onClick={() => setShowCobranca((v) => !v)} title="Configurar cobrança automática (PIX)">
+            <Settings2 size={16} /> <span className="hidden sm:inline">Cobrança</span>
+          </button>
+          <button className="btn-accent" onClick={abrirNovo}>
+            <Plus size={16} /> <span className="hidden sm:inline">Novo contrato</span>
+          </button>
+        </div>
       </header>
+
+      {showCobranca && <CobrancaPanel settings={billing} onSave={saveSettings} />}
 
       {error && (
         <div className="bento-card mb-4 flex items-start gap-2 border-danger/30 text-sm text-danger">
@@ -130,9 +145,11 @@ export default function Financeiro() {
         filtro={filtro}
         setFiltro={setFiltro}
         totalAtivos={metrics.volume}
+        faturas={porContrato}
         onEditar={abrirEdicao}
         onCancelar={setACancelar}
         onExcluir={setAExcluir}
+        onTogglePago={togglePago}
       />
 
       {/* Drawer lateral do formulário (criação OU edição) */}
@@ -221,16 +238,18 @@ const FILTROS: { key: ContractStatus | "all"; label: string }[] = [
 ];
 
 function ContratosTabela({
-  lista, loading, filtro, setFiltro, totalAtivos, onEditar, onCancelar, onExcluir,
+  lista, loading, filtro, setFiltro, totalAtivos, faturas, onEditar, onCancelar, onExcluir, onTogglePago,
 }: {
   lista: Contract[];
   loading: boolean;
   filtro: ContractStatus | "all";
   setFiltro: (f: ContractStatus | "all") => void;
   totalAtivos: number;
+  faturas: Map<string, Invoice>;
   onEditar: (c: Contract) => void;
   onCancelar: (c: Contract) => void;
   onExcluir: (c: Contract) => void;
+  onTogglePago: (c: Contract, paga: boolean) => void;
 }) {
   return (
     <div className="rounded-xl2 border border-black/5 bg-white shadow-sm">
@@ -265,6 +284,7 @@ function ContratosTabela({
                 <th className="px-4 py-3 text-center font-medium">Vencimento</th>
                 <th className="px-4 py-3 font-medium">Tempo de vigência</th>
                 <th className="px-4 py-3 font-medium">Status</th>
+                <th className="px-4 py-3 font-medium">Fatura do mês</th>
                 <th className="px-4 py-3 text-right font-medium">Ações</th>
               </tr>
             </thead>
@@ -330,6 +350,14 @@ function ContratosTabela({
                     <td className="px-4 py-3">
                       <span className={`chip ${STATUS_CHIP[c.status]}`}>{CONTRACT_STATUS_LABEL[c.status]}</span>
                     </td>
+                    {/* Fatura do mês corrente: registrar pago / desfazer */}
+                    <td className="px-4 py-3">
+                      {c.status === "active" ? (
+                        <FaturaCell contrato={c} inv={faturas.get(c.id)} onToggle={onTogglePago} />
+                      ) : (
+                        <span className="text-xs text-ink-muted">—</span>
+                      )}
+                    </td>
                     {/* Ações agrupadas: Editar · Cancelar · Excluir */}
                     <td className="px-4 py-3">
                       <div className="flex items-center justify-end gap-1">
@@ -369,6 +397,142 @@ function ContratosTabela({
       <p className="border-t border-black/5 px-4 py-3 text-xs text-ink-muted">
         M+1 e M+2 somam apenas contratos ativos ainda vigentes naquele mês (início ≤ mês ≤ início + duração − 1). Contratos que encerram antes saem da projeção.
       </p>
+    </div>
+  );
+}
+
+/** Célula da fatura do mês: registrar pago / desfazer + sinal de lembrete. */
+function FaturaCell({ contrato, inv, onToggle }: { contrato: Contract; inv?: Invoice; onToggle: (c: Contract, paga: boolean) => void }) {
+  const paga = inv?.status === "paid";
+  return (
+    <div className="flex flex-col gap-0.5">
+      {paga ? (
+        <button
+          onClick={() => onToggle(contrato, false)}
+          className="chip w-fit cursor-pointer bg-success/15 text-[#1b7a35]"
+          title="Pago — clique para voltar a pendente"
+        >
+          <CheckCircle2 size={13} /> Pago
+        </button>
+      ) : (
+        <button
+          onClick={() => onToggle(contrato, true)}
+          className="inline-flex w-fit items-center gap-1 rounded-lg border border-black/10 px-2.5 py-1 text-xs font-medium text-ink-soft transition-colors hover:border-success/40 hover:bg-success/10 hover:text-[#1b7a35]"
+          title="Registrar pagamento desta fatura"
+        >
+          <Receipt size={13} /> Registrar pago
+        </button>
+      )}
+      {inv?.reminder_sent_at && (
+        <span className="flex items-center gap-1 pl-0.5 text-[10px] text-ink-muted" title={`Lembrete PIX enviado em ${new Date(inv.reminder_sent_at).toLocaleString("pt-BR")}`}>
+          <Send size={9} /> lembrete enviado
+        </span>
+      )}
+    </div>
+  );
+}
+
+// =====================================================================
+// Painel de cobrança automática (PIX) — config recolhível
+// =====================================================================
+function CobrancaPanel({ settings, onSave }: { settings: BillingSettings; onSave: (s: BillingSettings) => Promise<void> }) {
+  const [ativo, setAtivo] = useState(settings.ativo);
+  const [pixKey, setPixKey] = useState(settings.pix_key ?? "");
+  const [pixNome, setPixNome] = useState(settings.pix_nome ?? "");
+  const [copiaCola, setCopiaCola] = useState(settings.pix_copia_cola ?? "");
+  const [hora, setHora] = useState(String(settings.hora_envio));
+  const [diasAntes, setDiasAntes] = useState(String(settings.dias_antes));
+  const [template, setTemplate] = useState(settings.template ?? "");
+  const [salvando, setSalvando] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+
+  // Reidrata quando as settings chegam do banco (1ª carga).
+  useEffect(() => {
+    setAtivo(settings.ativo); setPixKey(settings.pix_key ?? ""); setPixNome(settings.pix_nome ?? "");
+    setCopiaCola(settings.pix_copia_cola ?? ""); setHora(String(settings.hora_envio));
+    setDiasAntes(String(settings.dias_antes)); setTemplate(settings.template ?? "");
+  }, [settings]);
+
+  async function salvar() {
+    setSalvando(true); setMsg(null);
+    try {
+      await onSave({
+        ativo,
+        pix_key: pixKey.trim() || null,
+        pix_nome: pixNome.trim() || null,
+        pix_copia_cola: copiaCola.trim() || null,
+        hora_envio: Math.min(23, Math.max(0, Math.floor(Number(hora) || 0))),
+        dias_antes: Math.min(30, Math.max(0, Math.floor(Number(diasAntes) || 0))),
+        template: template.trim() || null,
+      });
+      setMsg("Configurações salvas ✅");
+      setTimeout(() => setMsg(null), 2500);
+    } catch (e) {
+      setMsg("Erro: " + (e instanceof Error ? e.message : String(e)));
+    } finally {
+      setSalvando(false);
+    }
+  }
+
+  return (
+    <div className="bento-card mb-4">
+      <div className="mb-3 flex items-start justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <Receipt size={17} className="text-accent" />
+          <div>
+            <h2 className="font-medium">Cobrança automática (PIX)</h2>
+            <p className="text-sm text-ink-muted">Todo dia, no horário definido, o sistema lembra os clientes do vencimento e envia o PIX.</p>
+          </div>
+        </div>
+        <button onClick={() => setAtivo((v) => !v)}
+          className={`relative h-7 w-12 shrink-0 rounded-full transition-colors ${ativo ? "bg-accent" : "bg-black/15"}`}
+          title={ativo ? "Desativar cobrança automática" : "Ativar cobrança automática"}>
+          <span className={`absolute top-1 h-5 w-5 rounded-full bg-white shadow transition-all ${ativo ? "left-6" : "left-1"}`} />
+        </button>
+      </div>
+
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div>
+          <label className="mb-1 block text-xs font-medium text-ink-soft">Chave PIX</label>
+          <input className="input" placeholder="email, CPF/CNPJ, telefone ou aleatória" value={pixKey} onChange={(e) => setPixKey(e.target.value)} />
+        </div>
+        <div>
+          <label className="mb-1 block text-xs font-medium text-ink-soft">Favorecido (nome)</label>
+          <input className="input" placeholder="Beacons Agência" value={pixNome} onChange={(e) => setPixNome(e.target.value)} />
+        </div>
+      </div>
+
+      <div className="mt-3">
+        <label className="mb-1 block text-xs font-medium text-ink-soft">PIX Copia e Cola (opcional)</label>
+        <textarea rows={2} className="input resize-none font-mono text-xs" placeholder="00020126…" value={copiaCola} onChange={(e) => setCopiaCola(e.target.value)} />
+      </div>
+
+      <div className="mt-3 grid gap-3 sm:grid-cols-2">
+        <div>
+          <label className="mb-1 block text-xs font-medium text-ink-soft">Horário do envio (hora, Brasília)</label>
+          <input type="number" min={0} max={23} className="input tabular-nums" value={hora} onChange={(e) => setHora(e.target.value)} />
+        </div>
+        <div>
+          <label className="mb-1 block text-xs font-medium text-ink-soft">Antecedência (dias antes do vencimento)</label>
+          <input type="number" min={0} max={30} className="input tabular-nums" value={diasAntes} onChange={(e) => setDiasAntes(e.target.value)} />
+        </div>
+      </div>
+
+      <div className="mt-3">
+        <label className="mb-1 block text-xs font-medium text-ink-soft">Mensagem (opcional)</label>
+        <textarea rows={3} className="input resize-none text-sm" placeholder="Deixe em branco para usar o modelo padrão." value={template} onChange={(e) => setTemplate(e.target.value)} />
+        <p className="mt-1 text-xs text-ink-muted">Placeholders: <code>{"{nome}"}</code> <code>{"{valor}"}</code> <code>{"{vencimento}"}</code> <code>{"{pix}"}</code> <code>{"{favorecido}"}</code> <code>{"{copia_cola}"}</code></p>
+      </div>
+
+      <div className="mt-4 flex items-center gap-3">
+        <button className="btn-accent" onClick={salvar} disabled={salvando}>
+          {salvando ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />} {salvando ? "Salvando…" : "Salvar"}
+        </button>
+        {msg && <span className="text-sm text-ink-muted">{msg}</span>}
+        {ativo && !pixKey.trim() && !copiaCola.trim() && (
+          <span className="flex items-center gap-1 text-sm text-danger"><AlertCircle size={14} /> defina a chave PIX para a cobrança funcionar</span>
+        )}
+      </div>
     </div>
   );
 }

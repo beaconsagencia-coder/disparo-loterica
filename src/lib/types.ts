@@ -123,6 +123,27 @@ export const CONTRACT_STATUS_LABEL: Record<ContractStatus, string> = {
   completed: "Concluído",
 };
 
+export interface BillingSettings {
+  ativo: boolean;
+  pix_key: string | null;
+  pix_nome: string | null;
+  pix_copia_cola: string | null;
+  hora_envio: number;     // hora do disparo (0–23, Brasília)
+  dias_antes: number;     // enviar N dias antes do vencimento
+  template: string | null;
+}
+
+export interface Invoice {
+  id: string;
+  contract_id: string;
+  competencia: string;        // YYYY-MM-01
+  due_date: string;           // YYYY-MM-DD
+  valor: number;
+  status: "pending" | "paid";
+  reminder_sent_at: string | null;
+  paid_at: string | null;
+}
+
 export interface Cadence {
   id: string;
   nome: string;
