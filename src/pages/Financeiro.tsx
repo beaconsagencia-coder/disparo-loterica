@@ -1,12 +1,15 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   Wallet, Layers, CircleDollarSign, TrendingUp, LineChart, Plus, Ban,
-  AlertCircle, Loader2, X, CheckCircle2, CalendarClock, CalendarDays, Pencil, Trash2,
+  AlertCircle, Loader2, X, CheckCircle2, CalendarClock, CalendarDays, Pencil, Trash2, Percent,
 } from "lucide-react";
 import {
   useContracts, endMonthIndex, daysUntilDue, nextDueDate, vigenciaProgress,
+  commissionAmount, netValue,
 } from "@/lib/useContracts";
-import { CONTRACT_STATUS_LABEL, type Contract, type ContractInput, type ContractStatus } from "@/lib/types";
+import {
+  CONTRACT_STATUS_LABEL, type Contract, type ContractInput, type ContractStatus, type CommissionType,
+} from "@/lib/types";
 
 // --- formatadores ---
 const brl = (n: number) => n.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
@@ -30,6 +33,15 @@ const STATUS_CHIP: Record<ContractStatus, string> = {
   cancelled: "bg-danger/15 text-danger",
   completed: "bg-black/10 text-ink-muted",
 };
+
+/** Descrição da comissão para tooltip (tipo, valor deduzido e beneficiário). */
+function comissaoDescr(c: Contract): string {
+  const tipo = c.commission_type === "percentage"
+    ? `${c.commission_value}%`
+    : brl(Number(c.commission_value) || 0);
+  const quem = c.commission_recipient?.trim() || "beneficiário não informado";
+  return `Comissão ${tipo} = ${brl(commissionAmount(c))}/mês → ${quem}`;
+}
 
 /** Tom do vencimento conforme a proximidade (dias até vencer). */
 function dueTone(dias: number): { chip: string; box: string; label: string } {
@@ -65,10 +77,10 @@ export default function Financeiro() {
   }, [contracts]);
 
   const cards = [
-    { label: "Contratos ativos", value: String(metrics.volume), hint: "em vigência", icon: Layers, accent: "text-ink", bg: "bg-black/5 text-ink-soft" },
-    { label: "MRR atual", value: brlCompact(metrics.mrr), hint: mesLabel(metrics.m0Idx), icon: CircleDollarSign, accent: "text-[#1b7a35]", bg: "bg-success/15 text-[#1b7a35]" },
-    { label: "Previsão M+1", value: brlCompact(metrics.m1), hint: mesLabel(metrics.m1Idx), icon: TrendingUp, accent: "text-accent", bg: "bg-accent/15 text-accent" },
-    { label: "Previsão M+2", value: brlCompact(metrics.m2), hint: mesLabel(metrics.m2Idx), icon: LineChart, accent: "text-[#5e5ce6]", bg: "bg-[#5e5ce6]/15 text-[#5e5ce6]" },
+    { label: "Contratos ativos", value: String(metrics.volume), sub: null as string | null, hint: "em vigência", icon: Layers, accent: "text-ink", bg: "bg-black/5 text-ink-soft" },
+    { label: "MRR atual (bruto)", value: brlCompact(metrics.mrrBruto), sub: `Líquido ${brlCompact(metrics.mrrLiquido)}`, hint: mesLabel(metrics.m0Idx), icon: CircleDollarSign, accent: "text-[#1b7a35]", bg: "bg-success/15 text-[#1b7a35]" },
+    { label: "Previsão M+1", value: brlCompact(metrics.m1), sub: null, hint: `${mesLabel(metrics.m1Idx)} · líquido`, icon: TrendingUp, accent: "text-accent", bg: "bg-accent/15 text-accent" },
+    { label: "Previsão M+2", value: brlCompact(metrics.m2), sub: null, hint: `${mesLabel(metrics.m2Idx)} · líquido`, icon: LineChart, accent: "text-[#5e5ce6]", bg: "bg-[#5e5ce6]/15 text-[#5e5ce6]" },
   ];
 
   return (
@@ -101,6 +113,7 @@ export default function Financeiro() {
             <div className="min-w-0">
               <div className="truncate text-xs text-ink-muted">{c.label}</div>
               <div className={`truncate text-xl font-semibold tracking-tight tabular-nums ${c.accent}`}>{c.value}</div>
+              {c.sub && <div className="truncate text-[11px] font-medium tabular-nums text-ink-soft">{c.sub}</div>}
               <div className="truncate text-[11px] capitalize text-ink-muted">{c.hint}</div>
             </div>
           </div>
@@ -265,13 +278,27 @@ function ContratosTabela({
                   <tr key={c.id} className="border-b border-black/5 last:border-0 transition-colors hover:bg-black/[0.015]">
                     {/* Cliente */}
                     <td className="px-4 py-3">
-                      <div className="font-medium">{c.client_name}</div>
+                      <div className="flex items-center gap-2">
+                        <span className="font-medium">{c.client_name}</span>
+                        {c.has_commission && (
+                          <span className="chip cursor-default bg-warning/15 text-[#9a6400] !px-2 !py-0.5" title={comissaoDescr(c)}>
+                            <Percent size={11} /> Comissão
+                          </span>
+                        )}
+                      </div>
                       <div className="text-xs text-ink-muted">
                         {c.payer_contact ? `${c.payer_contact} · ` : ""}início {dataBR(c.start_date)}
                       </div>
                     </td>
-                    {/* Valor */}
-                    <td className="px-4 py-3 text-right text-[15px] font-semibold tabular-nums">{brl(Number(c.contract_value))}</td>
+                    {/* Valor (bruto + líquido quando há comissão) */}
+                    <td className="px-4 py-3 text-right">
+                      <div className="text-[15px] font-semibold tabular-nums">{brl(Number(c.contract_value))}</div>
+                      {c.has_commission && (
+                        <div className="text-[11px] tabular-nums text-ink-muted" title={comissaoDescr(c)}>
+                          líq. {brl(netValue(c))}
+                        </div>
+                      )}
+                    </td>
                     {/* Vencimento — coluna de destaque */}
                     <td className="px-4 py-3">
                       <div className="mx-auto flex w-fit items-center gap-2">
@@ -410,8 +437,21 @@ function ContratoForm({
   const [inicio, setInicio] = useState(editando?.start_date ?? hoje);
   const [diaVenc, setDiaVenc] = useState(editando ? String(editando.due_date_day) : "5");
   const [contato, setContato] = useState(editando?.payer_contact ?? "");
+  // Comissionamento (opcional)
+  const [hasComm, setHasComm] = useState(editando?.has_commission ?? false);
+  const [commType, setCommType] = useState<CommissionType>(editando?.commission_type ?? "percentage");
+  const [commValue, setCommValue] = useState(editando?.commission_value != null ? String(editando.commission_value) : "");
+  const [commRecipient, setCommRecipient] = useState(editando?.commission_recipient ?? "");
   const [salvando, setSalvando] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
+
+  // Prévia da dedução mensal, conforme o valor do contrato e o tipo escolhido.
+  const previewComissao = useMemo(() => {
+    const bruto = Number(String(valor).replace(",", ".")) || 0;
+    const cv = Number(String(commValue).replace(",", ".")) || 0;
+    const raw = commType === "percentage" ? bruto * (cv / 100) : cv;
+    return Math.max(0, Math.min(raw, bruto));
+  }, [valor, commValue, commType]);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -424,6 +464,19 @@ function ContratoForm({
     if (!(dur >= 1)) return setErro("A duração deve ser de pelo menos 1 mês.");
     if (!(dia >= 1 && dia <= 31)) return setErro("O dia do vencimento deve ser entre 1 e 31.");
 
+    // Comissão: só valida/grava se o toggle estiver ligado.
+    let commission_type: CommissionType | null = null;
+    let commission_value: number | null = null;
+    let commission_recipient: string | null = null;
+    if (hasComm) {
+      const cv = Number(String(commValue).replace(",", "."));
+      if (!(cv > 0)) return setErro("Informe um valor de comissão maior que zero.");
+      if (commType === "percentage" && cv > 100) return setErro("A comissão percentual não pode passar de 100%.");
+      commission_type = commType;
+      commission_value = cv;
+      commission_recipient = commRecipient.trim() || null;
+    }
+
     const input: ContractInput = {
       client_name: clientName.trim(),
       contract_value: value,
@@ -431,6 +484,10 @@ function ContratoForm({
       start_date: inicio,
       due_date_day: dia,
       payer_contact: contato.trim() || null,
+      has_commission: hasComm,
+      commission_type,
+      commission_value,
+      commission_recipient,
     };
 
     setSalvando(true);
@@ -481,6 +538,60 @@ function ContratoForm({
         <div>
           <label className="mb-1 block text-xs font-medium text-ink-soft">Contato do pagador (WhatsApp/e-mail)</label>
           <input className="input" placeholder="(98) 99999-9999" value={contato} onChange={(e) => setContato(e.target.value)} />
+        </div>
+
+        {/* Comissionamento (opcional) — campos aparecem só com o toggle ligado */}
+        <div className="rounded-xl border border-black/10 bg-white/50 p-3">
+          <div className="flex items-center justify-between gap-2">
+            <div>
+              <div className="flex items-center gap-1.5 text-sm font-medium"><Percent size={14} className="text-accent" /> Tem comissão?</div>
+              <div className="text-xs text-ink-muted">Vendedor, parceiro ou indicação — deduzido da receita líquida.</div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setHasComm((v) => !v)}
+              className={`relative h-7 w-12 shrink-0 rounded-full transition-colors ${hasComm ? "bg-accent" : "bg-black/15"}`}
+              title={hasComm ? "Desativar comissão" : "Ativar comissão"}
+            >
+              <span className={`absolute top-1 h-5 w-5 rounded-full bg-white shadow transition-all ${hasComm ? "left-6" : "left-1"}`} />
+            </button>
+          </div>
+
+          {hasComm && (
+            <div className="mt-3 space-y-3">
+              <div className="inline-flex rounded-xl bg-black/5 p-1">
+                {(["percentage", "fixed"] as CommissionType[]).map((t) => (
+                  <button key={t} type="button" onClick={() => setCommType(t)}
+                    className={`rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${
+                      commType === t ? "bg-white text-ink shadow-sm" : "text-ink-muted hover:text-ink-soft"
+                    }`}>
+                    {t === "percentage" ? "Percentual (%)" : "Valor fixo (R$)"}
+                  </button>
+                ))}
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-ink-soft">{commType === "percentage" ? "Percentual" : "Valor fixo (R$)"}</label>
+                  <div className="relative">
+                    <input className="input tabular-nums pr-9" inputMode="decimal"
+                      placeholder={commType === "percentage" ? "10" : "300,00"}
+                      value={commValue} onChange={(e) => setCommValue(e.target.value)} />
+                    <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-ink-muted">{commType === "percentage" ? "%" : "R$"}</span>
+                  </div>
+                </div>
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-ink-soft">Dedução mensal</label>
+                  <div className="input flex items-center bg-black/[0.03] tabular-nums text-ink-soft">{brl(previewComissao)}</div>
+                </div>
+              </div>
+
+              <div>
+                <label className="mb-1 block text-xs font-medium text-ink-soft">Beneficiário</label>
+                <input className="input" placeholder="Nome do vendedor / parceiro" value={commRecipient} onChange={(e) => setCommRecipient(e.target.value)} />
+              </div>
+            </div>
+          )}
         </div>
       </div>
 

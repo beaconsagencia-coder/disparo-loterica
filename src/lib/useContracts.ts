@@ -84,14 +84,35 @@ export function vigenciaProgress(c: Contract, now = new Date()): { mes: number; 
   return { mes: Math.max(0, Math.min(c.duration_months, decorrido)), total: c.duration_months };
 }
 
-const soma = (cs: Contract[]) => cs.reduce((acc, c) => acc + (Number(c.contract_value) || 0), 0);
+/**
+ * Comissão MENSAL do contrato, em R$:
+ *   - 'percentage': commission_value % sobre o valor do contrato
+ *   - 'fixed':      commission_value reais fixos por mês
+ * Limitada ao valor do contrato (a dedução nunca passa da receita).
+ */
+export function commissionAmount(c: Contract): number {
+  if (!c.has_commission || !c.commission_type) return 0;
+  const bruto = Number(c.contract_value) || 0;
+  const v = Number(c.commission_value) || 0;
+  const valor = c.commission_type === "percentage" ? bruto * (v / 100) : v;
+  return Math.max(0, Math.min(valor, bruto));
+}
+
+/** Valor LÍQUIDO mensal do contrato (bruto − comissão). */
+export function netValue(c: Contract): number {
+  return (Number(c.contract_value) || 0) - commissionAmount(c);
+}
+
+const somaBruto = (cs: Contract[]) => cs.reduce((acc, c) => acc + (Number(c.contract_value) || 0), 0);
+const somaLiquido = (cs: Contract[]) => cs.reduce((acc, c) => acc + netValue(c), 0);
 
 export interface FinanceMetrics {
-  volume: number;   // contratos ativos (contagem)
-  mrr: number;      // faturamento vigente no mês corrente
-  m1: number;       // projeção do mês seguinte (M+1)
-  m2: number;       // projeção de daqui a 2 meses (M+2)
-  m0Idx: number;    // índices de mês usados (para rótulos)
+  volume: number;       // contratos ativos (contagem)
+  mrrBruto: number;     // faturamento bruto vigente no mês corrente
+  mrrLiquido: number;   // bruto − comissões (o que fica na agência)
+  m1: number;           // projeção LÍQUIDA do mês seguinte (M+1)
+  m2: number;           // projeção LÍQUIDA de daqui a 2 meses (M+2)
+  m0Idx: number;        // índices de mês usados (para rótulos)
   m1Idx: number;
   m2Idx: number;
 }
@@ -102,11 +123,13 @@ export function computeMetrics(contracts: Contract[], now = new Date()): Finance
   const m1 = m0 + 1;
   const m2 = m0 + 2;
   const ativos = contracts.filter((c) => c.status === "active");
+  // M+1 e M+2 são exibidos já LÍQUIDOS (caixa real após pagar parceiros).
   return {
     volume: ativos.length,
-    mrr: soma(ativos.filter((c) => vigenteNoMes(c, m0))),
-    m1: soma(ativos.filter((c) => vigenteNoMes(c, m1))),
-    m2: soma(ativos.filter((c) => vigenteNoMes(c, m2))),
+    mrrBruto: somaBruto(ativos.filter((c) => vigenteNoMes(c, m0))),
+    mrrLiquido: somaLiquido(ativos.filter((c) => vigenteNoMes(c, m0))),
+    m1: somaLiquido(ativos.filter((c) => vigenteNoMes(c, m1))),
+    m2: somaLiquido(ativos.filter((c) => vigenteNoMes(c, m2))),
     m0Idx: m0, m1Idx: m1, m2Idx: m2,
   };
 }
@@ -133,6 +156,8 @@ export function useContracts() {
         contract_value: Number(r.contract_value),
         duration_months: Number(r.duration_months),
         due_date_day: Number(r.due_date_day),
+        has_commission: !!r.has_commission,
+        commission_value: r.commission_value == null ? null : Number(r.commission_value),
       })) as Contract[];
       setContracts(rows);
     }

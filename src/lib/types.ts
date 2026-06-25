@@ -82,16 +82,22 @@ export interface Message {
 }
 
 export type ContractStatus = "active" | "cancelled" | "completed";
+export type CommissionType = "percentage" | "fixed";
 
 export interface Contract {
   id: string;
   client_name: string;
-  contract_value: number;     // valor mensal (MRR por contrato)
+  contract_value: number;     // valor mensal bruto (MRR por contrato)
   duration_months: number;    // parcelas a partir do mês de início
   payer_contact: string | null;
   due_date_day: number;       // dia do vencimento (1–31)
   status: ContractStatus;
   start_date: string;         // YYYY-MM-DD
+  // Comissionamento (opcional) — deduzido para compor a receita líquida.
+  has_commission: boolean;
+  commission_type: CommissionType | null;   // 'percentage' (%) | 'fixed' (R$/mês)
+  commission_value: number | null;          // a % ou o valor fixo
+  commission_recipient: string | null;      // beneficiário (vendedor/parceiro)
   cancelled_at?: string | null;
   notes?: string | null;
   created_at: string;
@@ -104,6 +110,10 @@ export interface ContractInput {
   payer_contact: string | null;
   due_date_day: number;
   start_date: string;
+  has_commission: boolean;
+  commission_type: CommissionType | null;
+  commission_value: number | null;
+  commission_recipient: string | null;
   notes?: string | null;
 }
 
