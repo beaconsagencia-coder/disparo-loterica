@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Plus, Smartphone, QrCode, RefreshCw, Trash2, ShieldCheck, Power } from "lucide-react";
+import { Plus, Smartphone, QrCode, RefreshCw, Trash2, ShieldCheck, Power, Gauge } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { InstanceBadge } from "@/components/ui/StatusBadge";
 import type { WhatsappInstance } from "@/lib/types";
@@ -129,10 +129,11 @@ export default function Instances() {
               </div>
               <div className="h-1.5 w-full overflow-hidden rounded-full bg-black/5">
                 <div
-                  className="h-full rounded-full bg-accent transition-all"
+                  className={`h-full rounded-full transition-all ${i.daily_count >= i.daily_limit ? "bg-[#b4231b]" : "bg-accent"}`}
                   style={{ width: `${Math.min(100, (i.daily_count / Math.max(1, i.daily_limit)) * 100)}%` }}
                 />
               </div>
+              <LimiteDiarioField key={`limite-${i.id}`} instance={i} />
             </div>
             {i.status !== "conectado" && (
               <button className="btn-accent w-full !py-1.5" onClick={() => reconnect(i)}>
@@ -188,6 +189,51 @@ export default function Instances() {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * Teto diário de envios DESTE chip (anti-ban). Cada chip tem o seu, porque o
+ * nível de aquecimento varia: chips novos começam baixo e sobem aos poucos.
+ * O dispatcher pula o chip que já bateu o teto do dia.
+ */
+function LimiteDiarioField({ instance }: { instance: WhatsappInstance }) {
+  const [val, setVal] = useState(String(instance.daily_limit));
+  const [estado, setEstado] = useState<"idle" | "salvando" | "ok">("idle");
+
+  async function salvar() {
+    const n = Math.max(1, Math.min(1000, Math.floor(Number(val) || 0)));
+    setVal(String(n)); // normaliza o que ficou no campo
+    if (n === instance.daily_limit) return; // nada mudou
+    setEstado("salvando");
+    const { error } = await supabase
+      .from("whatsapp_instances")
+      .update({ daily_limit: n })
+      .eq("id", instance.id);
+    setEstado(error ? "idle" : "ok");
+    if (error) alert("Falha ao salvar o limite: " + error.message);
+    else setTimeout(() => setEstado("idle"), 1500);
+  }
+
+  return (
+    <div className="mt-2 flex items-center gap-2">
+      <Gauge size={14} className="shrink-0 text-ink-muted" />
+      <label className="text-xs text-ink-soft">Limite/dia</label>
+      <input
+        type="number"
+        min={1}
+        max={1000}
+        className="input !w-20 !py-1 text-center text-sm tabular-nums"
+        value={val}
+        onChange={(e) => setVal(e.target.value)}
+        onBlur={salvar}
+        onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
+        title="Máximo de mensagens que este chip envia por dia (reset diário no fuso de Brasília)"
+      />
+      <span className="text-[11px] text-ink-muted">
+        {estado === "salvando" ? "salvando…" : estado === "ok" ? "salvo ✓" : "msgs"}
+      </span>
     </div>
   );
 }
