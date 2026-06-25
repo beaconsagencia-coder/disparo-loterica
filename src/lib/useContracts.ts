@@ -51,6 +51,39 @@ export function endMonthIndex(c: Contract): number {
   return startMonthIndex(c.start_date) + c.duration_months - 1;
 }
 
+/** Nº de dias do mês (year, month0). */
+export function daysInMonth(year: number, month0: number): number {
+  return new Date(year, month0 + 1, 0).getDate();
+}
+
+/**
+ * Próxima data de vencimento a partir de hoje, dado o dia do vencimento.
+ * Se o dia já passou neste mês, joga para o mês seguinte. O dia é "clampado"
+ * ao último dia do mês (ex.: vencimento 31 em fevereiro vira 28/29).
+ */
+export function nextDueDate(dueDay: number, ref = new Date()): Date {
+  const base = new Date(ref.getFullYear(), ref.getMonth(), ref.getDate()); // zera a hora
+  const make = (y: number, m0: number) => new Date(y, m0, Math.min(dueDay, daysInMonth(y, m0)));
+  let due = make(base.getFullYear(), base.getMonth());
+  if (due < base) due = make(base.getFullYear(), base.getMonth() + 1); // já venceu → mês que vem
+  return due;
+}
+
+/** Dias inteiros entre hoje e o próximo vencimento (0 = vence hoje). */
+export function daysUntilDue(dueDay: number, ref = new Date()): number {
+  const base = new Date(ref.getFullYear(), ref.getMonth(), ref.getDate());
+  return Math.round((nextDueDate(dueDay, ref).getTime() - base.getTime()) / 86_400_000);
+}
+
+/**
+ * Progresso da vigência: em qual mês (1..duração) o contrato está e o total.
+ * mês atual = mês corrente − mês de início + 1. Antes de começar → 0.
+ */
+export function vigenciaProgress(c: Contract, now = new Date()): { mes: number; total: number } {
+  const decorrido = currentMonthIndex(now) - startMonthIndex(c.start_date) + 1;
+  return { mes: Math.max(0, Math.min(c.duration_months, decorrido)), total: c.duration_months };
+}
+
 const soma = (cs: Contract[]) => cs.reduce((acc, c) => acc + (Number(c.contract_value) || 0), 0);
 
 export interface FinanceMetrics {
