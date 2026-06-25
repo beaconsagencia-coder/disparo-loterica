@@ -159,6 +159,16 @@ export function useContracts() {
   }, [load]);
 
   /**
+   * Edita um contrato. Mescla os novos campos no estado local na hora
+   * (otimista) → se valor/datas/duração mudaram, MRR/M+1/M+2 recalculam já.
+   */
+  const updateContract = useCallback(async (id: string, input: ContractInput) => {
+    setContracts((prev) => prev.map((c) => (c.id === id ? { ...c, ...input } : c)));
+    const { error } = await supabase.from("contracts").update(input).eq("id", id);
+    if (error) { await load(); throw error; } // reverte para o estado real em caso de erro
+  }, [load]);
+
+  /**
    * Cancela um contrato (churn). Atualiza o estado local na hora (otimista)
    * para que MRR/M+1/M+2 caiam IMEDIATAMENTE, antes mesmo do round-trip.
    */
@@ -171,7 +181,17 @@ export function useContracts() {
     if (error) { await load(); throw error; } // reverte para o estado real em caso de erro
   }, [load]);
 
+  /**
+   * EXCLUI o contrato de forma permanente (hard delete) — diferente de cancelar.
+   * Remove do estado local na hora e recalcula todas as métricas.
+   */
+  const deleteContract = useCallback(async (id: string) => {
+    setContracts((prev) => prev.filter((c) => c.id !== id));
+    const { error } = await supabase.from("contracts").delete().eq("id", id);
+    if (error) { await load(); throw error; } // reverte (recarrega) se o delete falhar
+  }, [load]);
+
   const metrics = useMemo(() => computeMetrics(contracts), [contracts]);
 
-  return { contracts, loading, error, metrics, addContract, cancelContract, reload: load };
+  return { contracts, loading, error, metrics, addContract, updateContract, cancelContract, deleteContract, reload: load };
 }

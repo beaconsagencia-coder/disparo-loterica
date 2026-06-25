@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   Wallet, Layers, CircleDollarSign, TrendingUp, LineChart, Plus, Ban,
-  AlertCircle, Loader2, X, CheckCircle2, CalendarClock, CalendarDays,
+  AlertCircle, Loader2, X, CheckCircle2, CalendarClock, CalendarDays, Pencil, Trash2,
 } from "lucide-react";
 import {
   useContracts, endMonthIndex, daysUntilDue, nextDueDate, vigenciaProgress,
@@ -39,10 +39,15 @@ function dueTone(dias: number): { chip: string; box: string; label: string } {
 }
 
 export default function Financeiro() {
-  const { contracts, loading, error, metrics, addContract, cancelContract } = useContracts();
+  const { contracts, loading, error, metrics, addContract, updateContract, cancelContract, deleteContract } = useContracts();
   const [filtro, setFiltro] = useState<ContractStatus | "all">("active");
   const [aCancelar, setACancelar] = useState<Contract | null>(null);
+  const [aExcluir, setAExcluir] = useState<Contract | null>(null);
   const [drawer, setDrawer] = useState(false);
+  const [editando, setEditando] = useState<Contract | null>(null);
+
+  function abrirNovo() { setEditando(null); setDrawer(true); }
+  function abrirEdicao(c: Contract) { setEditando(c); setDrawer(true); }
 
   const lista = useMemo(
     () => contracts.filter((c) => (filtro === "all" ? true : c.status === filtro)),
@@ -77,7 +82,7 @@ export default function Financeiro() {
             <p className="text-sm text-ink-muted">Carteira, fluxo de caixa e previsibilidade. Tudo recalcula em tempo real.</p>
           </div>
         </div>
-        <button className="btn-accent shrink-0" onClick={() => setDrawer(true)}>
+        <button className="btn-accent shrink-0" onClick={abrirNovo}>
           <Plus size={16} /> <span className="hidden sm:inline">Novo contrato</span>
         </button>
       </header>
@@ -112,15 +117,28 @@ export default function Financeiro() {
         filtro={filtro}
         setFiltro={setFiltro}
         totalAtivos={metrics.volume}
+        onEditar={abrirEdicao}
         onCancelar={setACancelar}
+        onExcluir={setAExcluir}
       />
 
-      {/* Drawer lateral do formulário */}
-      <NovoContratoDrawer open={drawer} onClose={() => setDrawer(false)} onAdd={addContract} />
+      {/* Drawer lateral do formulário (criação OU edição) */}
+      <ContratoDrawer
+        open={drawer}
+        editando={editando}
+        onClose={() => setDrawer(false)}
+        onAdd={addContract}
+        onUpdate={updateContract}
+      />
 
-      {/* Modal de confirmação do churn */}
+      {/* Modal de confirmação do churn (cancelar = encerra projeção) */}
       {aCancelar && (
         <ConfirmarCancelamento contrato={aCancelar} onClose={() => setACancelar(null)} onConfirm={cancelContract} />
+      )}
+
+      {/* Modal de confirmação da EXCLUSÃO (hard delete) */}
+      {aExcluir && (
+        <ConfirmarExclusao contrato={aExcluir} onClose={() => setAExcluir(null)} onConfirm={deleteContract} />
       )}
     </div>
   );
@@ -190,14 +208,16 @@ const FILTROS: { key: ContractStatus | "all"; label: string }[] = [
 ];
 
 function ContratosTabela({
-  lista, loading, filtro, setFiltro, totalAtivos, onCancelar,
+  lista, loading, filtro, setFiltro, totalAtivos, onEditar, onCancelar, onExcluir,
 }: {
   lista: Contract[];
   loading: boolean;
   filtro: ContractStatus | "all";
   setFiltro: (f: ContractStatus | "all") => void;
   totalAtivos: number;
+  onEditar: (c: Contract) => void;
   onCancelar: (c: Contract) => void;
+  onExcluir: (c: Contract) => void;
 }) {
   return (
     <div className="rounded-xl2 border border-black/5 bg-white shadow-sm">
@@ -232,7 +252,7 @@ function ContratosTabela({
                 <th className="px-4 py-3 text-center font-medium">Vencimento</th>
                 <th className="px-4 py-3 font-medium">Tempo de vigência</th>
                 <th className="px-4 py-3 font-medium">Status</th>
-                <th className="px-4 py-3 text-right font-medium">Ação</th>
+                <th className="px-4 py-3 text-right font-medium">Ações</th>
               </tr>
             </thead>
             <tbody>
@@ -283,19 +303,33 @@ function ContratosTabela({
                     <td className="px-4 py-3">
                       <span className={`chip ${STATUS_CHIP[c.status]}`}>{CONTRACT_STATUS_LABEL[c.status]}</span>
                     </td>
-                    {/* Ação */}
-                    <td className="px-4 py-3 text-right">
-                      {c.status === "active" ? (
+                    {/* Ações agrupadas: Editar · Cancelar · Excluir */}
+                    <td className="px-4 py-3">
+                      <div className="flex items-center justify-end gap-1">
                         <button
-                          onClick={() => onCancelar(c)}
-                          className="inline-flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-medium text-danger transition-colors hover:bg-danger/10"
-                          title="Cancelar contrato"
+                          onClick={() => onEditar(c)}
+                          className="flex h-8 w-8 items-center justify-center rounded-lg text-ink-muted transition-colors hover:bg-black/5 hover:text-accent"
+                          title="Editar contrato"
                         >
-                          <Ban size={13} /> Cancelar
+                          <Pencil size={15} />
                         </button>
-                      ) : (
-                        <span className="text-xs text-ink-muted">—</span>
-                      )}
+                        {c.status === "active" && (
+                          <button
+                            onClick={() => onCancelar(c)}
+                            className="flex h-8 w-8 items-center justify-center rounded-lg text-ink-muted transition-colors hover:bg-warning/10 hover:text-[#9a6400]"
+                            title="Cancelar contrato (encerra a projeção)"
+                          >
+                            <Ban size={15} />
+                          </button>
+                        )}
+                        <button
+                          onClick={() => onExcluir(c)}
+                          className="flex h-8 w-8 items-center justify-center rounded-lg text-ink-muted transition-colors hover:bg-danger/10 hover:text-danger"
+                          title="Excluir permanentemente"
+                        >
+                          <Trash2 size={15} />
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 );
@@ -313,14 +347,16 @@ function ContratosTabela({
 }
 
 // =====================================================================
-// Drawer lateral: formulário de novo contrato
+// Drawer lateral: formulário de contrato (criação OU edição)
 // =====================================================================
-function NovoContratoDrawer({
-  open, onClose, onAdd,
+function ContratoDrawer({
+  open, editando, onClose, onAdd, onUpdate,
 }: {
   open: boolean;
+  editando: Contract | null;
   onClose: () => void;
   onAdd: (c: ContractInput) => Promise<void>;
+  onUpdate: (id: string, c: ContractInput) => Promise<void>;
 }) {
   // Fecha no ESC.
   useEffect(() => {
@@ -330,6 +366,7 @@ function NovoContratoDrawer({
     return () => window.removeEventListener("keydown", h);
   }, [open, onClose]);
 
+  const editMode = !!editando;
   return (
     <div className={`fixed inset-0 z-50 ${open ? "" : "pointer-events-none"}`} aria-hidden={!open}>
       {/* backdrop */}
@@ -343,25 +380,36 @@ function NovoContratoDrawer({
       >
         <div className="mb-4 flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-accent/15 text-accent"><Plus size={18} /></span>
-            <h2 className="text-lg font-semibold">Novo contrato</h2>
+            <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-accent/15 text-accent">
+              {editMode ? <Pencil size={17} /> : <Plus size={18} />}
+            </span>
+            <h2 className="text-lg font-semibold">{editMode ? "Editar contrato" : "Novo contrato"}</h2>
           </div>
           <button onClick={onClose} className="rounded-full p-1.5 text-ink-muted hover:bg-black/5"><X size={18} /></button>
         </div>
-        <NovoContratoForm onAdd={onAdd} onDone={onClose} />
+        {/* key força remontagem ao trocar de alvo: o form reinicia com os dados certos */}
+        <ContratoForm key={editando?.id ?? "new"} editando={editando} onAdd={onAdd} onUpdate={onUpdate} onDone={onClose} />
       </aside>
     </div>
   );
 }
 
-function NovoContratoForm({ onAdd, onDone }: { onAdd: (c: ContractInput) => Promise<void>; onDone: () => void }) {
+function ContratoForm({
+  editando, onAdd, onUpdate, onDone,
+}: {
+  editando: Contract | null;
+  onAdd: (c: ContractInput) => Promise<void>;
+  onUpdate: (id: string, c: ContractInput) => Promise<void>;
+  onDone: () => void;
+}) {
   const hoje = new Date().toISOString().slice(0, 10);
-  const [clientName, setClientName] = useState("");
-  const [valor, setValor] = useState("");
-  const [duracao, setDuracao] = useState("12");
-  const [inicio, setInicio] = useState(hoje);
-  const [diaVenc, setDiaVenc] = useState("5");
-  const [contato, setContato] = useState("");
+  // Valores iniciais: vêm do contrato em edição ou dos defaults de criação.
+  const [clientName, setClientName] = useState(editando?.client_name ?? "");
+  const [valor, setValor] = useState(editando ? String(editando.contract_value) : "");
+  const [duracao, setDuracao] = useState(editando ? String(editando.duration_months) : "12");
+  const [inicio, setInicio] = useState(editando?.start_date ?? hoje);
+  const [diaVenc, setDiaVenc] = useState(editando ? String(editando.due_date_day) : "5");
+  const [contato, setContato] = useState(editando?.payer_contact ?? "");
   const [salvando, setSalvando] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
 
@@ -376,17 +424,20 @@ function NovoContratoForm({ onAdd, onDone }: { onAdd: (c: ContractInput) => Prom
     if (!(dur >= 1)) return setErro("A duração deve ser de pelo menos 1 mês.");
     if (!(dia >= 1 && dia <= 31)) return setErro("O dia do vencimento deve ser entre 1 e 31.");
 
+    const input: ContractInput = {
+      client_name: clientName.trim(),
+      contract_value: value,
+      duration_months: dur,
+      start_date: inicio,
+      due_date_day: dia,
+      payer_contact: contato.trim() || null,
+    };
+
     setSalvando(true);
     try {
-      await onAdd({
-        client_name: clientName.trim(),
-        contract_value: value,
-        duration_months: dur,
-        start_date: inicio,
-        due_date_day: dia,
-        payer_contact: contato.trim() || null,
-      });
-      onDone(); // fecha o drawer; a lista atualiza via realtime
+      if (editando) await onUpdate(editando.id, input);
+      else await onAdd(input);
+      onDone(); // fecha o drawer; o estado já foi atualizado de forma otimista
     } catch (e) {
       setErro("Não foi possível salvar: " + (e instanceof Error ? e.message : String(e)));
       setSalvando(false);
@@ -395,7 +446,9 @@ function NovoContratoForm({ onAdd, onDone }: { onAdd: (c: ContractInput) => Prom
 
   return (
     <form onSubmit={submit} className="flex flex-1 flex-col">
-      <p className="mb-4 text-sm text-ink-muted">Cadastre um cliente para entrar na projeção de caixa.</p>
+      <p className="mb-4 text-sm text-ink-muted">
+        {editando ? "Altere os dados — as projeções recalculam ao salvar." : "Cadastre um cliente para entrar na projeção de caixa."}
+      </p>
 
       <div className="space-y-3">
         <div>
@@ -436,7 +489,7 @@ function NovoContratoForm({ onAdd, onDone }: { onAdd: (c: ContractInput) => Prom
       <div className="mt-auto flex items-center gap-2 pt-5">
         <button type="submit" className="btn-accent flex-1" disabled={salvando}>
           {salvando ? <Loader2 size={16} className="animate-spin" /> : <CheckCircle2 size={16} />}
-          {salvando ? "Salvando…" : "Salvar contrato"}
+          {salvando ? "Salvando…" : editando ? "Salvar alterações" : "Salvar contrato"}
         </button>
         <button type="button" className="btn-ghost" onClick={onDone} disabled={salvando}>Cancelar</button>
       </div>
@@ -497,6 +550,68 @@ function ConfirmarCancelamento({
           >
             {processando ? <Loader2 size={16} className="animate-spin" /> : <Ban size={16} />}
             {processando ? "Cancelando…" : "Cancelar contrato"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// =====================================================================
+// Modal de confirmação da EXCLUSÃO permanente (hard delete)
+// =====================================================================
+function ConfirmarExclusao({
+  contrato, onClose, onConfirm,
+}: {
+  contrato: Contract;
+  onClose: () => void;
+  onConfirm: (id: string) => Promise<void>;
+}) {
+  const [processando, setProcessando] = useState(false);
+  const [erro, setErro] = useState<string | null>(null);
+
+  async function confirmar() {
+    setProcessando(true); setErro(null);
+    try {
+      await onConfirm(contrato.id);
+      onClose();
+    } catch (e) {
+      setErro("Não foi possível excluir: " + (e instanceof Error ? e.message : String(e)));
+      setProcessando(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 p-4" onClick={onClose}>
+      <div className="glass-strong w-full max-w-md rounded-xl2 p-5" onClick={(e) => e.stopPropagation()}>
+        <div className="mb-3 flex items-start justify-between">
+          <div className="flex items-center gap-2">
+            <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-danger/15 text-danger"><Trash2 size={18} /></span>
+            <h3 className="text-lg font-semibold">Excluir permanentemente</h3>
+          </div>
+          <button onClick={onClose} className="rounded-full p-1.5 text-ink-muted hover:bg-black/5"><X size={18} /></button>
+        </div>
+
+        <p className="text-sm text-ink-soft">
+          Tem certeza? Esta ação apagará <strong>permanentemente</strong> todos os registros do contrato de <strong>{contrato.client_name}</strong> ({brl(Number(contrato.contract_value))}/mês).
+        </p>
+        {/* Reforço da regra de negócio: excluir ≠ cancelar */}
+        <div className="mt-3 flex items-start gap-2 rounded-xl border border-warning/30 bg-warning/10 p-3 text-xs text-[#9a6400]">
+          <AlertCircle size={15} className="mt-0.5 shrink-0" />
+          <span>Se o cliente apenas rescindiu o contrato, use a opção <strong>“Cancelar”</strong> — ela preserva o histórico e encerra a projeção sem apagar o registro.</span>
+        </div>
+
+        {erro && <p className="mt-3 flex items-center gap-1 text-sm text-danger"><AlertCircle size={14} /> {erro}</p>}
+
+        <div className="mt-5 flex justify-end gap-2">
+          <button onClick={onClose} className="btn-ghost" disabled={processando}>Voltar</button>
+          <button
+            onClick={confirmar}
+            disabled={processando}
+            className="inline-flex items-center gap-1.5 rounded-full bg-danger px-4 py-2 text-sm font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-60"
+          >
+            {processando ? <Loader2 size={16} className="animate-spin" /> : <Trash2 size={16} />}
+            {processando ? "Excluindo…" : "Excluir definitivamente"}
           </button>
         </div>
       </div>
