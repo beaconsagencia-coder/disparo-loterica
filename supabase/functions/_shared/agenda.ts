@@ -106,9 +106,11 @@ export async function activeMeetingFor(
 ): Promise<ActiveMeeting | null> {
   const ors = [`conversation_id.eq.${conversationId}`];
   if (leadId) ors.push(`lead_id.eq.${leadId}`);
+  // Ignora canceladas E no-show: uma falta NÃO é reunião ativa — o bot precisa
+  // poder reabrir o agendamento (senão o follow-up de reagendamento é bloqueado).
   const { data } = await supabase.from("meetings")
     .select("id, quando_texto, scheduled_for")
-    .eq("user_id", userId).neq("status", "cancelada")
+    .eq("user_id", userId).not("status", "in", "(cancelada,no_show)")
     .or(ors.join(","))
     .order("scheduled_for", { ascending: true });
   const corte = Date.now() - 3_600_000; // 1h de tolerância após o horário

@@ -451,9 +451,13 @@ export async function runSdr(p: RunSdrParams): Promise<void> {
       if (m.direction === "outbound") { if (!m.is_continuation) semResposta++; } // continuação não conta
       else break; // achou uma resposta do cliente: zera a contagem
     }
+    // Reabertura após uma falta (no-show): é um novo evento legítimo, então NÃO
+    // é barrada pelo teto histórico de mensagens — o followup_count (zerado na
+    // reabertura) + followup_max ainda limitam quantas tentativas de remarcar.
+    const noShowReengage = conv.quiet_reason === "no_show";
     const followupMax = Number(config.followup_max ?? 2);
     const maxSemResposta = followupMax + 1;
-    if (semResposta >= maxSemResposta) {
+    if (!noShowReengage && semResposta >= maxSemResposta) {
       console.log(`[sdr] follow-up ignorado: ${semResposta} mensagens sem resposta (teto ${maxSemResposta})`);
       // Trava o agendador para não reprocessar esta conversa a cada ciclo.
       // (Zera quando o cliente responder — o webhook reseta followup_count.)
@@ -474,7 +478,12 @@ export async function runSdr(p: RunSdrParams): Promise<void> {
       : "";
     // Retomada COMPREENSIVA: o cliente havia pedido para retornar depois
     // (semana corrida). Já se passaram ~2 dias → reabrir com leveza.
-    const instrucao = conv.quiet_reason === "deferral"
+    const instrucao = noShowReengage
+      ? "Este cliente tinha uma reunião MARCADA mas NÃO compareceu (no-show). Reabra a conversa de forma leve e gentil, SEM cobrar nem culpar " +
+        "(jamais diga 'você faltou', 'cadê você', 'fiquei te esperando'). Demonstre compreensão de que imprevistos acontecem e PROPONHA REMARCAR " +
+        "para um novo horário próximo: consulte a disponibilidade antes e ofereça UM horário exato e livre (ex.: 'amanhã às 09h?'). Quando o cliente " +
+        "aceitar, chame agendar_reuniao normalmente. Mensagem curta e calorosa, sem repetir mensagens anteriores e sem mencionar esta instrução."
+      : conv.quiet_reason === "deferral"
       ? "O cliente havia dito que a semana estava corrida/imprevisível e que retornaria depois; já se passaram ~2 dias e ele não voltou. " +
         "Reabra a conversa em tom COMPREENSIVO e leve (algo como 'Olá, Cleber! Tudo bem? Sei que a semana estava corrida...'), " +
         "pergunte se as coisas se acalmaram e PROPONHA UM horário exato e próximo para a rápida reunião (consulte a disponibilidade antes). " +
@@ -489,7 +498,7 @@ export async function runSdr(p: RunSdrParams): Promise<void> {
       parts: [{ text: `[INSTRUÇÃO INTERNA DO SISTEMA — não é mensagem do cliente] ${jaEnviado}${instrucao}` }],
     });
     // Consome o motivo: a próxima cutucada (se houver) volta ao tom normal.
-    if (conv.quiet_reason === "deferral") {
+    if (conv.quiet_reason === "deferral" || conv.quiet_reason === "no_show") {
       await supabase.from("conversations").update({ quiet_reason: null }).eq("id", p.conversationId);
     }
   }
