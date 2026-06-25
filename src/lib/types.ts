@@ -81,6 +81,38 @@ export interface Message {
   media_name?: string | null;
 }
 
+export type ContractStatus = "active" | "cancelled" | "completed";
+
+export interface Contract {
+  id: string;
+  client_name: string;
+  contract_value: number;     // valor mensal (MRR por contrato)
+  duration_months: number;    // parcelas a partir do mês de início
+  payer_contact: string | null;
+  due_date_day: number;       // dia do vencimento (1–31)
+  status: ContractStatus;
+  start_date: string;         // YYYY-MM-DD
+  cancelled_at?: string | null;
+  notes?: string | null;
+  created_at: string;
+}
+
+export interface ContractInput {
+  client_name: string;
+  contract_value: number;
+  duration_months: number;
+  payer_contact: string | null;
+  due_date_day: number;
+  start_date: string;
+  notes?: string | null;
+}
+
+export const CONTRACT_STATUS_LABEL: Record<ContractStatus, string> = {
+  active: "Ativo",
+  cancelled: "Cancelado",
+  completed: "Concluído",
+};
+
 export interface Cadence {
   id: string;
   nome: string;
