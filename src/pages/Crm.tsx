@@ -147,7 +147,18 @@ export default function Crm() {
   async function moveStage(leadId: string, stage: string) {
     setLeads((prev) => prev.map((l) => (l.id === leadId ? { ...l, crm_stage: stage } : l)));
     const { error } = await supabase.from("leads").update({ crm_stage: stage }).eq("id", leadId);
-    if (error) { alert("Não consegui mover: " + error.message); load(); }
+    if (error) { alert("Não consegui mover: " + error.message); load(); return; }
+    // Registra o desfecho na reunião do lead para alimentar os relatórios
+    // (no-show e venda). O trigger do banco cuida do sync inverso.
+    if (stage === "no_show" || stage === "contrato_assinado") {
+      const { data: mt } = await supabase.from("meetings")
+        .select("id").eq("lead_id", leadId).neq("status", "cancelada")
+        .order("created_at", { ascending: false }).limit(1).maybeSingle();
+      if (mt) {
+        const patch = stage === "no_show" ? { status: "no_show" } : { gerou_venda: true };
+        await supabase.from("meetings").update(patch).eq("id", (mt as { id: string }).id);
+      }
+    }
   }
 
   const leadAberto = leads.find((l) => l.id === aberto) ?? null;

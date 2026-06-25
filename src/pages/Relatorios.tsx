@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { BarChart3, Send, MessageSquare, CalendarCheck, Trophy, Star } from "lucide-react";
+import { BarChart3, Send, MessageSquare, CalendarCheck, UserCheck, UserX, Trophy, Star } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 
 interface ChipStat {
@@ -9,9 +9,12 @@ interface ChipStat {
   enviadas: number;
   respostas: number;
   reunioes: number;
+  realizadas: number;
+  no_show: number;
+  vendas: number;
 }
 interface Stats {
-  funil: { enviadas: number; responderam: number; reunioes: number; ganhos: number };
+  funil: { enviadas: number; responderam: number; reunioes: number; realizadas: number; no_show: number; ganhos: number };
   chips: ChipStat[];
 }
 
@@ -50,7 +53,8 @@ export default function Relatorios() {
         { label: "Disparos enviados", value: f.enviadas, icon: Send, color: "bg-accent", taxa: null as number | null, base: "" },
         { label: "Responderam", value: f.responderam, icon: MessageSquare, color: "bg-[#5e5ce6]", taxa: pct(f.responderam, f.enviadas), base: "dos disparos" },
         { label: "Reuniões agendadas", value: f.reunioes, icon: CalendarCheck, color: "bg-warning", taxa: pct(f.reunioes, f.responderam), base: "das respostas" },
-        { label: "Ganhos", value: f.ganhos, icon: Trophy, color: "bg-success", taxa: pct(f.ganhos, f.reunioes), base: "das reuniões" },
+        { label: "Compareceram", value: f.realizadas, icon: UserCheck, color: "bg-[#0aa2c0]", taxa: pct(f.realizadas, f.reunioes), base: "das reuniões" },
+        { label: "Vendas", value: f.ganhos, icon: Trophy, color: "bg-success", taxa: pct(f.ganhos, f.realizadas), base: "das realizadas" },
       ]
     : [];
 
@@ -124,6 +128,31 @@ export default function Relatorios() {
             </div>
           </div>
 
+          {/* Comparecimento, no-show e vendas (desfecho das reuniões) */}
+          <div className="mb-4 grid gap-3 sm:grid-cols-3">
+            <div className="bento-card flex items-center gap-3">
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[#0aa2c0]/15 text-[#0aa2c0]"><UserCheck size={18} /></div>
+              <div>
+                <div className="text-xl font-semibold tabular-nums">{f.realizadas}<span className="ml-1 text-sm font-normal text-ink-muted">/ {f.reunioes}</span></div>
+                <div className="text-xs text-ink-muted">Compareceram · {pct(f.realizadas, f.reunioes)}% das reuniões</div>
+              </div>
+            </div>
+            <div className="bento-card flex items-center gap-3">
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-danger/15 text-danger"><UserX size={18} /></div>
+              <div>
+                <div className="text-xl font-semibold tabular-nums text-danger">{f.no_show}</div>
+                <div className="text-xs text-ink-muted">No-show · {pct(f.no_show, f.reunioes)}% das reuniões</div>
+              </div>
+            </div>
+            <div className="bento-card flex items-center gap-3">
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-success/15 text-[#1b7a35]"><Trophy size={18} /></div>
+              <div>
+                <div className="text-xl font-semibold tabular-nums text-[#1b7a35]">{f.ganhos}</div>
+                <div className="text-xs text-ink-muted">Vendas · {pct(f.ganhos, f.realizadas)}% das realizadas</div>
+              </div>
+            </div>
+          </div>
+
           {/* Comparativo por chip */}
           <div className="bento-card">
             <div className="mb-1 flex items-center justify-between">
@@ -144,7 +173,8 @@ export default function Relatorios() {
                       <th className="py-2 px-2 text-right font-medium">Respostas</th>
                       <th className="py-2 px-2 text-right font-medium">Taxa resp.</th>
                       <th className="py-2 px-2 text-right font-medium">Reuniões</th>
-                      <th className="py-2 pl-2 text-right font-medium">Taxa reun.</th>
+                      <th className="py-2 px-2 text-right font-medium">No-show</th>
+                      <th className="py-2 pl-2 text-right font-medium">Vendas</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -163,7 +193,8 @@ export default function Relatorios() {
                           <td className="py-2 px-2 text-right tabular-nums">{c.respostas}</td>
                           <td className="py-2 px-2 text-right tabular-nums font-semibold text-accent">{pct(c.respostas, c.enviadas)}%</td>
                           <td className="py-2 px-2 text-right tabular-nums">{c.reunioes}</td>
-                          <td className="py-2 pl-2 text-right tabular-nums font-semibold text-[#1b7a35]">{pct(c.reunioes, c.respostas)}%</td>
+                          <td className="py-2 px-2 text-right tabular-nums font-semibold text-danger">{c.no_show}</td>
+                          <td className="py-2 pl-2 text-right tabular-nums font-semibold text-[#1b7a35]">{c.vendas}</td>
                         </tr>
                       );
                     })}
@@ -172,7 +203,7 @@ export default function Relatorios() {
               </div>
             )}
             <p className="mt-3 text-xs text-ink-muted">
-              Reuniões são atribuídas ao chip atual da conversa. Ganhos no período usam a data da última atualização do lead.
+              Reuniões, no-show e vendas são atribuídos ao chip da reunião (ou ao chip atual da conversa). Registre o desfecho na Agenda ou no CRM. Vendas no funil usam a data da última atualização do lead.
             </p>
           </div>
         </>

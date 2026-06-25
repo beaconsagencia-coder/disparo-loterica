@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { CalendarDays, Save, Plus, Trash2, Link2, Ban, Check, ChevronLeft, ChevronRight, Settings2, AlertCircle } from "lucide-react";
+import { CalendarDays, Save, Plus, Trash2, Link2, Ban, Check, UserX, Trophy, ChevronLeft, ChevronRight, Settings2, AlertCircle } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 
 const DIAS = ["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sáb"];
@@ -20,7 +20,8 @@ interface DragState {
 interface Block { id: string; dia_semana: number; hora_inicio: string; hora_fim: string; titulo: string | null; }
 interface Meeting {
   id: string; titulo: string | null; quando_texto: string; scheduled_for: string | null;
-  duracao_min: number | null; status: string; instance_id: string | null; leads?: { nome: string | null } | null;
+  duracao_min: number | null; status: string; gerou_venda: boolean | null;
+  instance_id: string | null; leads?: { nome: string | null } | null;
 }
 
 const pad = (n: number) => String(n).padStart(2, "0");
@@ -105,7 +106,7 @@ export default function Agenda() {
     if (bErr2 && !loadErr) setLoadErr("Não consegui carregar os compromissos: " + bErr2.message);
     setBlocks((b as Block[]) ?? []);
     const { data: m, error: mErr } = await supabase.from("meetings")
-      .select("id, titulo, quando_texto, scheduled_for, duracao_min, status, instance_id, leads(nome)")
+      .select("id, titulo, quando_texto, scheduled_for, duracao_min, status, gerou_venda, instance_id, leads(nome)")
       .order("scheduled_for", { ascending: true, nullsFirst: false });
     if (mErr) setLoadErr((p) => p ?? "Não consegui carregar as reuniões: " + mErr.message);
     setMeetings((m as unknown as Meeting[]) ?? []);
@@ -593,6 +594,11 @@ function MeetingsCard(
     await supabase.from("meetings").update({ status }).eq("id", id);
     reload();
   }
+  // Fechou negócio: o trigger marca a reunião como realizada e o lead como ganho.
+  async function setVenda(id: string) {
+    await supabase.from("meetings").update({ gerou_venda: true }).eq("id", id);
+    reload();
+  }
   async function remove(id: string) {
     if (!confirm("Remover esta reunião?")) return;
     await supabase.from("meetings").delete().eq("id", id);
@@ -604,8 +610,10 @@ function MeetingsCard(
   }
 
   const cor: Record<string, string> = {
-    agendada: "bg-accent/15 text-accent", realizada: "bg-success/15 text-[#1b7a35]", cancelada: "bg-black/10 text-ink-muted line-through",
+    agendada: "bg-accent/15 text-accent", realizada: "bg-success/15 text-[#1b7a35]",
+    no_show: "bg-danger/15 text-danger", cancelada: "bg-black/10 text-ink-muted line-through",
   };
+  const statusLabel: Record<string, string> = { agendada: "agendada", realizada: "realizada", no_show: "no-show", cancelada: "cancelada" };
 
   return (
     <div className="bento-card">
@@ -641,12 +649,17 @@ function MeetingsCard(
               </select>
             </div>
             <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
-              <span className={`chip ${cor[m.status] ?? ""}`}>{m.status}</span>
+              <span className={`chip ${cor[m.status] ?? ""}`}>{statusLabel[m.status] ?? m.status}</span>
+              {m.gerou_venda && <span className="chip bg-success/15 text-[#1b7a35]" title="Reunião que resultou em venda"><Trophy size={12} /> venda</span>}
               {m.status === "agendada" && (
                 <>
-                  <button className="btn-ghost !px-2 !py-1" title="Marcar como realizada (passa o atendimento para manual e desliga a IA dessa conversa)" onClick={() => setStatus(m.id, "realizada")}><Check size={14} /></button>
+                  <button className="btn-ghost !px-2 !py-1" title="Compareceu / realizada (passa o atendimento para manual e desliga a IA dessa conversa)" onClick={() => setStatus(m.id, "realizada")}><Check size={14} /></button>
+                  <button className="btn-ghost !px-2 !py-1 text-danger" title="No-show — o cliente não compareceu (vai para a coluna No Show no CRM)" onClick={() => setStatus(m.id, "no_show")}><UserX size={14} /></button>
                   <button className="btn-ghost !px-2 !py-1" title="Cancelar" onClick={() => setStatus(m.id, "cancelada")}><Ban size={14} /></button>
                 </>
+              )}
+              {(m.status === "agendada" || m.status === "realizada") && !m.gerou_venda && (
+                <button className="btn-ghost !px-2 !py-1 text-[#1b7a35]" title="Fechou venda — marca o lead como ganho e alimenta os relatórios" onClick={() => setVenda(m.id)}><Trophy size={14} /></button>
               )}
               <button className="btn-ghost !px-2 !py-1 text-danger" title="Remover" onClick={() => remove(m.id)}><Trash2 size={14} /></button>
             </div>
