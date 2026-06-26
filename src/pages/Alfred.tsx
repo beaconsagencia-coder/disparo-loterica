@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import {
-  Bot, Smartphone, KeyRound, Plus, Trash2, Power, PowerOff, ChevronDown,
+  Bot, Smartphone, Sparkles, Plus, Trash2, Power, PowerOff, ChevronDown,
   Save, Loader2, QrCode, Users, FolderOpen, CalendarRange, Wallet, StickyNote, RefreshCw,
+  Building2, ScrollText,
 } from "lucide-react";
 import { useAlfred, type AlfredConfig, type AlfredConnection, type AlfredGroup, type AlfredContext } from "@/lib/useAlfred";
 
@@ -176,32 +177,19 @@ function ConexaoWhatsapp({ connection, onConnect, onCheckStatus }: {
   );
 }
 
-// ---- Config global (chaves + prompt) -------------------------------
+// ---- Comportamento global (prompt) — sem chaves (herdadas do SDR) --
 function ConfigForm({ config, onSave }: { config: AlfredConfig; onSave: (c: AlfredConfig) => Promise<void> }) {
-  const [geminiKey, setGeminiKey] = useState(config.gemini_api_key ?? "");
-  const [evoKey, setEvoKey] = useState(config.evolution_api_key ?? "");
-  const [evoUrl, setEvoUrl] = useState(config.evolution_api_url ?? "");
   const [prompt, setPrompt] = useState(config.system_prompt ?? "");
   const [salvando, setSalvando] = useState(false);
   const [msg, setMsg] = useState("");
 
-  useEffect(() => {
-    setGeminiKey(config.gemini_api_key ?? "");
-    setEvoKey(config.evolution_api_key ?? "");
-    setEvoUrl(config.evolution_api_url ?? "");
-    setPrompt(config.system_prompt ?? "");
-  }, [config]);
+  useEffect(() => { setPrompt(config.system_prompt ?? ""); }, [config]);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     setSalvando(true); setMsg("");
     try {
-      await onSave({
-        gemini_api_key: geminiKey.trim() || null,
-        evolution_api_key: evoKey.trim() || null,
-        evolution_api_url: evoUrl.trim() || null,
-        system_prompt: prompt,
-      });
+      await onSave({ system_prompt: prompt });
       setMsg("Configurações salvas ✅");
       setTimeout(() => setMsg(""), 2500);
     } catch (err) {
@@ -214,37 +202,22 @@ function ConfigForm({ config, onSave }: { config: AlfredConfig; onSave: (c: Alfr
   return (
     <form onSubmit={submit} className="bento-card flex flex-col">
       <div className="mb-3 flex items-center gap-2">
-        <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-accent/10 text-accent"><KeyRound size={17} /></span>
+        <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-accent/10 text-accent"><Sparkles size={17} /></span>
         <div>
-          <h2 className="font-medium">Configurações globais</h2>
-          <p className="text-xs text-ink-muted">Chaves e o prompt de sistema do agente.</p>
+          <h2 className="font-medium">Comportamento do Alfred</h2>
+          <p className="text-xs text-ink-muted">Prompt global aplicado a todos os grupos.</p>
         </div>
       </div>
 
-      <div className="space-y-3">
-        <div>
-          <label className="mb-1 block text-xs font-medium text-ink-soft">Gemini API Key</label>
-          <input type="password" className="input font-mono" placeholder="AIza…" value={geminiKey} onChange={(e) => setGeminiKey(e.target.value)} />
-        </div>
-        <div className="grid gap-3 sm:grid-cols-2">
-          <div>
-            <label className="mb-1 block text-xs font-medium text-ink-soft">Evolution API URL <span className="text-ink-muted">(opcional)</span></label>
-            <input className="input" placeholder="https://evolution…" value={evoUrl} onChange={(e) => setEvoUrl(e.target.value)} />
-          </div>
-          <div>
-            <label className="mb-1 block text-xs font-medium text-ink-soft">Evolution API Key <span className="text-ink-muted">(opcional)</span></label>
-            <input type="password" className="input font-mono" value={evoKey} onChange={(e) => setEvoKey(e.target.value)} />
-          </div>
-        </div>
-        <div>
-          <label className="mb-1 block text-xs font-medium text-ink-soft">Prompt de sistema global</label>
-          <textarea rows={4} className="input resize-none text-sm" value={prompt} onChange={(e) => setPrompt(e.target.value)} />
-        </div>
+      <div className="flex flex-1 flex-col">
+        <label className="mb-1 block text-xs font-medium text-ink-soft">Prompt de sistema global</label>
+        <textarea rows={6} className="input flex-1 resize-none text-sm" value={prompt} onChange={(e) => setPrompt(e.target.value)} />
+        <p className="mt-1.5 text-xs text-ink-muted">A chave de IA é a mesma do <strong>Agente SDR</strong> — não precisa configurar aqui.</p>
       </div>
 
       <div className="mt-4 flex items-center gap-3">
         <button type="submit" className="btn-accent" disabled={salvando}>
-          {salvando ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />} {salvando ? "Salvando…" : "Salvar configuração"}
+          {salvando ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />} {salvando ? "Salvando…" : "Salvar"}
         </button>
         <Feedback msg={msg} />
       </div>
@@ -314,6 +287,8 @@ function GroupItem({
   onSaveContext: (groupId: string, patch: Omit<AlfredContext, "group_id">) => Promise<void>;
 }) {
   const [aberto, setAberto] = useState(false);
+  const [empresa, setEmpresa] = useState(context?.empresa_dados ?? "");
+  const [regras, setRegras] = useState(context?.regras_atendimento ?? "");
   const [drive, setDrive] = useState(context?.drive_link ?? "");
   const [crono, setCrono] = useState(context?.cronograma ?? "");
   const [fin, setFin] = useState(context?.financeiro ?? "");
@@ -322,17 +297,27 @@ function GroupItem({
   const [msg, setMsg] = useState("");
 
   useEffect(() => {
+    setEmpresa(context?.empresa_dados ?? "");
+    setRegras(context?.regras_atendimento ?? "");
     setDrive(context?.drive_link ?? "");
     setCrono(context?.cronograma ?? "");
     setFin(context?.financeiro ?? "");
     setObs(context?.observacoes ?? "");
   }, [context]);
 
+  // Indica, no card, se a empresa já tem algum contexto preenchido.
+  const temContexto = !!(context && (
+    context.empresa_dados || context.regras_atendimento || context.cronograma ||
+    context.financeiro || context.drive_link || context.observacoes
+  ));
+
   async function salvarContexto(e: React.FormEvent) {
     e.preventDefault();
     setSalvando(true); setMsg("");
     try {
       await onSaveContext(group.id, {
+        empresa_dados: empresa.trim() || null,
+        regras_atendimento: regras.trim() || null,
         drive_link: drive.trim() || null,
         cronograma: crono.trim() || null,
         financeiro: fin.trim() || null,
@@ -387,10 +372,15 @@ function GroupItem({
           </button>
           <button
             onClick={() => setAberto((v) => !v)}
-            className="flex h-8 w-8 items-center justify-center rounded-lg text-ink-muted transition-colors hover:bg-black/5 hover:text-ink-soft"
-            title="Editar contexto"
+            className={`inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium transition-colors ${
+              aberto ? "bg-accent/10 text-accent" : "text-ink-soft hover:bg-black/5"
+            }`}
+            title="Abrir o contexto desta empresa"
           >
-            <ChevronDown size={16} className={`transition-transform ${aberto ? "rotate-180" : ""}`} />
+            <Building2 size={14} />
+            <span className="hidden sm:inline">Contexto</span>
+            <span className={`h-1.5 w-1.5 rounded-full ${temContexto ? "bg-success" : "bg-ink-muted/40"}`} title={temContexto ? "Contexto preenchido" : "Sem contexto"} />
+            <ChevronDown size={14} className={`transition-transform ${aberto ? "rotate-180" : ""}`} />
           </button>
           <button
             onClick={excluir}
@@ -402,21 +392,32 @@ function GroupItem({
         </div>
       </div>
 
-      {/* Editor de contexto (expansível) */}
+      {/* Área dedicada de contexto da EMPRESA (individual por grupo) */}
       {aberto && (
         <form onSubmit={salvarContexto} className="border-t border-black/5 bg-black/[0.015] p-4">
+          <p className="mb-3 text-xs text-ink-muted">
+            Contexto exclusivo de <strong className="text-ink-soft">{group.client_name}</strong>. O Alfred usa estes dados ao responder neste grupo.
+          </p>
           <div className="grid gap-3 sm:grid-cols-2">
-            <div>
-              <label className="mb-1 flex items-center gap-1.5 text-xs font-medium text-ink-soft"><FolderOpen size={13} className="text-ink-muted" /> Link do Drive</label>
-              <input className="input" value={drive} onChange={(e) => setDrive(e.target.value)} />
+            <div className="sm:col-span-2">
+              <label className="mb-1 flex items-center gap-1.5 text-xs font-medium text-ink-soft"><Building2 size={13} className="text-ink-muted" /> Dados da empresa</label>
+              <textarea rows={2} className="input resize-none text-sm" placeholder="Segmento, responsáveis, produtos, particularidades…" value={empresa} onChange={(e) => setEmpresa(e.target.value)} />
+            </div>
+            <div className="sm:col-span-2">
+              <label className="mb-1 flex items-center gap-1.5 text-xs font-medium text-ink-soft"><ScrollText size={13} className="text-ink-muted" /> Regras de atendimento</label>
+              <textarea rows={2} className="input resize-none text-sm" placeholder="O que pode/não pode responder, tom, horários, encaminhamentos…" value={regras} onChange={(e) => setRegras(e.target.value)} />
+            </div>
+            <div className="sm:col-span-2">
+              <label className="mb-1 flex items-center gap-1.5 text-xs font-medium text-ink-soft"><CalendarRange size={13} className="text-ink-muted" /> Cronograma atual</label>
+              <textarea rows={2} className="input resize-none text-sm" value={crono} onChange={(e) => setCrono(e.target.value)} />
             </div>
             <div>
               <label className="mb-1 flex items-center gap-1.5 text-xs font-medium text-ink-soft"><Wallet size={13} className="text-ink-muted" /> Status financeiro</label>
               <input className="input" value={fin} onChange={(e) => setFin(e.target.value)} />
             </div>
-            <div className="sm:col-span-2">
-              <label className="mb-1 flex items-center gap-1.5 text-xs font-medium text-ink-soft"><CalendarRange size={13} className="text-ink-muted" /> Cronograma atual</label>
-              <textarea rows={2} className="input resize-none text-sm" value={crono} onChange={(e) => setCrono(e.target.value)} />
+            <div>
+              <label className="mb-1 flex items-center gap-1.5 text-xs font-medium text-ink-soft"><FolderOpen size={13} className="text-ink-muted" /> Link do Drive</label>
+              <input className="input" value={drive} onChange={(e) => setDrive(e.target.value)} />
             </div>
             <div className="sm:col-span-2">
               <label className="mb-1 flex items-center gap-1.5 text-xs font-medium text-ink-soft"><StickyNote size={13} className="text-ink-muted" /> Observações</label>

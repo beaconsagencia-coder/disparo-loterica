@@ -2,10 +2,8 @@ import { useCallback, useEffect, useState } from "react";
 import { supabase } from "./supabase";
 
 // ---- Tipos isolados do módulo Alfred (não tocam no types.ts global) ----
+// API Keys saíram daqui: o Alfred herda a chave do Agente SDR (env GEMINI_API_KEY).
 export interface AlfredConfig {
-  gemini_api_key: string | null;
-  evolution_api_key: string | null;
-  evolution_api_url: string | null;
   system_prompt: string;
 }
 export interface AlfredGroup {
@@ -18,6 +16,8 @@ export interface AlfredGroup {
 }
 export interface AlfredContext {
   group_id: string;
+  empresa_dados: string | null;
+  regras_atendimento: string | null;
   drive_link: string | null;
   cronograma: string | null;
   financeiro: string | null;
@@ -29,9 +29,7 @@ export interface AlfredConnection {
   numero: string | null;
 }
 
-const CONFIG_DEFAULT: AlfredConfig = {
-  gemini_api_key: "", evolution_api_key: "", evolution_api_url: "", system_prompt: "",
-};
+const CONFIG_DEFAULT: AlfredConfig = { system_prompt: "" };
 
 async function uid(): Promise<string> {
   const { data } = await supabase.auth.getUser();
@@ -58,18 +56,14 @@ export function useAlfred() {
   const load = useCallback(async () => {
     const [{ data: cfg }, { data: grp }, { data: ctx }] = await Promise.all([
       supabase.from("alfred_configs")
-        .select("gemini_api_key, evolution_api_key, evolution_api_url, system_prompt, evolution_instance, connection_status, numero")
+        .select("system_prompt, evolution_instance, connection_status, numero")
         .maybeSingle(),
       supabase.from("alfred_groups").select("*").order("created_at", { ascending: false }),
-      supabase.from("alfred_context").select("group_id, drive_link, cronograma, financeiro, observacoes"),
+      supabase.from("alfred_context")
+        .select("group_id, empresa_dados, regras_atendimento, drive_link, cronograma, financeiro, observacoes"),
     ]);
     if (cfg) {
-      setConfig({
-        gemini_api_key: cfg.gemini_api_key ?? "",
-        evolution_api_key: cfg.evolution_api_key ?? "",
-        evolution_api_url: cfg.evolution_api_url ?? "",
-        system_prompt: cfg.system_prompt ?? "",
-      });
+      setConfig({ system_prompt: cfg.system_prompt ?? "" });
       setConnection({
         evolution_instance: cfg.evolution_instance ?? null,
         connection_status: cfg.connection_status ?? "desconectado",

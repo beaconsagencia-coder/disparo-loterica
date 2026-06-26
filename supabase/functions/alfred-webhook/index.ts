@@ -24,6 +24,8 @@ const supabase = createClient(
 
 const ENV_EVO_URL = Deno.env.get("EVOLUTION_API_URL") ?? "";
 const ENV_EVO_KEY = Deno.env.get("EVOLUTION_API_KEY") ?? "";
+// Mesma chave do Agente SDR (secret de ambiente), unificada — sem chave no banco.
+const GEMINI_API_KEY = Deno.env.get("GEMINI_API_KEY") ?? "";
 const WEBHOOK_SECRET = Deno.env.get("ALFRED_WEBHOOK_SECRET") ?? "";
 
 const GEMINI_MODEL = "gemini-2.5-flash";
@@ -49,9 +51,11 @@ function extrairTexto(message: any): string {
 // deno-lint-ignore no-explicit-any
 function montarContexto(ctx: any, clientName: string): string {
   const linhas = [`Cliente: ${clientName}`];
-  if (ctx?.drive_link) linhas.push(`Link do Drive: ${ctx.drive_link}`);
+  if (ctx?.empresa_dados) linhas.push(`Dados da empresa: ${ctx.empresa_dados}`);
+  if (ctx?.regras_atendimento) linhas.push(`Regras de atendimento: ${ctx.regras_atendimento}`);
   if (ctx?.cronograma) linhas.push(`Cronograma atual: ${ctx.cronograma}`);
   if (ctx?.financeiro) linhas.push(`Status financeiro: ${ctx.financeiro}`);
+  if (ctx?.drive_link) linhas.push(`Link do Drive: ${ctx.drive_link}`);
   if (ctx?.observacoes) linhas.push(`Observações: ${ctx.observacoes}`);
   return linhas.join("\n");
 }
@@ -177,20 +181,21 @@ Deno.serve(async (req) => {
     role: "user", sender_name: senderName || null, body: texto,
   });
 
-  // C) Config (chaves + prompt) e contexto do cliente.
+  // C) A API Key é a MESMA do Agente SDR (env). Do banco vem só o prompt global.
+  if (!GEMINI_API_KEY) {
+    console.log("[alfred] GEMINI_API_KEY (env) não configurada");
+    return json({ ok: true, ignored: "sem GEMINI_API_KEY" });
+  }
   const { data: config } = await supabase
     .from("alfred_configs")
-    .select("gemini_api_key, evolution_api_key, evolution_api_url, system_prompt")
+    .select("system_prompt")
     .eq("user_id", grupo.user_id)
     .maybeSingle();
-  if (!config?.gemini_api_key) {
-    console.log("[alfred] sem GEMINI_API_KEY para o usuário", grupo.user_id);
-    return json({ ok: true, ignored: "sem gemini_api_key" });
-  }
 
+  // Contexto INDIVIDUAL do grupo (cada grupo = uma empresa).
   const { data: ctx } = await supabase
     .from("alfred_context")
-    .select("drive_link, cronograma, financeiro, observacoes")
+    .select("empresa_dados, regras_atendimento, drive_link, cronograma, financeiro, observacoes")
     .eq("group_id", grupo.id)
     .maybeSingle();
 
@@ -207,12 +212,12 @@ Deno.serve(async (req) => {
   const contents = montarContents(hist);
   if (contents.length === 0) return json({ ok: true, ignored: "sem histórico utilizável" });
 
-  const resposta = await chamarGemini(config.gemini_api_key, config.system_prompt ?? "", contexto, contents);
+  const resposta = await chamarGemini(GEMINI_API_KEY, config?.system_prompt ?? "", contexto, contents);
   if (!resposta) return json({ ok: true, ignored: "gemini sem resposta" });
 
   // F) Devolve ao grupo e salva a resposta no histórico (vira contexto futuro).
-  const evoUrl = (config.evolution_api_url || ENV_EVO_URL).replace(/\/+$/, "");
-  const evoKey = config.evolution_api_key || ENV_EVO_KEY;
+  const evoUrl = ENV_EVO_URL.replace(/\/+$/, "");
+  const evoKey = ENV_EVO_KEY;
   const evoInstance = instance || grupo.evolution_instance || "";
   if (!evoUrl || !evoKey || !evoInstance) {
     console.error("[alfred] faltam credenciais/instância da Evolution");
