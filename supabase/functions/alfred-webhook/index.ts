@@ -121,6 +121,16 @@ Deno.serve(async (req) => {
     .eq("remote_jid", remoteJid).eq("active", true).maybeSingle();
   if (!grupo) return json({ ok: true, ignored: "grupo inativo ou não cadastrado" });
 
+  // Idempotência: ignora reentregas/retries do MESMO evento (mesmo id da
+  // mensagem no WhatsApp). É o que evita o Alfred responder duas vezes —
+  // comum em retry de webhook e em número compartilhado/multi-dispositivo.
+  const waMsgId: string = key?.id ?? "";
+  if (waMsgId) {
+    const { data: jaProcessada } = await supabase.from("alfred_messages")
+      .select("id").eq("group_id", grupo.id).eq("wa_message_id", waMsgId).limit(1).maybeSingle();
+    if (jaProcessada) return json({ ok: true, ignored: "mensagem já processada (duplicada)" });
+  }
+
   // Interpreta a mídia (só p/ grupo ativo).
   if (tipoMidia) {
     const evoForMedia = instance || grupo.evolution_instance || "";
@@ -147,12 +157,17 @@ Deno.serve(async (req) => {
   for (const m of membros ?? []) for (const v of variantes(m.numero)) memberSet.add(v);
   const isTeam = variantes(senderNumber).some((v) => memberSet.has(v));
 
-  // Registra no histórico (sempre).
-  const { data: inserida } = await supabase.from("alfred_messages").insert({
+  // Registra no histórico (sempre). Em corrida (duas entregas quase juntas),
+  // o índice único barra a 2ª: tratamos 23505 como duplicada e paramos aqui.
+  const { data: inserida, error: insErr } = await supabase.from("alfred_messages").insert({
     user_id: grupo.user_id, group_id: grupo.id, remote_jid: remoteJid,
     role: "user", sender_name: senderName || null, sender_number: senderNumber || null,
-    is_team: isTeam, body: texto,
+    is_team: isTeam, body: texto, wa_message_id: waMsgId || null,
   }).select("created_at").single();
+  if (insErr) {
+    if ((insErr as { code?: string }).code === "23505") return json({ ok: true, ignored: "duplicada (corrida)" });
+    console.error("[alfred] insert msg:", insErr.message);
+  }
 
   // Modo handoff x imediato.
   const { data: cfgRow } = await supabase.from("alfred_configs")
