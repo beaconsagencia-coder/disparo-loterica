@@ -15,6 +15,7 @@
 // =====================================================================
 import { createClient } from "jsr:@supabase/supabase-js@2";
 import { json } from "../_shared/cors.ts";
+import { getMediaBase64 } from "../_shared/evolution.ts";
 
 const supabase = createClient(
   Deno.env.get("SUPABASE_URL")!,
@@ -31,7 +32,9 @@ const WEBHOOK_SECRET = Deno.env.get("ALFRED_WEBHOOK_SECRET") ?? "";
 const GEMINI_MODEL = "gemini-2.5-flash";
 const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
 const HISTORICO_MIN = 50; // nº mínimo de mensagens do grupo no contexto
-const DEBOUNCE_MS = 6000; // espera o cliente terminar de digitar (igual ao SDR)
+// Espera o cliente terminar de enviar (texto/áudios em rajada) antes de responder.
+// Um pouco maior que o SDR porque mídia (áudio/imagem) demora a ser transcrita.
+const DEBOUNCE_MS = 8000;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 // --- helpers --------------------------------------------------------
@@ -149,6 +152,30 @@ async function chamarGemini(
     .trim();
 }
 
+/** Interpreta mídia via Gemini (REST): transcreve áudio ou descreve imagem. */
+async function interpretarMidia(base64: string, mime: string, tipo: "audio" | "image"): Promise<string> {
+  const prompt = tipo === "audio"
+    ? "Transcreva este áudio em português do Brasil. Responda APENAS com a transcrição, sem comentários."
+    : "Descreva em português, de forma objetiva e curta, o que aparece nesta imagem (inclua qualquer texto visível).";
+  const body = {
+    contents: [{ role: "user", parts: [{ inline_data: { mime_type: mime, data: base64 } }, { text: prompt }] }],
+    generationConfig: { temperature: 0.2, maxOutputTokens: 400, thinkingConfig: { thinkingBudget: 0 } },
+  };
+  try {
+    const res = await fetch(`${GEMINI_URL}?key=${encodeURIComponent(GEMINI_API_KEY)}`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+    });
+    if (!res.ok) { console.error("[alfred] interpretarMidia", res.status, (await res.text()).slice(0, 200)); return ""; }
+    const dataR = await res.json();
+    // deno-lint-ignore no-explicit-any
+    const parts = dataR?.candidates?.[0]?.content?.parts as any[] | undefined;
+    return (parts?.map((p) => p?.text ?? "").join("") ?? "").trim();
+  } catch (e) {
+    console.error("[alfred] interpretarMidia erro:", e instanceof Error ? e.message : e);
+    return "";
+  }
+}
+
 async function enviarGrupo(url: string, key: string, instance: string, remoteJid: string, texto: string, delayMs = 0): Promise<void> {
   const res = await fetch(`${url}/message/sendText/${instance}`, {
     method: "POST",
@@ -195,8 +222,12 @@ Deno.serve(async (req) => {
   if (!remoteJid.endsWith("@g.us")) return json({ ok: true, ignored: "não é grupo" });
   if (key?.fromMe) return json({ ok: true, ignored: "fromMe" });
 
-  const texto = extrairTexto(data?.message);
-  if (!texto) return json({ ok: true, ignored: "sem texto" });
+  // Detecta mídia (áudio/imagem): o Alfred interpreta em vez de ignorar.
+  const msgObj = data?.message;
+  const tipoMidia: "audio" | "image" | null =
+    msgObj?.audioMessage ? "audio" : msgObj?.imageMessage ? "image" : null;
+  let texto = extrairTexto(msgObj); // texto puro ou legenda da mídia
+  if (!texto && !tipoMidia) return json({ ok: true, ignored: "sem conteúdo" });
 
   // B) Grupo precisa estar ATIVO em alfred_groups.
   const { data: grupo } = await supabase
@@ -206,6 +237,22 @@ Deno.serve(async (req) => {
     .eq("active", true)
     .maybeSingle();
   if (!grupo) return json({ ok: true, ignored: "grupo inativo ou não cadastrado" });
+
+  // Interpreta a mídia (só para grupo ativo, p/ não gastar à toa): áudio é
+  // transcrito; imagem é descrita. O resultado vira o "texto" da mensagem.
+  if (tipoMidia) {
+    const evoForMedia = instance || grupo.evolution_instance || "";
+    const media = evoForMedia ? await getMediaBase64(evoForMedia, data) : null;
+    if (media) {
+      const interpretado = await interpretarMidia(media.base64, media.mimetype, tipoMidia);
+      texto = tipoMidia === "audio"
+        ? (interpretado || texto || "[áudio recebido]")
+        : [texto, interpretado ? `[imagem: ${interpretado}]` : "[imagem recebida]"].filter(Boolean).join(" ");
+    } else {
+      texto = texto || (tipoMidia === "audio" ? "[áudio recebido]" : "[imagem recebida]");
+    }
+  }
+  if (!texto) return json({ ok: true, ignored: "sem conteúdo após mídia" });
 
   const senderName: string = data?.pushName ?? (key?.participant ?? "").split("@")[0] ?? "";
 
