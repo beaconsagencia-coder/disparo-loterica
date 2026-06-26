@@ -166,11 +166,13 @@ async function chamarGemini(systemPrompt: string, contexto: string, contents: { 
           "ou falar com o suporte. Em dúvidas de premiação, reforce conferir o comprovante oficial antes de pagar.\n\n" +
           "DEMANDAS AVULSAS: se o cliente pedir uma arte específica, uma alteração ou uma tarefa pontual, CONFIRME que vai providenciar e informe um prazo " +
           "aproximado de entrega (poucos dias). A demanda é registrada e acompanhada internamente — fale com naturalidade, sem citar 'sistema' ou 'banco de dados'.\n\n" +
-          "FORMATO (REGRA CRÍTICA — siga à risca): fale como uma pessoa REAL da equipe no WhatsApp — tom leve, cotidiano e informal, nada robótico nem formal. " +
-          "PROIBIDO escrever parágrafos longos ou juntar tudo num bloco. Mande VÁRIAS mensagens curtas, uma embaixo da outra, como quem digita rápido no zap. " +
-          "Regras: (a) UMA ideia/frase curta por mensagem; (b) coloque CADA mensagem em uma LINHA SEPARADA (uma quebra de linha entre elas); " +
-          "(c) frases curtas e diretas, sem enrolação; (d) se uma frase já resolve, mande só UMA. No máximo 6 mensagens. " +
-          "Exemplo do formato (cada linha é uma mensagem):\nNão, Pedro.\nA gente tem um funil pra isso.\nPrimeiro o anúncio aparece no Insta e no Face.\n" +
+          "FORMATO (REGRA CRÍTICA — siga à risca): fale como uma pessoa REAL da equipe no WhatsApp — empático e FIRME, mas acima de tudo OBJETIVO e curto. " +
+          "Responda no MENOR número de mensagens possível: idealmente 1, no máximo 2 balões (um 3º só se for realmente inevitável). " +
+          "Vá DIRETO ao ponto: NÃO repita a mesma ideia de formas diferentes, não encha de justificativas e NÃO detalhe semana por semana a menos que perguntem. " +
+          "Cada balão tem 1 a 3 frases curtas. Se mandar 2 balões, separe-os com UMA LINHA EM BRANCO entre eles. " +
+          "Exemplo do tom e do tamanho ideais (este é o alvo — note como é enxuto):\n" +
+          "Entendo a urgência, Pedro! Mas a gente precisa seguir o cronograma certinho pra não tomar bloqueio e prejudicar suas campanhas.\n\n" +
+          "Essa semana o foco é a identidade visual. Fica tranquilo que deixamos tudo pronto a tempo pra aproveitar a data com segurança. Confia no processo!\n" +
           "Nunca use prefixo, nome ou 'Alfred:'; sem markdown; sem emojis em excesso.",
       }],
     },
@@ -187,13 +189,13 @@ async function chamarGemini(systemPrompt: string, contexto: string, contents: { 
   return txt.trim();
 }
 
-const MAX_MSGS = 6;
+const MAX_MSGS = 3;
 /**
- * Quebra a resposta do modelo em mensagens curtas e isoladas (estilo humano
- * no WhatsApp). Corta em QUALQUER separador real: quebra de linha/parágrafo,
- * "---" ou marcadores [MENSAGEM]/[MSG] — o modelo nem sempre usa o "---", mas
- * quase sempre quebra linha. Limpa prefixo "Alfred:" e aspas de cada parte.
- * Se passar do teto, NÃO descarta: junta o excedente na última mensagem.
+ * Quebra a resposta do modelo em poucos "balões" (estilo WhatsApp), priorizando
+ * concisão. Separa por PARÁGRAFO (linha em branco), "---" ou marcadores
+ * [MENSAGEM]/[MSG] — NÃO por quebra de linha simples, para uma frase poder
+ * ocupar 1-2 linhas no mesmo balão sem virar mensagens soltas. Limpa prefixo
+ * "Alfred:" e aspas. Se passar do teto, NÃO descarta: junta o excedente.
  */
 function fracionarResposta(raw: string): string[] {
   const txt = (raw ?? "").trim();
@@ -203,12 +205,12 @@ function fracionarResposta(raw: string): string[] {
     .replace(/^["“”'\s]+|["“”'\s]+$/g, "")
     .trim();
   const partes = txt
-    .split(/(?:\[\s*(?:mensagem|msg)\s*\]|-{3,}|\r?\n)+/i)
+    .split(/(?:\[\s*(?:mensagem|msg)\s*\]|-{3,}|\n[ \t]*\n)+/i)
     .map(limpar)
     .filter(Boolean);
   if (partes.length <= MAX_MSGS) return partes;
   const head = partes.slice(0, MAX_MSGS - 1);
-  const tail = partes.slice(MAX_MSGS - 1).join("\n"); // preserva tudo
+  const tail = partes.slice(MAX_MSGS - 1).join("\n\n"); // preserva tudo
   return [...head, tail];
 }
 
