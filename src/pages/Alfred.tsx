@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useAlfred, type AlfredConfig, type AlfredGroup, type AlfredContext } from "@/lib/useAlfred";
+import { useAlfred, type AlfredConfig, type AlfredConnection, type AlfredGroup, type AlfredContext } from "@/lib/useAlfred";
 
 // =====================================================================
 // /alfred — CRUD do agente Alfred (grupos de WhatsApp de clientes).
@@ -8,13 +8,15 @@ import { useAlfred, type AlfredConfig, type AlfredGroup, type AlfredContext } fr
 // Módulo isolado: não importa nada do design system do app.
 // =====================================================================
 export default function Alfred() {
-  const { config, groups, contexts, loading, saveConfig, addGroup, toggleGroup, removeGroup, saveContext } = useAlfred();
+  const { config, connection, groups, contexts, loading, saveConfig, connectWhatsapp, addGroup, toggleGroup, removeGroup, saveContext } = useAlfred();
 
   if (loading) return <p>Carregando…</p>;
 
   return (
     <div>
       <h1>Alfred — Agente de grupos</h1>
+      <ConexaoWhatsapp connection={connection} onConnect={connectWhatsapp} />
+      <hr />
       <ConfigForm config={config} onSave={saveConfig} />
       <hr />
       <NovoGrupoForm onAdd={addGroup} />
@@ -33,6 +35,43 @@ export default function Alfred() {
           />
         ))}
       </ul>
+    </div>
+  );
+}
+
+// ---- Conexão do chip DEDICADO do Alfred (isolado dos disparos) -----
+function ConexaoWhatsapp({ connection, onConnect }: { connection: AlfredConnection; onConnect: () => Promise<string | null> }) {
+  const [qr, setQr] = useState<string | null>(null);
+  const [msg, setMsg] = useState("");
+
+  // Quando a conexão fica "conectado" (via realtime), some o QR.
+  useEffect(() => { if (connection.connection_status === "conectado") setQr(null); }, [connection.connection_status]);
+
+  async function conectar() {
+    setMsg("Gerando QR…");
+    try {
+      const code = await onConnect();
+      setQr(code);
+      setMsg(code ? "Escaneie o QR no WhatsApp (Aparelhos conectados)." : "Instância criada, mas sem QR — tente novamente.");
+    } catch (err) {
+      setMsg("Erro: " + (err instanceof Error ? err.message : String(err)));
+    }
+  }
+
+  return (
+    <div>
+      <h2>WhatsApp do Alfred (chip dedicado)</h2>
+      <p>Status: {connection.connection_status}{connection.numero ? ` — ${connection.numero}` : ""}</p>
+      <p>Instância: {connection.evolution_instance ?? "—"}</p>
+      <button type="button" onClick={conectar}>
+        {connection.connection_status === "conectado" ? "Reconectar" : "Conectar WhatsApp"}
+      </button>
+      {msg && <span>{msg}</span>}
+      {qr && (
+        <div>
+          <img src={qr} alt="QR Code de conexão" width={240} height={240} />
+        </div>
+      )}
     </div>
   );
 }

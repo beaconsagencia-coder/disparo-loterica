@@ -2,15 +2,16 @@
 // alfred-webhook · cérebro do agente Alfred (grupos de WhatsApp)
 // ---------------------------------------------------------------------
 // Fluxo:
-//  A. Recebe o payload MESSAGES_UPSERT da Evolution API.
-//  B. Ignora o que não for de GRUPO (remoteJid ..@g.us), o fromMe e os
+//  A. Recebe o payload da Evolution (MESSAGES_UPSERT ou CONNECTION_UPDATE).
+//  - connection.update: atualiza o status do chip dedicado do Alfred.
+//  B. Mensagens: ignora o que não for de GRUPO (..@g.us), o fromMe e os
 //     grupos que não estão ATIVOS em alfred_groups.
-//  C. Busca o alfred_context do grupo e a GEMINI_API_KEY (alfred_configs).
-//  D/E. Monta o fetch para o Gemini 1.5 Flash (REST), com system_instruction
-//     (prompt global + regras de brevidade) e o contexto + msg em contents.
-//  F. Extrai o texto e devolve ao grupo via Evolution API.
-//
-// Módulo ISOLADO: aponte o webhook do(s) chip(s) de grupo para esta função.
+//  C. Persiste a mensagem no histórico e busca o contexto do cliente + a
+//     GEMINI_API_KEY (alfred_configs).
+//  D/E. Monta o fetch para o Gemini 2.5 Flash (REST): system_instruction
+//     (prompt global + contexto + regras de brevidade) e o HISTÓRICO do
+//     grupo (>=50 mensagens) em contents.
+//  F. Extrai o texto, devolve ao grupo via Evolution e salva no histórico.
 // =====================================================================
 import { createClient } from "jsr:@supabase/supabase-js@2";
 import { json } from "../_shared/cors.ts";
@@ -21,17 +22,16 @@ const supabase = createClient(
   { auth: { persistSession: false } },
 );
 
-// Fallbacks de ambiente (a config do banco tem prioridade).
 const ENV_EVO_URL = Deno.env.get("EVOLUTION_API_URL") ?? "";
 const ENV_EVO_KEY = Deno.env.get("EVOLUTION_API_KEY") ?? "";
 const WEBHOOK_SECRET = Deno.env.get("ALFRED_WEBHOOK_SECRET") ?? "";
 
-const GEMINI_URL =
-  "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent";
+const GEMINI_MODEL = "gemini-2.5-flash";
+const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
+const HISTORICO_MIN = 50; // nº mínimo de mensagens do grupo no contexto
 
 // --- helpers --------------------------------------------------------
 
-/** Extrai o texto de uma mensagem da Evolution (vários formatos). */
 // deno-lint-ignore no-explicit-any
 function extrairTexto(message: any): string {
   if (!message) return "";
@@ -46,7 +46,6 @@ function extrairTexto(message: any): string {
   ).trim();
 }
 
-/** Monta o bloco de contexto do cliente para a IA consultar. */
 // deno-lint-ignore no-explicit-any
 function montarContexto(ctx: any, clientName: string): string {
   const linhas = [`Cliente: ${clientName}`];
@@ -57,24 +56,45 @@ function montarContexto(ctx: any, clientName: string): string {
   return linhas.join("\n");
 }
 
-/** Chama o Gemini 1.5 Flash via REST. Retorna o texto ou "". */
-async function chamarGemini(apiKey: string, systemPrompt: string, contexto: string, msg: string): Promise<string> {
+interface HistRow { role: string; sender_name: string | null; body: string }
+
+/** Converte o histórico (ordenado) em contents do Gemini, mesclando turnos
+ *  consecutivos do mesmo papel e descartando 'model' iniciais (precisa começar
+ *  em 'user'). Mensagens de participantes vão prefixadas com o nome. */
+function montarContents(hist: HistRow[]) {
+  const out: { role: "user" | "model"; parts: { text: string }[] }[] = [];
+  for (const m of hist) {
+    const role = m.role === "model" ? "model" : "user";
+    if (out.length === 0 && role === "model") continue; // não pode iniciar com model
+    const texto = role === "user" && m.sender_name ? `${m.sender_name}: ${m.body}` : m.body;
+    const last = out[out.length - 1];
+    if (last && last.role === role) last.parts[0].text += `\n${texto}`;
+    else out.push({ role, parts: [{ text: texto }] });
+  }
+  return out;
+}
+
+async function chamarGemini(
+  apiKey: string,
+  systemPrompt: string,
+  contexto: string,
+  contents: { role: "user" | "model"; parts: { text: string }[] }[],
+): Promise<string> {
   const body = {
     system_instruction: {
       parts: [{
         text:
           `${systemPrompt}\n\n` +
+          `CONTEXTO DO CLIENTE (use para responder):\n${contexto}\n\n` +
           "REGRAS DE RESPOSTA: seja curto e direto, como uma pessoa real no WhatsApp. " +
           "Varie a formatação naturalmente (nem sempre listas ou saudações), use poucas palavras e " +
-          "evite texto longo para economizar tokens. Responda só o necessário, com base no contexto. " +
+          "evite texto longo para economizar tokens. Responda só o necessário, com base no contexto e no histórico. " +
           "Se não souber, diga que vai verificar com a equipe.",
       }],
     },
-    contents: [{
-      role: "user",
-      parts: [{ text: `CONTEXTO DO CLIENTE:\n${contexto}\n\nMENSAGEM DO GRUPO:\n${msg}` }],
-    }],
-    generationConfig: { temperature: 0.7, maxOutputTokens: 350 },
+    contents,
+    // Gemini 2.5: desliga o 'thinking' (respostas curtas, sem gastar tokens à toa).
+    generationConfig: { temperature: 0.7, maxOutputTokens: 600, thinkingConfig: { thinkingBudget: 0 } },
   };
 
   const res = await fetch(`${GEMINI_URL}?key=${encodeURIComponent(apiKey)}`, {
@@ -92,7 +112,6 @@ async function chamarGemini(apiKey: string, systemPrompt: string, contexto: stri
   return (parts?.map((p) => p?.text ?? "").join("") ?? "").trim();
 }
 
-/** Envia texto a um grupo via Evolution API (o JID do grupo vai em `number`). */
 async function enviarGrupo(url: string, key: string, instance: string, remoteJid: string, texto: string): Promise<void> {
   const res = await fetch(`${url}/message/sendText/${instance}`, {
     method: "POST",
@@ -104,7 +123,6 @@ async function enviarGrupo(url: string, key: string, instance: string, remoteJid
 
 // --- handler --------------------------------------------------------
 Deno.serve(async (req) => {
-  // Segurança opcional: ?token= deve bater com ALFRED_WEBHOOK_SECRET (se definido).
   if (WEBHOOK_SECRET) {
     const token = new URL(req.url).searchParams.get("token");
     if (token !== WEBHOOK_SECRET) return json({ error: "unauthorized" }, 401);
@@ -114,12 +132,28 @@ Deno.serve(async (req) => {
   try { payload = await req.json(); } catch { return json({ ok: true, ignored: "payload inválido" }); }
 
   // deno-lint-ignore no-explicit-any
-  const data = (payload as any).data ?? payload;
-  const instance = (payload as any).instance ?? data?.instance ?? "";
+  const p = payload as any;
+  const event = String(p.event ?? "").toLowerCase();
+  const data = p.data ?? p;
+  const instance: string = p.instance ?? data?.instance ?? "";
+
+  // A) CONNECTION_UPDATE → atualiza o status do chip dedicado do Alfred.
+  if (event.includes("connection")) {
+    const state = data?.state ?? data?.connection ?? "";
+    const status = state === "open" ? "conectado" : state === "connecting" ? "conectando" : "desconectado";
+    const numero = (data?.wuid ?? data?.owner ?? "").toString().split("@")[0] || null;
+    if (instance) {
+      await supabase.from("alfred_configs")
+        .update({ connection_status: status, ...(numero ? { numero } : {}) })
+        .eq("evolution_instance", instance);
+    }
+    return json({ ok: true, connection: status });
+  }
+
   const key = data?.key ?? {};
   const remoteJid: string = key?.remoteJid ?? "";
 
-  // B) Só GRUPOS (..@g.us), nunca o que nós mesmos enviamos (fromMe).
+  // B) Só GRUPOS, nunca o que nós mesmos enviamos (fromMe).
   if (!remoteJid.endsWith("@g.us")) return json({ ok: true, ignored: "não é grupo" });
   if (key?.fromMe) return json({ ok: true, ignored: "fromMe" });
 
@@ -134,6 +168,14 @@ Deno.serve(async (req) => {
     .eq("active", true)
     .maybeSingle();
   if (!grupo) return json({ ok: true, ignored: "grupo inativo ou não cadastrado" });
+
+  const senderName: string = data?.pushName ?? (key?.participant ?? "").split("@")[0] ?? "";
+
+  // C) Persiste a mensagem recebida no histórico ANTES de montar o contexto.
+  await supabase.from("alfred_messages").insert({
+    user_id: grupo.user_id, group_id: grupo.id, remote_jid: remoteJid,
+    role: "user", sender_name: senderName || null, body: texto,
+  });
 
   // C) Config (chaves + prompt) e contexto do cliente.
   const { data: config } = await supabase
@@ -152,12 +194,23 @@ Deno.serve(async (req) => {
     .eq("group_id", grupo.id)
     .maybeSingle();
 
-  // D/E) Gemini com system_instruction (prompt global) + contexto e mensagem.
+  // D/E) Histórico (últimas >=50) em ordem cronológica + Gemini 2.5.
+  const { data: histDesc } = await supabase
+    .from("alfred_messages")
+    .select("role, sender_name, body")
+    .eq("group_id", grupo.id)
+    .order("created_at", { ascending: false })
+    .limit(HISTORICO_MIN);
+  const hist = ((histDesc as HistRow[]) ?? []).reverse(); // cronológico (antigo -> novo)
+
   const contexto = montarContexto(ctx, grupo.client_name);
-  const resposta = await chamarGemini(config.gemini_api_key, config.system_prompt ?? "", contexto, texto);
+  const contents = montarContents(hist);
+  if (contents.length === 0) return json({ ok: true, ignored: "sem histórico utilizável" });
+
+  const resposta = await chamarGemini(config.gemini_api_key, config.system_prompt ?? "", contexto, contents);
   if (!resposta) return json({ ok: true, ignored: "gemini sem resposta" });
 
-  // F) Devolve ao grupo via Evolution (config tem prioridade sobre env).
+  // F) Devolve ao grupo e salva a resposta no histórico (vira contexto futuro).
   const evoUrl = (config.evolution_api_url || ENV_EVO_URL).replace(/\/+$/, "");
   const evoKey = config.evolution_api_key || ENV_EVO_KEY;
   const evoInstance = instance || grupo.evolution_instance || "";
@@ -168,6 +221,10 @@ Deno.serve(async (req) => {
 
   try {
     await enviarGrupo(evoUrl, evoKey, evoInstance, remoteJid, resposta);
+    await supabase.from("alfred_messages").insert({
+      user_id: grupo.user_id, group_id: grupo.id, remote_jid: remoteJid,
+      role: "model", sender_name: "Alfred", body: resposta,
+    });
     return json({ ok: true, replied: true });
   } catch (e) {
     console.error("[alfred] envio falhou:", e instanceof Error ? e.message : e);

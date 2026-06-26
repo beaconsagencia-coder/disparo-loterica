@@ -23,6 +23,11 @@ export interface AlfredContext {
   financeiro: string | null;
   observacoes: string | null;
 }
+export interface AlfredConnection {
+  evolution_instance: string | null;
+  connection_status: string;   // desconectado | conectando | conectado
+  numero: string | null;
+}
 
 const CONFIG_DEFAULT: AlfredConfig = {
   gemini_api_key: "", evolution_api_key: "", evolution_api_url: "", system_prompt: "",
@@ -39,19 +44,38 @@ async function uid(): Promise<string> {
  * (salvar config, criar/ligar-desligar/excluir grupo, salvar contexto).
  * Recarrega via realtime nas três tabelas alfred_*.
  */
+const CONNECTION_DEFAULT: AlfredConnection = {
+  evolution_instance: null, connection_status: "desconectado", numero: null,
+};
+
 export function useAlfred() {
   const [config, setConfig] = useState<AlfredConfig>(CONFIG_DEFAULT);
+  const [connection, setConnection] = useState<AlfredConnection>(CONNECTION_DEFAULT);
   const [groups, setGroups] = useState<AlfredGroup[]>([]);
   const [contexts, setContexts] = useState<Record<string, AlfredContext>>({});
   const [loading, setLoading] = useState(true);
 
   const load = useCallback(async () => {
     const [{ data: cfg }, { data: grp }, { data: ctx }] = await Promise.all([
-      supabase.from("alfred_configs").select("gemini_api_key, evolution_api_key, evolution_api_url, system_prompt").maybeSingle(),
+      supabase.from("alfred_configs")
+        .select("gemini_api_key, evolution_api_key, evolution_api_url, system_prompt, evolution_instance, connection_status, numero")
+        .maybeSingle(),
       supabase.from("alfred_groups").select("*").order("created_at", { ascending: false }),
       supabase.from("alfred_context").select("group_id, drive_link, cronograma, financeiro, observacoes"),
     ]);
-    if (cfg) setConfig({ ...CONFIG_DEFAULT, ...cfg });
+    if (cfg) {
+      setConfig({
+        gemini_api_key: cfg.gemini_api_key ?? "",
+        evolution_api_key: cfg.evolution_api_key ?? "",
+        evolution_api_url: cfg.evolution_api_url ?? "",
+        system_prompt: cfg.system_prompt ?? "",
+      });
+      setConnection({
+        evolution_instance: cfg.evolution_instance ?? null,
+        connection_status: cfg.connection_status ?? "desconectado",
+        numero: cfg.numero ?? null,
+      });
+    }
     setGroups((grp as AlfredGroup[]) ?? []);
     const map: Record<string, AlfredContext> = {};
     for (const c of (ctx as AlfredContext[]) ?? []) map[c.group_id] = c;
@@ -79,6 +103,14 @@ export function useAlfred() {
     if (error) throw error;
     setConfig(next);
   }, []);
+
+  /** Cria/conecta o chip dedicado do Alfred e devolve o QR Code (base64). */
+  const connectWhatsapp = useCallback(async (): Promise<string | null> => {
+    const { data, error } = await supabase.functions.invoke("alfred-connect", { body: {} });
+    if (error) throw error;
+    await load();
+    return (data?.qrcode as string | null) ?? null;
+  }, [load]);
 
   // ---- grupos ----
   const addGroup = useCallback(async (remote_jid: string, client_name: string, evolution_instance?: string) => {
@@ -115,7 +147,7 @@ export function useAlfred() {
   }, []);
 
   return {
-    config, groups, contexts, loading,
-    saveConfig, addGroup, toggleGroup, removeGroup, saveContext, reload: load,
+    config, connection, groups, contexts, loading,
+    saveConfig, connectWhatsapp, addGroup, toggleGroup, removeGroup, saveContext, reload: load,
   };
 }
