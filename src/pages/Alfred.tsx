@@ -192,6 +192,7 @@ function ConexaoWhatsapp({ connection, onConnect, onCheckStatus }: {
 // ---- Comportamento global (prompt) — sem chaves (herdadas do SDR) --
 function ConfigForm({ config, onSave }: { config: AlfredConfig; onSave: (c: AlfredConfig) => Promise<void> }) {
   const [prompt, setPrompt] = useState(config.system_prompt ?? "");
+  const [handoff, setHandoff] = useState(config.handoff_ativo);
   const [intervir, setIntervir] = useState(String(config.intervene_after_min));
   const [cooldown, setCooldown] = useState(String(config.team_cooldown_min));
   const [salvando, setSalvando] = useState(false);
@@ -199,6 +200,7 @@ function ConfigForm({ config, onSave }: { config: AlfredConfig; onSave: (c: Alfr
 
   useEffect(() => {
     setPrompt(config.system_prompt ?? "");
+    setHandoff(config.handoff_ativo);
     setIntervir(String(config.intervene_after_min));
     setCooldown(String(config.team_cooldown_min));
   }, [config]);
@@ -209,6 +211,7 @@ function ConfigForm({ config, onSave }: { config: AlfredConfig; onSave: (c: Alfr
     try {
       await onSave({
         system_prompt: prompt,
+        handoff_ativo: handoff,
         intervene_after_min: Math.max(1, Math.floor(Number(intervir) || 30)),
         team_cooldown_min: Math.max(1, Math.floor(Number(cooldown) || 5)),
       });
@@ -237,15 +240,34 @@ function ConfigForm({ config, onSave }: { config: AlfredConfig; onSave: (c: Alfr
         <p className="mt-1.5 text-xs text-ink-muted">A chave de IA é a mesma do <strong>Agente SDR</strong> — não precisa configurar aqui.</p>
       </div>
 
-      <div className="mt-3 grid grid-cols-2 gap-3">
-        <div>
-          <label className="mb-1 block text-xs font-medium text-ink-soft">Intervir após (min)</label>
-          <input type="number" min={1} className="input tabular-nums" value={intervir} onChange={(e) => setIntervir(e.target.value)} title="Tempo sem resposta da equipe até o Alfred intervir" />
+      {/* Handoff: aguardar a equipe vs responder na hora */}
+      <div className="mt-3 rounded-xl border border-black/10 bg-white/50 p-3">
+        <div className="flex items-center justify-between gap-2">
+          <div>
+            <div className="text-sm font-medium">Aguardar a equipe (handoff)</div>
+            <div className="text-xs text-ink-muted">
+              {handoff ? "A equipe responde primeiro; o Alfred só intervém após o prazo." : "Desligado: o Alfred responde na hora (mas nunca à equipe)."}
+            </div>
+          </div>
+          <button type="button" onClick={() => setHandoff((v) => !v)}
+            className={`relative h-7 w-12 shrink-0 rounded-full transition-colors ${handoff ? "bg-accent" : "bg-black/15"}`}
+            title={handoff ? "Desligar (responder na hora)" : "Ligar (aguardar a equipe)"}>
+            <span className={`absolute top-1 h-5 w-5 rounded-full bg-white shadow transition-all ${handoff ? "left-6" : "left-1"}`} />
+          </button>
         </div>
-        <div>
-          <label className="mb-1 block text-xs font-medium text-ink-soft">Pausa após equipe (min)</label>
-          <input type="number" min={1} className="input tabular-nums" value={cooldown} onChange={(e) => setCooldown(e.target.value)} title="Tempo que o Alfred espera depois da equipe falar" />
-        </div>
+
+        {handoff && (
+          <div className="mt-3 grid grid-cols-2 gap-3">
+            <div>
+              <label className="mb-1 block text-xs font-medium text-ink-soft">Intervir após (min)</label>
+              <input type="number" min={1} className="input tabular-nums" value={intervir} onChange={(e) => setIntervir(e.target.value)} title="Tempo sem resposta da equipe até o Alfred intervir" />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-medium text-ink-soft">Pausa após equipe (min)</label>
+              <input type="number" min={1} className="input tabular-nums" value={cooldown} onChange={(e) => setCooldown(e.target.value)} title="Tempo que o Alfred espera depois da equipe falar" />
+            </div>
+          </div>
+        )}
       </div>
 
       <div className="mt-4 flex items-center gap-3">

@@ -150,77 +150,45 @@ async function enviarGrupo(instance: string, remoteJid: string, texto: string, d
 export interface AlfredCfg {
   system_prompt: string;
   evolution_instance: string | null;
+  handoff_ativo: boolean;        // true = espera a equipe (cron); false = responde na hora
   team_cooldown_min: number;
   intervene_after_min: number;
   dmin: number;
   dmax: number;
 }
+export interface Grupo {
+  id: string; user_id: string; client_name: string; remote_jid: string;
+  evolution_instance: string | null; last_learned_at: string | null;
+}
+type HistMsg = HistRow & { created_at: string };
 // deno-lint-ignore no-explicit-any
-type Grupo = { id: string; user_id: string; client_name: string; remote_jid: string; evolution_instance: string | null; last_learned_at: string | null };
+interface Carga { hist: HistMsg[]; ctx: any; tarefas: TaskRow[]; mem: { chave: string; valor: string }[] }
 
-/**
- * Avalia um grupo: (1) consolida aprendizado quando a conversa assentou e
- * (2) intervém respondendo ao cliente se a equipe não resolveu no prazo.
- */
-export async function processarGrupoTick(supabase: SupabaseClient, grupo: Grupo, cfg: AlfredCfg): Promise<string> {
-  const nowMs = Date.now();
-
+/** Carrega histórico + contexto + checklist + memória do grupo. */
+async function carregar(supabase: SupabaseClient, groupId: string): Promise<Carga> {
   const { data: msgsDesc } = await supabase
     .from("alfred_messages")
     .select("role, sender_name, body, created_at, is_team")
-    .eq("group_id", grupo.id)
+    .eq("group_id", groupId)
     .order("created_at", { ascending: false })
     .limit(HISTORICO);
-  const hist = ((msgsDesc as (HistRow & { created_at: string })[]) ?? []).reverse();
-  if (hist.length === 0) return "vazio";
-
-  const ultima = hist[hist.length - 1];
-  const lastMsgMs = new Date(ultima.created_at).getTime();
-  const lastTeamMs = Math.max(0, ...hist.filter((m) => m.is_team).map((m) => new Date(m.created_at).getTime()));
-
-  // Carrega contexto/checklist/memória uma vez (servem para aprender e responder).
+  const hist = ((msgsDesc as HistMsg[]) ?? []).reverse();
   const [{ data: ctx }, { data: tasks }, { data: memorias }] = await Promise.all([
-    supabase.from("alfred_context").select("empresa_dados, regras_atendimento, drive_link, cronograma, financeiro, observacoes, resumo").eq("group_id", grupo.id).maybeSingle(),
-    supabase.from("alfred_tasks").select("semana, task_key, titulo, done").eq("group_id", grupo.id).order("semana").order("ordem"),
-    supabase.from("alfred_memory").select("chave, valor").eq("group_id", grupo.id),
+    supabase.from("alfred_context").select("empresa_dados, regras_atendimento, drive_link, cronograma, financeiro, observacoes, resumo").eq("group_id", groupId).maybeSingle(),
+    supabase.from("alfred_tasks").select("semana, task_key, titulo, done").eq("group_id", groupId).order("semana").order("ordem"),
+    supabase.from("alfred_memory").select("chave, valor").eq("group_id", groupId),
   ]);
-  const tarefas = (tasks as TaskRow[]) ?? [];
-  const mem = (memorias as { chave: string; valor: string }[]) ?? [];
+  return { hist, ctx: ctx ?? null, tarefas: (tasks as TaskRow[]) ?? [], mem: (memorias as { chave: string; valor: string }[]) ?? [] };
+}
 
-  // (1) APRENDIZADO — só quando há mensagens novas e a conversa assentou (>2 min).
-  const learnedMs = grupo.last_learned_at ? new Date(grupo.last_learned_at).getTime() : 0;
-  if (lastMsgMs > learnedMs && nowMs - lastMsgMs >= 120_000) {
-    const aprend = await aprenderDaConversa(hist, tarefas, mem, ctx?.resumo ?? "");
-    if (aprend) {
-      const validKeys = new Set(tarefas.map((t) => t.task_key).filter(Boolean));
-      const agora = new Date().toISOString();
-      for (const key of aprend.tarefas_concluidas) {
-        if (validKeys.has(key)) await supabase.from("alfred_tasks").update({ done: true, done_at: agora }).eq("group_id", grupo.id).eq("task_key", key).eq("done", false);
-      }
-      for (const m of aprend.memorias) {
-        if (!m?.chave || !m?.valor) continue;
-        await supabase.from("alfred_memory").upsert({ user_id: grupo.user_id, group_id: grupo.id, chave: String(m.chave).slice(0, 80), valor: String(m.valor).slice(0, 2000), updated_at: agora }, { onConflict: "group_id,chave" });
-      }
-      if (aprend.resumo?.trim()) await supabase.from("alfred_context").upsert({ user_id: grupo.user_id, group_id: grupo.id, resumo: aprend.resumo.trim() }, { onConflict: "group_id" });
-    }
-    await supabase.from("alfred_groups").update({ last_learned_at: new Date(lastMsgMs).toISOString() }).eq("id", grupo.id);
-  }
-
-  // (2) HANDOFF — só intervém se o CLIENTE falou por último (equipe não respondeu),
-  //     passou o prazo de intervenção e a equipe está em silêncio (cooldown).
-  const clienteFalouPorUltimo = ultima.role === "user" && !ultima.is_team;
-  if (!clienteFalouPorUltimo) return "sem necessidade";
-  const sinceClient = nowMs - lastMsgMs;
-  const sinceTeam = lastTeamMs ? nowMs - lastTeamMs : Infinity;
-  if (sinceClient < cfg.intervene_after_min * 60_000) return "aguardando prazo";
-  if (sinceTeam < cfg.team_cooldown_min * 60_000) return "equipe ativa (cooldown)";
-
+/** Gera e envia a resposta ao cliente (sem gating). Retorna o status. */
+async function gerarResposta(supabase: SupabaseClient, grupo: Grupo, cfg: AlfredCfg, carga: Carga): Promise<string> {
   if (!GEMINI_API_KEY) return "sem GEMINI_API_KEY";
   const instance = cfg.evolution_instance || grupo.evolution_instance || "";
   if (!ENV_EVO_URL || !ENV_EVO_KEY || !instance) return "evolution não configurada";
 
-  const contexto = montarContexto(ctx, grupo.client_name) + montarMemoria(mem) + montarChecklist(tarefas);
-  const contents = montarContents(hist);
+  const contexto = montarContexto(carga.ctx, grupo.client_name) + montarMemoria(carga.mem) + montarChecklist(carga.tarefas);
+  const contents = montarContents(carga.hist);
   if (contents.length === 0) return "sem histórico";
 
   const resposta = await chamarGemini(cfg.system_prompt, contexto, contents);
@@ -236,4 +204,57 @@ export async function processarGrupoTick(supabase: SupabaseClient, grupo: Grupo,
     console.error("[alfred] envio falhou:", e instanceof Error ? e.message : e);
     return "falha ao enviar";
   }
+}
+
+/** Resposta IMEDIATA (modo handoff desligado): chamada pelo webhook. */
+export async function responderAgora(supabase: SupabaseClient, grupo: Grupo, cfg: AlfredCfg): Promise<string> {
+  const carga = await carregar(supabase, grupo.id);
+  if (carga.hist.length === 0) return "vazio";
+  return gerarResposta(supabase, grupo, cfg, carga);
+}
+
+/**
+ * Cron: (1) consolida aprendizado quando a conversa assentou (sempre) e
+ * (2) SÓ no modo handoff, intervém se a equipe não resolveu no prazo.
+ */
+export async function processarGrupoTick(supabase: SupabaseClient, grupo: Grupo, cfg: AlfredCfg): Promise<string> {
+  const nowMs = Date.now();
+  const carga = await carregar(supabase, grupo.id);
+  if (carga.hist.length === 0) return "vazio";
+  const { hist } = carga;
+
+  const ultima = hist[hist.length - 1];
+  const lastMsgMs = new Date(ultima.created_at).getTime();
+
+  // (1) APRENDIZADO — sempre (independe do modo), quando há novidade e assentou (>2 min).
+  const learnedMs = grupo.last_learned_at ? new Date(grupo.last_learned_at).getTime() : 0;
+  if (lastMsgMs > learnedMs && nowMs - lastMsgMs >= 120_000) {
+    const aprend = await aprenderDaConversa(hist, carga.tarefas, carga.mem, carga.ctx?.resumo ?? "");
+    if (aprend) {
+      const validKeys = new Set(carga.tarefas.map((t) => t.task_key).filter(Boolean));
+      const agora = new Date().toISOString();
+      for (const key of aprend.tarefas_concluidas) {
+        if (validKeys.has(key)) await supabase.from("alfred_tasks").update({ done: true, done_at: agora }).eq("group_id", grupo.id).eq("task_key", key).eq("done", false);
+      }
+      for (const m of aprend.memorias) {
+        if (!m?.chave || !m?.valor) continue;
+        await supabase.from("alfred_memory").upsert({ user_id: grupo.user_id, group_id: grupo.id, chave: String(m.chave).slice(0, 80), valor: String(m.valor).slice(0, 2000), updated_at: agora }, { onConflict: "group_id,chave" });
+      }
+      if (aprend.resumo?.trim()) await supabase.from("alfred_context").upsert({ user_id: grupo.user_id, group_id: grupo.id, resumo: aprend.resumo.trim() }, { onConflict: "group_id" });
+    }
+    await supabase.from("alfred_groups").update({ last_learned_at: new Date(lastMsgMs).toISOString() }).eq("id", grupo.id);
+  }
+
+  // (2) RESPOSTA — só no modo handoff (no imediato, o webhook já respondeu).
+  if (!cfg.handoff_ativo) return "modo imediato";
+
+  const clienteFalouPorUltimo = ultima.role === "user" && !ultima.is_team;
+  if (!clienteFalouPorUltimo) return "sem necessidade";
+  const lastTeamMs = Math.max(0, ...hist.filter((m) => m.is_team).map((m) => new Date(m.created_at).getTime()));
+  const sinceClient = nowMs - lastMsgMs;
+  const sinceTeam = lastTeamMs ? nowMs - lastTeamMs : Infinity;
+  if (sinceClient < cfg.intervene_after_min * 60_000) return "aguardando prazo";
+  if (sinceTeam < cfg.team_cooldown_min * 60_000) return "equipe ativa (cooldown)";
+
+  return gerarResposta(supabase, grupo, cfg, carga);
 }

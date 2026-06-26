@@ -9,6 +9,10 @@
 import { createClient } from "jsr:@supabase/supabase-js@2";
 import { json } from "../_shared/cors.ts";
 import { getMediaBase64 } from "../_shared/evolution.ts";
+import { responderAgora, type AlfredCfg } from "../_shared/alfred.ts";
+
+const DEBOUNCE_MS = 8000; // modo imediato: junta a rajada antes de responder
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 const supabase = createClient(
   Deno.env.get("SUPABASE_URL")!,
@@ -113,7 +117,7 @@ Deno.serve(async (req) => {
   // Grupo precisa estar ATIVO em alfred_groups.
   const { data: grupo } = await supabase
     .from("alfred_groups")
-    .select("id, user_id, evolution_instance, active")
+    .select("id, user_id, client_name, evolution_instance, last_learned_at, active")
     .eq("remote_jid", remoteJid).eq("active", true).maybeSingle();
   if (!grupo) return json({ ok: true, ignored: "grupo inativo ou não cadastrado" });
 
@@ -143,12 +147,47 @@ Deno.serve(async (req) => {
   for (const m of membros ?? []) for (const v of variantes(m.numero)) memberSet.add(v);
   const isTeam = variantes(senderNumber).some((v) => memberSet.has(v));
 
-  // Registra no histórico (o cron decide se/quando responder).
-  await supabase.from("alfred_messages").insert({
+  // Registra no histórico (sempre).
+  const { data: inserida } = await supabase.from("alfred_messages").insert({
     user_id: grupo.user_id, group_id: grupo.id, remote_jid: remoteJid,
     role: "user", sender_name: senderName || null, sender_number: senderNumber || null,
     is_team: isTeam, body: texto,
-  });
+  }).select("created_at").single();
 
-  return json({ ok: true, logged: true, is_team: isTeam });
+  // Modo handoff x imediato.
+  const { data: cfgRow } = await supabase.from("alfred_configs")
+    .select("handoff_ativo, system_prompt, evolution_instance, team_cooldown_min, intervene_after_min")
+    .eq("user_id", grupo.user_id).maybeSingle();
+  const handoff = cfgRow?.handoff_ativo ?? true;
+
+  // HANDOFF ligado: só registra (o cron alfred-tick decide quando intervir).
+  // Mensagem da EQUIPE: nunca responde.
+  if (handoff || isTeam) {
+    return json({ ok: true, logged: true, is_team: isTeam, modo: handoff ? "handoff" : "imediato" });
+  }
+
+  // IMEDIATO: debounce p/ juntar a rajada; se chegar msg nova, deixa a próxima responder.
+  const triggerAt = inserida?.created_at ?? new Date().toISOString();
+  await sleep(DEBOUNCE_MS);
+  const { count: novas } = await supabase.from("alfred_messages")
+    .select("id", { count: "exact", head: true })
+    .eq("group_id", grupo.id).eq("role", "user").gt("created_at", triggerAt);
+  if ((novas ?? 0) > 0) return json({ ok: true, ignored: "debounce: mensagem mais nova" });
+
+  const { data: sdrCfg } = await supabase.from("ai_config")
+    .select("delay_min_seg, delay_max_seg").eq("user_id", grupo.user_id).maybeSingle();
+  const cfg: AlfredCfg = {
+    system_prompt: cfgRow?.system_prompt ?? "",
+    evolution_instance: cfgRow?.evolution_instance ?? null,
+    handoff_ativo: false,
+    team_cooldown_min: Number(cfgRow?.team_cooldown_min ?? 5),
+    intervene_after_min: Number(cfgRow?.intervene_after_min ?? 30),
+    dmin: Number(sdrCfg?.delay_min_seg ?? 3),
+    dmax: Number(sdrCfg?.delay_max_seg ?? 8),
+  };
+  const r = await responderAgora(supabase, {
+    id: grupo.id, user_id: grupo.user_id, client_name: grupo.client_name,
+    remote_jid: remoteJid, evolution_instance: grupo.evolution_instance, last_learned_at: grupo.last_learned_at ?? null,
+  }, cfg);
+  return json({ ok: true, modo: "imediato", resultado: r });
 });
