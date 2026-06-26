@@ -3,34 +3,54 @@ import {
   Bot, Smartphone, Sparkles, Plus, Trash2, Power, PowerOff, ChevronDown,
   Save, Loader2, QrCode, Users, FolderOpen, CalendarRange, Wallet, StickyNote, RefreshCw,
   Building2, ScrollText, Search, Square, CheckSquare, ListChecks, MessageSquare, Eraser, X, Brain, UserPlus,
+  KanbanSquare, CalendarClock, AlertTriangle,
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
-import { useAlfred, type AlfredConfig, type AlfredConnection, type AlfredGroup, type AlfredContext, type AlfredTask, type AlfredMessage, type AlfredMemory, type AlfredMember } from "@/lib/useAlfred";
+import {
+  useAlfred, type AlfredConfig, type AlfredConnection, type AlfredGroup, type AlfredContext, type AlfredTask,
+  type AlfredMessage, type AlfredMemory, type AlfredMember, type AlfredDemand, type DemandStatus,
+} from "@/lib/useAlfred";
 
 // =====================================================================
 // /alfred — CRUD do agente Alfred (grupos de WhatsApp de clientes).
 // Lógica 100% preservada; visual no design system do app (Bento + Apple-like).
 // =====================================================================
 export default function Alfred() {
-  const { config, connection, groups, contexts, tasks, memory, members, loading, saveConfig, connectWhatsapp, checkStatus, listarGruposWhatsapp, addGroup, toggleGroup, removeGroup, saveContext, toggleTask, clearHistory, deleteMemory, addMember, removeMember } = useAlfred();
+  const { config, connection, groups, contexts, tasks, memory, members, demands, loading, saveConfig, connectWhatsapp, checkStatus, listarGruposWhatsapp, addGroup, toggleGroup, removeGroup, saveContext, toggleTask, clearHistory, deleteMemory, addMember, removeMember, addDemand, updateDemand, deleteDemand } = useAlfred();
   const [conversa, setConversa] = useState<AlfredGroup | null>(null);
+  const [view, setView] = useState<"grupos" | "demandas">("grupos");
 
   if (loading) {
     return <p className="mx-auto max-w-6xl text-sm text-ink-muted">Carregando…</p>;
   }
 
   const ativos = groups.filter((g) => g.active).length;
+  const totalDemandas = Object.values(demands).reduce((n, arr) => n + arr.filter((d) => d.status !== "concluida").length, 0);
 
   return (
     <div className="mx-auto max-w-6xl">
-      <header className="mb-6 flex items-center gap-2">
-        <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent/10 text-accent"><Bot size={20} /></span>
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Alfred</h1>
-          <p className="text-sm text-ink-muted">Agente de IA para os grupos de WhatsApp dos seus clientes.</p>
+      <header className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex items-center gap-2">
+          <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent/10 text-accent"><Bot size={20} /></span>
+          <div>
+            <h1 className="text-2xl font-semibold tracking-tight">Alfred</h1>
+            <p className="text-sm text-ink-muted">Agente de IA para os grupos de WhatsApp dos seus clientes.</p>
+          </div>
+        </div>
+        <div className="inline-flex self-start rounded-xl bg-black/5 p-1 sm:self-auto">
+          <button onClick={() => setView("grupos")} className={`rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${view === "grupos" ? "bg-white text-ink shadow-sm" : "text-ink-muted hover:text-ink-soft"}`}>
+            <Users size={14} className="mr-1 inline" /> Grupos
+          </button>
+          <button onClick={() => setView("demandas")} className={`rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${view === "demandas" ? "bg-white text-ink shadow-sm" : "text-ink-muted hover:text-ink-soft"}`}>
+            <KanbanSquare size={14} className="mr-1 inline" /> Demandas{totalDemandas > 0 ? ` (${totalDemandas})` : ""}
+          </button>
         </div>
       </header>
 
+      {view === "demandas" ? (
+        <DemandasBoard groups={groups.filter((g) => g.active)} demands={demands} onAdd={addDemand} onUpdate={updateDemand} onDelete={deleteDemand} />
+      ) : (
+      <>
       {/* Bento: conexão + configurações globais */}
       <div className="mb-4 grid gap-4 lg:grid-cols-2">
         <ConexaoWhatsapp connection={connection} onConnect={connectWhatsapp} onCheckStatus={checkStatus} />
@@ -71,9 +91,148 @@ export default function Alfred() {
           ))}
         </div>
       )}
+      </>
+      )}
 
       {conversa && <ConversaModal group={conversa} onClose={() => setConversa(null)} onClear={clearHistory} />}
     </div>
+  );
+}
+
+// ---- Quadro Kanban de demandas (coluna por cliente) ----------------
+const DEMAND_STATUS: { key: DemandStatus; label: string; chip: string; dot: string }[] = [
+  { key: "pendente", label: "Pendente", chip: "bg-warning/20 text-[#9a6400]", dot: "bg-warning" },
+  { key: "em_andamento", label: "Em andamento", chip: "bg-accent/15 text-accent", dot: "bg-accent" },
+  { key: "concluida", label: "Concluída", chip: "bg-success/15 text-[#1b7a35]", dot: "bg-success" },
+];
+const statusInfoDemanda = (s: DemandStatus) => DEMAND_STATUS.find((x) => x.key === s) ?? DEMAND_STATUS[0];
+
+function prazoBR(iso: string) {
+  const [y, m, d] = iso.split("-");
+  return `${d}/${m}/${y}`;
+}
+function diasAteHoje(iso: string) {
+  const hoje = new Date(); hoje.setHours(0, 0, 0, 0);
+  const [y, m, d] = iso.split("-").map(Number);
+  return Math.round((new Date(y, m - 1, d).getTime() - hoje.getTime()) / 86_400_000);
+}
+
+function DemandasBoard({
+  groups, demands, onAdd, onUpdate, onDelete,
+}: {
+  groups: AlfredGroup[];
+  demands: Record<string, AlfredDemand[]>;
+  onAdd: (groupId: string, titulo: string, prazo: string, descricao?: string) => Promise<void>;
+  onUpdate: (id: string, groupId: string, patch: Partial<Pick<AlfredDemand, "status" | "prazo" | "titulo">>) => Promise<void>;
+  onDelete: (id: string, groupId: string) => Promise<void>;
+}) {
+  if (groups.length === 0) {
+    return <div className="bento-card text-center text-sm text-ink-muted">Nenhum grupo ativo. Ative um grupo para acompanhar suas demandas aqui.</div>;
+  }
+  // Ordena as demandas de cada coluna: abertas primeiro, depois por prazo.
+  const ordem: Record<DemandStatus, number> = { pendente: 0, em_andamento: 1, concluida: 2 };
+  return (
+    <div className="flex gap-3 overflow-x-auto pb-2">
+      {groups.map((g) => {
+        const lista = [...(demands[g.id] ?? [])].sort((a, b) => (ordem[a.status] - ordem[b.status]) || a.prazo.localeCompare(b.prazo));
+        const abertas = lista.filter((d) => d.status !== "concluida").length;
+        return (
+          <section key={g.id} className="flex w-72 shrink-0 flex-col rounded-xl2 bg-black/[0.03]">
+            <div className="flex items-center gap-2 px-3 py-2.5">
+              <span className="truncate text-[13px] font-semibold text-ink-soft">{g.client_name}</span>
+              <span className="ml-auto rounded-full bg-black/5 px-1.5 text-xs text-ink-muted">{abertas}</span>
+            </div>
+            <div className="flex flex-1 flex-col gap-2 px-2 pb-2">
+              {lista.map((d) => (
+                <DemandCard key={d.id} demand={d} onUpdate={onUpdate} onDelete={onDelete} />
+              ))}
+              {lista.length === 0 && <div className="px-1 py-4 text-center text-xs text-ink-muted/60">Sem demandas</div>}
+              <NovaDemandaForm groupId={g.id} onAdd={onAdd} />
+            </div>
+          </section>
+        );
+      })}
+    </div>
+  );
+}
+
+function DemandCard({
+  demand, onUpdate, onDelete,
+}: {
+  demand: AlfredDemand;
+  onUpdate: (id: string, groupId: string, patch: Partial<Pick<AlfredDemand, "status" | "prazo" | "titulo">>) => Promise<void>;
+  onDelete: (id: string, groupId: string) => Promise<void>;
+}) {
+  const st = statusInfoDemanda(demand.status);
+  const dias = diasAteHoje(demand.prazo);
+  const atrasado = demand.status !== "concluida" && dias < 0;
+  const hoje = demand.status !== "concluida" && dias === 0;
+  return (
+    <div className="rounded-xl border border-black/5 bg-white p-2.5 shadow-sm">
+      <div className="flex items-start gap-2">
+        <span className={`mt-1 h-2 w-2 shrink-0 rounded-full ${st.dot}`} />
+        <span className="flex-1 text-[13px] font-medium leading-tight">{demand.titulo}</span>
+        <button onClick={() => onDelete(demand.id, demand.group_id)} title="Remover demanda" className="shrink-0 rounded p-0.5 text-ink-muted transition-colors hover:bg-danger/10 hover:text-danger">
+          <X size={13} />
+        </button>
+      </div>
+      {demand.descricao && <p className="mt-1 line-clamp-2 text-[11.5px] text-ink-muted">{demand.descricao}</p>}
+
+      <div className="mt-2 flex items-center gap-1.5">
+        <span className={`chip ${atrasado ? "bg-danger/15 text-danger" : "bg-black/5 text-ink-muted"}`} title="Prazo de entrega">
+          {atrasado ? <AlertTriangle size={11} /> : <CalendarClock size={11} />}
+          {prazoBR(demand.prazo)}{atrasado ? " · atrasada" : hoje ? " · hoje" : ""}
+        </span>
+        <input
+          type="date" value={demand.prazo} onChange={(e) => onUpdate(demand.id, demand.group_id, { prazo: e.target.value })}
+          className="ml-auto rounded-md border border-black/10 bg-white px-1 py-0.5 text-[11px] text-ink-muted" title="Alterar prazo"
+        />
+      </div>
+
+      <div className="mt-2 inline-flex w-full rounded-lg bg-black/5 p-0.5">
+        {DEMAND_STATUS.map((s) => (
+          <button key={s.key} onClick={() => onUpdate(demand.id, demand.group_id, { status: s.key })}
+            className={`flex-1 rounded-md px-1 py-1 text-[10.5px] font-medium transition-colors ${demand.status === s.key ? "bg-white shadow-sm " + s.chip.split(" ").slice(1).join(" ") : "text-ink-muted hover:text-ink-soft"}`}>
+            {s.label}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function NovaDemandaForm({ groupId, onAdd }: { groupId: string; onAdd: (groupId: string, titulo: string, prazo: string, descricao?: string) => Promise<void> }) {
+  const [aberto, setAberto] = useState(false);
+  const prazoDefault = new Date(Date.now() + 3 * 86_400_000).toISOString().slice(0, 10);
+  const [titulo, setTitulo] = useState("");
+  const [prazo, setPrazo] = useState(prazoDefault);
+  const [salvando, setSalvando] = useState(false);
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!titulo.trim()) return;
+    setSalvando(true);
+    try { await onAdd(groupId, titulo, prazo); setTitulo(""); setPrazo(prazoDefault); setAberto(false); }
+    catch (err) { alert(err instanceof Error ? err.message : String(err)); }
+    finally { setSalvando(false); }
+  }
+
+  if (!aberto) {
+    return (
+      <button onClick={() => setAberto(true)} className="flex items-center justify-center gap-1 rounded-xl border border-dashed border-black/15 py-2 text-xs font-medium text-ink-muted transition-colors hover:border-accent/40 hover:text-accent">
+        <Plus size={14} /> Nova demanda
+      </button>
+    );
+  }
+  return (
+    <form onSubmit={submit} className="rounded-xl border border-black/10 bg-white p-2 shadow-sm">
+      <input autoFocus className="input !py-1.5 text-sm" placeholder="Ex.: Arte do bolão da Mega" value={titulo} onChange={(e) => setTitulo(e.target.value)} />
+      <div className="mt-2 flex items-center gap-2">
+        <input type="date" className="input !py-1.5 text-xs" value={prazo} onChange={(e) => setPrazo(e.target.value)} title="Prazo de entrega (obrigatório)" />
+        <button type="submit" className="btn-accent !py-1.5 text-xs" disabled={salvando}>{salvando ? "…" : "Adicionar"}</button>
+        <button type="button" onClick={() => setAberto(false)} className="btn-ghost !py-1.5 text-xs">Cancelar</button>
+      </div>
+    </form>
   );
 }
 

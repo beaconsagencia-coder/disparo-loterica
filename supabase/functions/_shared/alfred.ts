@@ -34,6 +34,13 @@ function montarMemoria(mem: { chave: string; valor: string }[]): string {
   return linhas.join("\n");
 }
 
+function montarDemandas(d: { titulo: string; status: string; prazo: string | null }[]): string {
+  if (!d?.length) return "";
+  const linhas = ["", "DEMANDAS AVULSAS EM ABERTO (pedidos do cliente — acompanhe e informe prazos quando perguntarem):"];
+  for (const x of d) linhas.push(`- ${x.titulo} [${x.status}]${x.prazo ? ` — prazo ${x.prazo}` : ""}`);
+  return linhas.join("\n");
+}
+
 function montarChecklist(tasks: TaskRow[]): string {
   if (!tasks?.length) return "";
   const porSemana = new Map<number, TaskRow[]>();
@@ -76,6 +83,8 @@ async function chamarGemini(systemPrompt: string, contexto: string, contents: { 
           "última mensagem do cliente não pedir resposta (ex.: 'ok', 'obrigado', encerramento), responda com STRING VAZIA (não envie nada).\n\n" +
           "USO DO CHECKLIST/MEMÓRIA: baseie-se no andamento e nas informações salvas; nunca diga que algo está pronto se está pendente; " +
           "se uma etapa pendente depende do cliente (criativo, conta de Facebook, orçamento), solicite a ele.\n\n" +
+          "DEMANDAS AVULSAS: se o cliente pedir uma arte específica, uma alteração ou uma tarefa pontual, CONFIRME que vai providenciar e informe um prazo " +
+          "aproximado de entrega (poucos dias). A demanda é registrada e acompanhada internamente — fale com naturalidade, sem citar 'sistema' ou 'banco de dados'.\n\n" +
           "FORMATO: envie ESTRITAMENTE o conteúdo, sem prefixo/nome/'Alfred:'. Curto e direto, como pessoa real no WhatsApp; " +
           "poucas palavras, sem markdown, para economizar créditos.",
       }],
@@ -93,11 +102,16 @@ async function chamarGemini(systemPrompt: string, contexto: string, contents: { 
   return txt.replace(/^\s*alfred\s*:\s*/i, "").replace(/^["“](.*)["”]$/s, "$1").trim();
 }
 
-interface Aprendizado { tarefas_concluidas: string[]; memorias: { chave: string; valor: string }[]; resumo: string }
+interface NovaDemanda { titulo: string; descricao: string; prazo_dias: number }
+interface Aprendizado { tarefas_concluidas: string[]; memorias: { chave: string; valor: string }[]; resumo: string; demandas: NovaDemanda[] }
 
-async function aprenderDaConversa(hist: HistRow[], tarefas: TaskRow[], memoriaAtual: { chave: string; valor: string }[], resumoAtual: string): Promise<Aprendizado | null> {
+async function aprenderDaConversa(
+  hist: HistRow[], tarefas: TaskRow[], memoriaAtual: { chave: string; valor: string }[], resumoAtual: string,
+  demandasAbertas: { titulo: string }[],
+): Promise<Aprendizado | null> {
   const tasksTxt = tarefas.map((t) => `- ${t.task_key ?? ""} — ${t.titulo} — ${t.done ? "feito" : "pendente"}`).join("\n");
   const memTxt = memoriaAtual.length ? memoriaAtual.map((m) => `- ${m.chave}: ${m.valor}`).join("\n") : "(vazio)";
+  const demTxt = demandasAbertas.length ? demandasAbertas.map((d) => `- ${d.titulo}`).join("\n") : "(nenhuma)";
   const histTxt = hist.map((m) => `${m.role === "model" ? "Alfred" : (m.is_team ? `[Equipe ${m.sender_name || ""}]` : (m.sender_name || "Cliente"))}: ${m.body}`).join("\n");
 
   const sys =
@@ -105,14 +119,17 @@ async function aprenderDaConversa(hist: HistRow[], tarefas: TaskRow[], memoriaAt
     "(1) tarefas do checklist concluídas AGORA — use EXATAMENTE as task_key da lista; só marque o que ficou claramente pronto " +
     "(ex.: alguém diz 'segue a identidade visual' => identidade_visual). " +
     "(2) dados operacionais/sensíveis para guardar (senhas, logins, @ do Instagram, links, orçamento, decisões, datas). Chaves curtas em snake_case. Atualize valores. " +
-    "(3) um RESUMO consolidado e enxuto (~5 linhas) com a ESSÊNCIA do cliente, evoluindo o anterior. Sem novidade: listas vazias e repita o resumo.";
+    "(3) um RESUMO consolidado e enxuto (~5 linhas) com a ESSÊNCIA do cliente, evoluindo o anterior. " +
+    "(4) NOVAS demandas avulsas pedidas pelo CLIENTE no chat (arte específica, alteração, pedido pontual) que NÃO estejam na lista de demandas abertas e ainda não tenham sido registradas. " +
+    "Para cada nova demanda: titulo curto, descricao objetiva e prazo_dias (prazo de entrega em DIAS a partir de hoje — OBRIGATÓRIO, realista, normalmente entre 1 e 7). Não invente demandas; só registre pedidos reais e novos. " +
+    "Sem novidade: listas vazias e repita o resumo.";
 
   const body = {
     system_instruction: { parts: [{ text: sys }] },
     contents: [{ role: "user", parts: [{ text:
-      `CHECKLIST (task_key — título — estado):\n${tasksTxt}\n\nMEMÓRIA ATUAL:\n${memTxt}\n\nRESUMO ATUAL:\n${resumoAtual || "(vazio)"}\n\nCONVERSA RECENTE:\n${histTxt}` }] }],
+      `CHECKLIST (task_key — título — estado):\n${tasksTxt}\n\nMEMÓRIA ATUAL:\n${memTxt}\n\nDEMANDAS AVULSAS JÁ ABERTAS (não repita):\n${demTxt}\n\nRESUMO ATUAL:\n${resumoAtual || "(vazio)"}\n\nCONVERSA RECENTE:\n${histTxt}` }] }],
     generationConfig: {
-      temperature: 0, maxOutputTokens: 800, thinkingConfig: { thinkingBudget: 0 },
+      temperature: 0, maxOutputTokens: 900, thinkingConfig: { thinkingBudget: 0 },
       responseMimeType: "application/json",
       responseSchema: {
         type: "OBJECT",
@@ -120,6 +137,7 @@ async function aprenderDaConversa(hist: HistRow[], tarefas: TaskRow[], memoriaAt
           tarefas_concluidas: { type: "ARRAY", items: { type: "STRING" } },
           memorias: { type: "ARRAY", items: { type: "OBJECT", properties: { chave: { type: "STRING" }, valor: { type: "STRING" } }, required: ["chave", "valor"] } },
           resumo: { type: "STRING" },
+          demandas: { type: "ARRAY", items: { type: "OBJECT", properties: { titulo: { type: "STRING" }, descricao: { type: "STRING" }, prazo_dias: { type: "INTEGER" } }, required: ["titulo", "prazo_dias"] } },
         },
       },
     },
@@ -135,6 +153,7 @@ async function aprenderDaConversa(hist: HistRow[], tarefas: TaskRow[], memoriaAt
       tarefas_concluidas: Array.isArray(parsed?.tarefas_concluidas) ? parsed.tarefas_concluidas : [],
       memorias: Array.isArray(parsed?.memorias) ? parsed.memorias : [],
       resumo: typeof parsed?.resumo === "string" ? parsed.resumo : "",
+      demandas: Array.isArray(parsed?.demandas) ? parsed.demandas : [],
     };
   } catch (e) { console.error("[alfred] aprender erro:", e instanceof Error ? e.message : e); return null; }
 }
@@ -161,10 +180,11 @@ export interface Grupo {
   evolution_instance: string | null; last_learned_at: string | null;
 }
 type HistMsg = HistRow & { created_at: string };
+interface DemandaRow { titulo: string; status: string; prazo: string | null }
 // deno-lint-ignore no-explicit-any
-interface Carga { hist: HistMsg[]; ctx: any; tarefas: TaskRow[]; mem: { chave: string; valor: string }[] }
+interface Carga { hist: HistMsg[]; ctx: any; tarefas: TaskRow[]; mem: { chave: string; valor: string }[]; demandas: DemandaRow[] }
 
-/** Carrega histórico + contexto + checklist + memória do grupo. */
+/** Carrega histórico + contexto + checklist + memória + demandas abertas. */
 async function carregar(supabase: SupabaseClient, groupId: string): Promise<Carga> {
   const { data: msgsDesc } = await supabase
     .from("alfred_messages")
@@ -173,12 +193,18 @@ async function carregar(supabase: SupabaseClient, groupId: string): Promise<Carg
     .order("created_at", { ascending: false })
     .limit(HISTORICO);
   const hist = ((msgsDesc as HistMsg[]) ?? []).reverse();
-  const [{ data: ctx }, { data: tasks }, { data: memorias }] = await Promise.all([
+  const [{ data: ctx }, { data: tasks }, { data: memorias }, { data: dem }] = await Promise.all([
     supabase.from("alfred_context").select("empresa_dados, regras_atendimento, drive_link, cronograma, financeiro, observacoes, resumo").eq("group_id", groupId).maybeSingle(),
     supabase.from("alfred_tasks").select("semana, task_key, titulo, done").eq("group_id", groupId).order("semana").order("ordem"),
     supabase.from("alfred_memory").select("chave, valor").eq("group_id", groupId),
+    supabase.from("alfred_demands").select("titulo, status, prazo").eq("group_id", groupId).neq("status", "concluida"),
   ]);
-  return { hist, ctx: ctx ?? null, tarefas: (tasks as TaskRow[]) ?? [], mem: (memorias as { chave: string; valor: string }[]) ?? [] };
+  return {
+    hist, ctx: ctx ?? null,
+    tarefas: (tasks as TaskRow[]) ?? [],
+    mem: (memorias as { chave: string; valor: string }[]) ?? [],
+    demandas: (dem as DemandaRow[]) ?? [],
+  };
 }
 
 /** Gera e envia a resposta ao cliente (sem gating). Retorna o status. */
@@ -187,7 +213,7 @@ async function gerarResposta(supabase: SupabaseClient, grupo: Grupo, cfg: Alfred
   const instance = cfg.evolution_instance || grupo.evolution_instance || "";
   if (!ENV_EVO_URL || !ENV_EVO_KEY || !instance) return "evolution não configurada";
 
-  const contexto = montarContexto(carga.ctx, grupo.client_name) + montarMemoria(carga.mem) + montarChecklist(carga.tarefas);
+  const contexto = montarContexto(carga.ctx, grupo.client_name) + montarMemoria(carga.mem) + montarChecklist(carga.tarefas) + montarDemandas(carga.demandas);
   const contents = montarContents(carga.hist);
   if (contents.length === 0) return "sem histórico";
 
@@ -229,7 +255,7 @@ export async function processarGrupoTick(supabase: SupabaseClient, grupo: Grupo,
   // (1) APRENDIZADO — sempre (independe do modo), quando há novidade e assentou (>2 min).
   const learnedMs = grupo.last_learned_at ? new Date(grupo.last_learned_at).getTime() : 0;
   if (lastMsgMs > learnedMs && nowMs - lastMsgMs >= 120_000) {
-    const aprend = await aprenderDaConversa(hist, carga.tarefas, carga.mem, carga.ctx?.resumo ?? "");
+    const aprend = await aprenderDaConversa(hist, carga.tarefas, carga.mem, carga.ctx?.resumo ?? "", carga.demandas);
     if (aprend) {
       const validKeys = new Set(carga.tarefas.map((t) => t.task_key).filter(Boolean));
       const agora = new Date().toISOString();
@@ -241,6 +267,20 @@ export async function processarGrupoTick(supabase: SupabaseClient, grupo: Grupo,
         await supabase.from("alfred_memory").upsert({ user_id: grupo.user_id, group_id: grupo.id, chave: String(m.chave).slice(0, 80), valor: String(m.valor).slice(0, 2000), updated_at: agora }, { onConflict: "group_id,chave" });
       }
       if (aprend.resumo?.trim()) await supabase.from("alfred_context").upsert({ user_id: grupo.user_id, group_id: grupo.id, resumo: aprend.resumo.trim() }, { onConflict: "group_id" });
+
+      // Novas demandas avulsas -> Kanban, com PRAZO obrigatório (dias a partir de hoje).
+      const abertasTit = new Set(carga.demandas.map((d) => d.titulo.trim().toLowerCase()));
+      for (const d of aprend.demandas) {
+        const titulo = String(d?.titulo ?? "").trim();
+        if (!titulo || abertasTit.has(titulo.toLowerCase())) continue; // dedup
+        const dias = Math.min(60, Math.max(1, Math.floor(Number(d?.prazo_dias) || 3)));
+        const prazo = new Date(Date.now() + dias * 86_400_000).toISOString().slice(0, 10);
+        await supabase.from("alfred_demands").insert({
+          user_id: grupo.user_id, group_id: grupo.id, titulo: titulo.slice(0, 120),
+          descricao: (String(d?.descricao ?? "").trim() || null), prazo, origem: "chat", status: "pendente",
+        });
+        abertasTit.add(titulo.toLowerCase());
+      }
     }
     await supabase.from("alfred_groups").update({ last_learned_at: new Date(lastMsgMs).toISOString() }).eq("id", grupo.id);
   }

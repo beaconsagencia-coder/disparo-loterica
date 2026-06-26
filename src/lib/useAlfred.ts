@@ -15,6 +15,15 @@ export interface AlfredMember {
   numero: string;
   nome: string | null;
 }
+export type DemandStatus = "pendente" | "em_andamento" | "concluida";
+export interface AlfredDemand {
+  id: string;
+  group_id: string;
+  titulo: string;
+  descricao: string | null;
+  status: DemandStatus;
+  prazo: string; // YYYY-MM-DD
+}
 export interface AlfredGroup {
   id: string;
   remote_jid: string;
@@ -86,10 +95,11 @@ export function useAlfred() {
   const [tasks, setTasks] = useState<Record<string, AlfredTask[]>>({});
   const [memory, setMemory] = useState<Record<string, AlfredMemory[]>>({});
   const [members, setMembers] = useState<Record<string, AlfredMember[]>>({});
+  const [demands, setDemands] = useState<Record<string, AlfredDemand[]>>({});
   const [loading, setLoading] = useState(true);
 
   const load = useCallback(async () => {
-    const [{ data: cfg }, { data: grp }, { data: ctx }, { data: tk }, { data: mem }, { data: mb }] = await Promise.all([
+    const [{ data: cfg }, { data: grp }, { data: ctx }, { data: tk }, { data: mem }, { data: mb }, { data: dm }] = await Promise.all([
       supabase.from("alfred_configs")
         .select("system_prompt, evolution_instance, connection_status, numero, handoff_ativo, team_cooldown_min, intervene_after_min")
         .maybeSingle(),
@@ -101,6 +111,7 @@ export function useAlfred() {
         .order("semana").order("ordem"),
       supabase.from("alfred_memory").select("id, group_id, chave, valor").order("chave"),
       supabase.from("alfred_group_members").select("id, group_id, numero, nome").order("created_at"),
+      supabase.from("alfred_demands").select("id, group_id, titulo, descricao, status, prazo").order("prazo"),
     ]);
     if (cfg) {
       setConfig({
@@ -128,6 +139,9 @@ export function useAlfred() {
     const bmap: Record<string, AlfredMember[]> = {};
     for (const m of (mb as AlfredMember[]) ?? []) (bmap[m.group_id] ??= []).push(m);
     setMembers(bmap);
+    const dmap: Record<string, AlfredDemand[]> = {};
+    for (const d of (dm as AlfredDemand[]) ?? []) (dmap[d.group_id] ??= []).push(d);
+    setDemands(dmap);
     setLoading(false);
   }, []);
 
@@ -141,6 +155,7 @@ export function useAlfred() {
       .on("postgres_changes", { event: "*", schema: "public", table: "alfred_tasks" }, () => load())
       .on("postgres_changes", { event: "*", schema: "public", table: "alfred_memory" }, () => load())
       .on("postgres_changes", { event: "*", schema: "public", table: "alfred_group_members" }, () => load())
+      .on("postgres_changes", { event: "*", schema: "public", table: "alfred_demands" }, () => load())
       .subscribe();
     return () => void supabase.removeChannel(ch);
   }, [load]);
@@ -238,6 +253,30 @@ export function useAlfred() {
     if (error) await load();
   }, [load]);
 
+  // ---- demandas avulsas (Kanban) ----
+  const addDemand = useCallback(async (groupId: string, titulo: string, prazo: string, descricao?: string) => {
+    const user_id = await uid();
+    if (!titulo.trim()) throw new Error("Informe o título da demanda.");
+    if (!prazo) throw new Error("Defina o prazo de entrega.");
+    const { error } = await supabase.from("alfred_demands").insert({
+      user_id, group_id: groupId, titulo: titulo.trim(), descricao: descricao?.trim() || null, prazo, origem: "manual",
+    });
+    if (error) throw error;
+    await load();
+  }, [load]);
+
+  const updateDemand = useCallback(async (id: string, groupId: string, patch: Partial<Pick<AlfredDemand, "status" | "prazo" | "titulo">>) => {
+    setDemands((prev) => ({ ...prev, [groupId]: (prev[groupId] ?? []).map((d) => (d.id === id ? { ...d, ...patch } : d)) }));
+    const { error } = await supabase.from("alfred_demands").update(patch).eq("id", id);
+    if (error) await load();
+  }, [load]);
+
+  const deleteDemand = useCallback(async (id: string, groupId: string) => {
+    setDemands((prev) => ({ ...prev, [groupId]: (prev[groupId] ?? []).filter((d) => d.id !== id) }));
+    const { error } = await supabase.from("alfred_demands").delete().eq("id", id);
+    if (error) await load();
+  }, [load]);
+
   /** Remove um item da memória aprendida (ex.: dado sensível que não quer guardar). */
   const deleteMemory = useCallback(async (id: string, groupId: string) => {
     setMemory((prev) => ({ ...prev, [groupId]: (prev[groupId] ?? []).filter((m) => m.id !== id) }));
@@ -256,9 +295,9 @@ export function useAlfred() {
   }, []);
 
   return {
-    config, connection, groups, contexts, tasks, memory, members, loading,
+    config, connection, groups, contexts, tasks, memory, members, demands, loading,
     saveConfig, connectWhatsapp, checkStatus, listarGruposWhatsapp,
     addGroup, toggleGroup, removeGroup, saveContext, toggleTask, clearHistory, deleteMemory,
-    addMember, removeMember, reload: load,
+    addMember, removeMember, addDemand, updateDemand, deleteDemand, reload: load,
   };
 }
