@@ -100,6 +100,7 @@ export interface AlfredMessage {
   sender_name: string | null;
   body: string;
   created_at: string;
+  quoted_body?: string | null; // mensagem citada (reply do WhatsApp)
 }
 
 const CONFIG_DEFAULT: AlfredConfig = { system_prompt: "", base_conhecimento: "", handoff_ativo: true, team_cooldown_min: 5, intervene_after_min: 30 };

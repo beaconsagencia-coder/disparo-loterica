@@ -39,6 +39,21 @@ function extrairTexto(message: any): string {
   ).trim();
 }
 
+/** Texto da mensagem CITADA (reply do WhatsApp), se houver. */
+// deno-lint-ignore no-explicit-any
+function extrairCitacao(message: any): string {
+  if (!message) return "";
+  const ci = message.extendedTextMessage?.contextInfo
+    ?? message.imageMessage?.contextInfo
+    ?? message.videoMessage?.contextInfo
+    ?? message.audioMessage?.contextInfo
+    ?? message.documentMessage?.contextInfo
+    ?? message.contextInfo
+    ?? null;
+  const quoted = ci?.quotedMessage;
+  return quoted ? extrairTexto(quoted) : "";
+}
+
 const soDigitos = (s: string) => (s ?? "").replace(/\D/g, "").replace(/^0+/, "");
 
 /** Variações do 9º dígito (BR) para casar o número da equipe com/sem o 9. */
@@ -159,10 +174,11 @@ Deno.serve(async (req) => {
 
   // Registra no histórico (sempre). Em corrida (duas entregas quase juntas),
   // o índice único barra a 2ª: tratamos 23505 como duplicada e paramos aqui.
+  const quotedBody = extrairCitacao(msgObj);
   const { data: inserida, error: insErr } = await supabase.from("alfred_messages").insert({
     user_id: grupo.user_id, group_id: grupo.id, remote_jid: remoteJid,
     role: "user", sender_name: senderName || null, sender_number: senderNumber || null,
-    is_team: isTeam, body: texto, wa_message_id: waMsgId || null,
+    is_team: isTeam, body: texto, wa_message_id: waMsgId || null, quoted_body: quotedBody || null,
   }).select("created_at").single();
   if (insErr) {
     if ((insErr as { code?: string }).code === "23505") return json({ ok: true, ignored: "duplicada (corrida)" });

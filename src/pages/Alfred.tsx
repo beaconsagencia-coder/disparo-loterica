@@ -636,7 +636,7 @@ function ConversaModal({ group, onClose, onClear }: { group: AlfredGroup; onClos
     let active = true;
     (async () => {
       const { data } = await supabase.from("alfred_messages")
-        .select("id, role, sender_name, body, created_at")
+        .select("id, role, sender_name, body, created_at, quoted_body")
         .eq("group_id", group.id).order("created_at");
       if (active) { setMessages((data as AlfredMessage[]) ?? []); setCarregando(false); }
     })();
@@ -688,6 +688,11 @@ function ConversaModal({ group, onClose, onClear }: { group: AlfredGroup; onClos
                 <div key={m.id} className={`max-w-[80%] ${out ? "ml-auto" : ""}`}>
                   {!out && m.sender_name && <div className="mb-0.5 pl-1 text-[10px] font-medium text-ink-muted">{m.sender_name}</div>}
                   <div className={`w-fit whitespace-pre-wrap break-words rounded-2xl px-3 py-2 text-sm ${out ? "ml-auto rounded-br-sm bg-accent text-white" : "rounded-bl-sm bg-white"}`}>
+                    {m.quoted_body && (
+                      <div className={`mb-1 border-l-2 pl-2 text-[11px] leading-snug ${out ? "border-white/50 text-white/75" : "border-accent/50 text-ink-muted"}`}>
+                        <span className="line-clamp-2">{m.quoted_body}</span>
+                      </div>
+                    )}
                     {m.body}
                     <span className={`ml-2 inline-block align-bottom text-[10px] ${out ? "text-white/70" : "text-ink-muted"}`}>
                       {new Date(m.created_at).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}

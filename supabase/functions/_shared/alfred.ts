@@ -21,7 +21,14 @@ export function faseEfetiva(createdAt: string | null, override: string | null): 
   return ms / 86_400_000 >= FASE_THRESHOLD_DIAS ? "manutencao" : "onboarding";
 }
 
-export interface HistRow { id?: string; role: string; sender_name: string | null; body: string; is_team?: boolean }
+export interface HistRow { id?: string; role: string; sender_name: string | null; body: string; is_team?: boolean; quoted_body?: string | null }
+
+/** Marca uma fala que é resposta a uma mensagem citada (reply do WhatsApp). */
+function refResposta(quoted?: string | null): string {
+  const q = (quoted ?? "").trim().replace(/\s+/g, " ");
+  if (!q) return "";
+  return ` (em resposta a: "${q.length > 140 ? q.slice(0, 140) + "…" : q}")`;
+}
 export interface TaskRow { semana: number; task_key?: string; titulo: string; done: boolean }
 export interface AssetRow {
   id: string; titulo: string; tipo: string; status: string;
@@ -130,7 +137,7 @@ function montarContents(hist: HistRow[]) {
     const role = m.role === "model" ? "model" : "user";
     if (out.length === 0 && role === "model") continue;
     const quem = m.is_team ? `[Equipe${m.sender_name ? ` ${m.sender_name}` : ""}]` : (m.sender_name || "Cliente");
-    const texto = role === "user" ? `${quem}: ${m.body}` : m.body;
+    const texto = role === "user" ? `${quem}${refResposta(m.quoted_body)}: ${m.body}` : m.body;
     const last = out[out.length - 1];
     if (last && last.role === role) last.parts[0].text += `\n${texto}`;
     else out.push({ role, parts: [{ text: texto }] });
@@ -239,7 +246,10 @@ async function aprenderDaConversa(
   const memTxt = memoriaAtual.length ? memoriaAtual.map((m) => `- ${m.chave}: ${m.valor}`).join("\n") : "(vazio)";
   const demTxt = demandasAbertas.length ? demandasAbertas.map((d) => `- ${d.titulo}`).join("\n") : "(nenhuma)";
   const ativTxt = ativosAtuais.length ? ativosAtuais.map((a) => `- ${a.titulo} [${a.status}]`).join("\n") : "(nenhum)";
-  const histTxt = hist.map((m) => `${m.role === "model" ? "Alfred" : (m.is_team ? `[Equipe ${m.sender_name || ""}]` : (m.sender_name || "Cliente"))}: ${m.body}`).join("\n");
+  const histTxt = hist.map((m) => {
+    const quem = m.role === "model" ? "Alfred" : (m.is_team ? `[Equipe ${m.sender_name || ""}]` : (m.sender_name || "Cliente"));
+    return `${quem}${m.role === "model" ? "" : refResposta(m.quoted_body)}: ${m.body}`;
+  }).join("\n");
 
   const sys =
     "Você analisa a conversa de um grupo de WhatsApp de um cliente da agência e APRENDE com ela. Identifique de forma autônoma: " +
@@ -323,7 +333,7 @@ interface Carga { hist: HistMsg[]; ctx: any; tarefas: TaskRow[]; mem: { chave: s
 async function carregar(supabase: SupabaseClient, groupId: string): Promise<Carga> {
   const { data: msgsDesc } = await supabase
     .from("alfred_messages")
-    .select("id, role, sender_name, body, created_at, is_team")
+    .select("id, role, sender_name, body, created_at, is_team, quoted_body")
     .eq("group_id", groupId)
     .order("created_at", { ascending: false })
     .limit(HISTORICO);
