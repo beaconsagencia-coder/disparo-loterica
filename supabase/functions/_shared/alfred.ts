@@ -21,7 +21,7 @@ export function faseEfetiva(createdAt: string | null, override: string | null): 
   return ms / 86_400_000 >= FASE_THRESHOLD_DIAS ? "manutencao" : "onboarding";
 }
 
-export interface HistRow { role: string; sender_name: string | null; body: string; is_team?: boolean }
+export interface HistRow { id?: string; role: string; sender_name: string | null; body: string; is_team?: boolean }
 export interface TaskRow { semana: number; task_key?: string; titulo: string; done: boolean }
 export interface AssetRow {
   id: string; titulo: string; tipo: string; status: string;
@@ -316,7 +316,7 @@ interface Carga { hist: HistMsg[]; ctx: any; tarefas: TaskRow[]; mem: { chave: s
 async function carregar(supabase: SupabaseClient, groupId: string): Promise<Carga> {
   const { data: msgsDesc } = await supabase
     .from("alfred_messages")
-    .select("role, sender_name, body, created_at, is_team")
+    .select("id, role, sender_name, body, created_at, is_team")
     .eq("group_id", groupId)
     .order("created_at", { ascending: false })
     .limit(HISTORICO);
@@ -355,6 +355,18 @@ async function gerarResposta(supabase: SupabaseClient, grupo: Grupo, cfg: Alfred
   const contents = montarContents(carga.hist);
   if (contents.length === 0) return "sem histórico";
 
+  // TRAVA ATÔMICA DE RESPOSTA: só UMA execução responde por mensagem do cliente.
+  // Reivindica a última mensagem do cliente marcando answered_at (nulo -> agora).
+  // Quem não conseguir o UPDATE (já reivindicada) desiste — evita resposta dupla
+  // por retry/debounce/duplo dispositivo. Feito ANTES do Gemini (poupa créditos).
+  const ultimaUser = [...carga.hist].reverse().find((m) => m.role === "user" && m.id);
+  if (ultimaUser?.id) {
+    const { data: claim } = await supabase.from("alfred_messages")
+      .update({ answered_at: new Date().toISOString() })
+      .eq("id", ultimaUser.id).is("answered_at", null).select("id");
+    if (!claim || claim.length === 0) return "já respondido (duplicado)";
+  }
+
   const resposta = await chamarGemini(cfg.system_prompt, contexto, contents, cfg.base_conhecimento ?? "");
   const partes = fracionarResposta(resposta);
   if (partes.length === 0) return "sem resposta (não necessária)"; // o modelo decidiu não responder
@@ -371,6 +383,10 @@ async function gerarResposta(supabase: SupabaseClient, grupo: Grupo, cfg: Alfred
     return "respondido";
   } catch (e) {
     console.error("[alfred] envio falhou:", e instanceof Error ? e.message : e);
+    // Não enviou nada: libera a reivindicação p/ uma nova tentativa responder.
+    if (enviadas === 0 && ultimaUser?.id) {
+      await supabase.from("alfred_messages").update({ answered_at: null }).eq("id", ultimaUser.id);
+    }
     return enviadas > 0 ? "parcial" : "falha ao enviar";
   }
 }
