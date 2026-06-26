@@ -134,8 +134,10 @@ async function chamarGemini(systemPrompt: string, contexto: string, contents: { 
           "NUNCA afirme que uma campanha está ativa se ela foi pausada, encerrada ou substituída.\n\n" +
           "DEMANDAS AVULSAS: se o cliente pedir uma arte específica, uma alteração ou uma tarefa pontual, CONFIRME que vai providenciar e informe um prazo " +
           "aproximado de entrega (poucos dias). A demanda é registrada e acompanhada internamente — fale com naturalidade, sem citar 'sistema' ou 'banco de dados'.\n\n" +
-          "FORMATO: envie ESTRITAMENTE o conteúdo, sem prefixo/nome/'Alfred:'. Curto e direto, como pessoa real no WhatsApp; " +
-          "poucas palavras, sem markdown, para economizar créditos.",
+          "FORMATO (MUITO IMPORTANTE): fale como uma pessoa REAL da equipe no WhatsApp — tom leve, cotidiano e informal, nada robótico nem formal. " +
+          "Curto e direto ao ponto. QUEBRE a resposta em mensagens curtas e separadas, como quem manda várias mensagens seguidas no WhatsApp, " +
+          "em vez de um único parágrafo longo. Separe CADA mensagem com uma linha contendo apenas '---'. Se uma frase curta já resolve, mande só UMA mensagem. " +
+          "No máximo 4 mensagens. Nunca use prefixo, nome ou 'Alfred:'; sem markdown; sem emojis em excesso.",
       }],
     },
     contents,
@@ -148,7 +150,39 @@ async function chamarGemini(systemPrompt: string, contexto: string, contents: { 
   const data = await res.json();
   // deno-lint-ignore no-explicit-any
   const txt = (data?.candidates?.[0]?.content?.parts as any[] | undefined)?.map((p) => p?.text ?? "").join("") ?? "";
-  return txt.replace(/^\s*alfred\s*:\s*/i, "").replace(/^["“](.*)["”]$/s, "$1").trim();
+  return txt.trim();
+}
+
+const MAX_MSGS = 4;
+/**
+ * Quebra a resposta do modelo em mensagens curtas e isoladas (estilo humano
+ * no WhatsApp). Aceita o separador "---" (instruído) e, por segurança, também
+ * marcadores [MENSAGEM]/[MSG]. Limpa prefixo "Alfred:" e aspas de cada parte.
+ */
+function fracionarResposta(raw: string): string[] {
+  const txt = (raw ?? "").trim();
+  if (!txt) return [];
+  const temMarcador = /\[\s*(?:mensagem|msg)\s*\]/i.test(txt);
+  const brutas = temMarcador
+    ? txt.split(/\[\s*(?:mensagem|msg)\s*\]/i)
+    : txt.split(/\n?\s*-{3,}\s*\n?/g);
+  const limpar = (s: string) => s
+    .replace(/^\s*alfred\s*:\s*/i, "")
+    .replace(/^["“”'\s]+|["“”'\s]+$/g, "")
+    .trim();
+  const out: string[] = [];
+  for (const p of brutas) {
+    const c = limpar(p);
+    if (c) out.push(c);
+    if (out.length >= MAX_MSGS) break;
+  }
+  return out;
+}
+
+/** Atraso de digitação por mensagem (estilo SDR): proporcional ao tamanho. */
+function delayDigitacao(texto: string, cfg: AlfredCfg): number {
+  const seg = Math.min(cfg.dmax, Math.max(cfg.dmin, texto.length / 25 + Math.random() * 1.5));
+  return Math.round(seg * 1000);
 }
 
 interface NovaDemanda { titulo: string; descricao: string; prazo_dias: number }
@@ -283,17 +317,22 @@ async function gerarResposta(supabase: SupabaseClient, grupo: Grupo, cfg: Alfred
   if (contents.length === 0) return "sem histórico";
 
   const resposta = await chamarGemini(cfg.system_prompt, contexto, contents);
-  if (!resposta) return "sem resposta (não necessária)"; // o modelo decidiu não responder
+  const partes = fracionarResposta(resposta);
+  if (partes.length === 0) return "sem resposta (não necessária)"; // o modelo decidiu não responder
 
-  const base = cfg.dmin + Math.random() * Math.max(0, cfg.dmax - cfg.dmin);
-  const delayMs = Math.round(Math.max(cfg.dmin, Math.max(base, Math.min(cfg.dmax, resposta.length / 25))) * 1000);
+  // Envia como VÁRIAS mensagens curtas em sequência (humano digitando no zap):
+  // cada uma com seu próprio "digitando…" proporcional ao tamanho.
+  let enviadas = 0;
   try {
-    await enviarGrupo(instance, grupo.remote_jid, resposta, delayMs);
-    await supabase.from("alfred_messages").insert({ user_id: grupo.user_id, group_id: grupo.id, remote_jid: grupo.remote_jid, role: "model", sender_name: "Alfred", body: resposta });
+    for (const parte of partes) {
+      await enviarGrupo(instance, grupo.remote_jid, parte, delayDigitacao(parte, cfg));
+      await supabase.from("alfred_messages").insert({ user_id: grupo.user_id, group_id: grupo.id, remote_jid: grupo.remote_jid, role: "model", sender_name: "Alfred", body: parte });
+      enviadas++;
+    }
     return "respondido";
   } catch (e) {
     console.error("[alfred] envio falhou:", e instanceof Error ? e.message : e);
-    return "falha ao enviar";
+    return enviadas > 0 ? "parcial" : "falha ao enviar";
   }
 }
 
