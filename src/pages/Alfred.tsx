@@ -361,6 +361,7 @@ function ConfigForm({ config, onSave }: { config: AlfredConfig; onSave: (c: Alfr
   const [prompt, setPrompt] = useState(config.system_prompt ?? "");
   const [base, setBase] = useState(config.base_conhecimento ?? "");
   const [baseAberta, setBaseAberta] = useState(false);
+  const [operador, setOperador] = useState(config.operator_number ?? "");
   const [handoff, setHandoff] = useState(config.handoff_ativo);
   const [intervir, setIntervir] = useState(String(config.intervene_after_min));
   const [cooldown, setCooldown] = useState(String(config.team_cooldown_min));
@@ -370,6 +371,7 @@ function ConfigForm({ config, onSave }: { config: AlfredConfig; onSave: (c: Alfr
   useEffect(() => {
     setPrompt(config.system_prompt ?? "");
     setBase(config.base_conhecimento ?? "");
+    setOperador(config.operator_number ?? "");
     setHandoff(config.handoff_ativo);
     setIntervir(String(config.intervene_after_min));
     setCooldown(String(config.team_cooldown_min));
@@ -379,9 +381,13 @@ function ConfigForm({ config, onSave }: { config: AlfredConfig; onSave: (c: Alfr
     e.preventDefault();
     setSalvando(true); setMsg("");
     try {
+      // Normaliza o número do operador para dígitos com DDI 55.
+      const od = operador.replace(/\D/g, "").replace(/^0+/, "");
+      const operator_number = od ? (od.startsWith("55") ? od : "55" + od) : "";
       await onSave({
         system_prompt: prompt,
         base_conhecimento: base,
+        operator_number,
         handoff_ativo: handoff,
         intervene_after_min: Math.max(1, Math.floor(Number(intervir) || 30)),
         team_cooldown_min: Math.max(1, Math.floor(Number(cooldown) || 5)),
@@ -431,6 +437,17 @@ function ConfigForm({ config, onSave }: { config: AlfredConfig; onSave: (c: Alfr
             <p className="mt-1.5 text-xs text-ink-muted">Conteúdo global (vale para todos os grupos). Edite aqui sempre que o sistema mudar.</p>
           </div>
         )}
+      </div>
+
+      {/* Operador humano: número pessoal para escalonamento por DM */}
+      <div className="mt-3">
+        <label className="mb-1 flex items-center gap-1.5 text-xs font-medium text-ink-soft">
+          <Smartphone size={13} className="text-ink-muted" /> Seu número (operador)
+        </label>
+        <input className="input tabular-nums" placeholder="(98) 98234-8541" value={operador} onChange={(e) => setOperador(e.target.value)} />
+        <p className="mt-1 text-xs text-ink-muted">
+          Quando uma conversa exigir uma ação sua (ex.: testar acesso), o Alfred te chama no privado. Responda <strong>citando</strong> a mensagem dele que ele repassa o resultado ao cliente. Deixe vazio para desligar.
+        </p>
       </div>
 
       {/* Handoff: aguardar a equipe vs responder na hora */}

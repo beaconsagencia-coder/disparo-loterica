@@ -9,7 +9,7 @@
 import { createClient } from "jsr:@supabase/supabase-js@2";
 import { json } from "../_shared/cors.ts";
 import { getMediaBase64 } from "../_shared/evolution.ts";
-import { responderAgora, type AlfredCfg } from "../_shared/alfred.ts";
+import { responderAgora, responderOperador, type AlfredCfg } from "../_shared/alfred.ts";
 
 const DEBOUNCE_MS = 8000; // modo imediato: junta a rajada antes de responder
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -120,11 +120,33 @@ Deno.serve(async (req) => {
 
   const key = data?.key ?? {};
   const remoteJid: string = key?.remoteJid ?? "";
-  if (!remoteJid.endsWith("@g.us")) return json({ ok: true, ignored: "não é grupo" });
   if (key?.fromMe) return json({ ok: true, ignored: "fromMe" });
+  const msgObj = data?.message;
+
+  // 1:1 (não-grupo): pode ser o OPERADOR respondendo a uma escalação por DM.
+  if (!remoteJid.endsWith("@g.us")) {
+    const senderJidNum = soDigitos(remoteJid.split("@")[0]);
+    const replyText = extrairTexto(msgObj);
+    if (!senderJidNum || !replyText) return json({ ok: true, ignored: "1:1 sem texto" });
+    const { data: cfgs } = await supabase.from("alfred_configs")
+      .select("user_id, operator_number, system_prompt, base_conhecimento, evolution_instance")
+      .not("operator_number", "is", null);
+    const sv = new Set(variantes(senderJidNum));
+    const cfgOp = (cfgs ?? []).find((c) => variantes(String(c.operator_number ?? "")).some((v) => sv.has(v)));
+    if (!cfgOp) return json({ ok: true, ignored: "1:1 não é operador" });
+    const { data: sdrOp } = await supabase.from("ai_config").select("delay_min_seg, delay_max_seg").eq("user_id", cfgOp.user_id).maybeSingle();
+    const cfgA: AlfredCfg = {
+      system_prompt: cfgOp.system_prompt ?? "", base_conhecimento: cfgOp.base_conhecimento ?? null,
+      operator_number: cfgOp.operator_number ?? null, evolution_instance: cfgOp.evolution_instance ?? null,
+      handoff_ativo: false, team_cooldown_min: 5, intervene_after_min: 30,
+      dmin: Number(sdrOp?.delay_min_seg ?? 3), dmax: Number(sdrOp?.delay_max_seg ?? 8),
+    };
+    const quoted = extrairCitacao(msgObj);
+    const r = await responderOperador(supabase, cfgA, { userId: cfgOp.user_id, replyText, quotedText: quoted });
+    return json({ ok: true, operador: true, resultado: r });
+  }
 
   // Detecta mídia (áudio/imagem): interpretar em vez de ignorar.
-  const msgObj = data?.message;
   const tipoMidia: "audio" | "image" | null = msgObj?.audioMessage ? "audio" : msgObj?.imageMessage ? "image" : null;
   let texto = extrairTexto(msgObj);
   if (!texto && !tipoMidia) return json({ ok: true, ignored: "sem conteúdo" });
@@ -187,7 +209,7 @@ Deno.serve(async (req) => {
 
   // Modo handoff x imediato.
   const { data: cfgRow } = await supabase.from("alfred_configs")
-    .select("handoff_ativo, system_prompt, base_conhecimento, evolution_instance, team_cooldown_min, intervene_after_min")
+    .select("handoff_ativo, system_prompt, base_conhecimento, operator_number, evolution_instance, team_cooldown_min, intervene_after_min")
     .eq("user_id", grupo.user_id).maybeSingle();
   const handoff = cfgRow?.handoff_ativo ?? true;
 
@@ -210,6 +232,7 @@ Deno.serve(async (req) => {
   const cfg: AlfredCfg = {
     system_prompt: cfgRow?.system_prompt ?? "",
     base_conhecimento: cfgRow?.base_conhecimento ?? null,
+    operator_number: cfgRow?.operator_number ?? null,
     evolution_instance: cfgRow?.evolution_instance ?? null,
     handoff_ativo: false,
     team_cooldown_min: Number(cfgRow?.team_cooldown_min ?? 5),

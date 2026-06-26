@@ -312,6 +312,7 @@ async function enviarGrupo(instance: string, remoteJid: string, texto: string, d
 export interface AlfredCfg {
   system_prompt: string;
   base_conhecimento: string | null; // base global do SaaS (Bolão Gestor)
+  operator_number: string | null;   // DM do operador humano (escalonamento)
   evolution_instance: string | null;
   handoff_ativo: boolean;        // true = espera a equipe (cron); false = responde na hora
   team_cooldown_min: number;
@@ -397,6 +398,13 @@ async function gerarResposta(supabase: SupabaseClient, grupo: Grupo, cfg: Alfred
       await supabase.from("alfred_messages").insert({ user_id: grupo.user_id, group_id: grupo.id, remote_jid: grupo.remote_jid, role: "model", sender_name: "Alfred", body: parte });
       enviadas++;
     }
+    // Escala para o operador humano se a conversa exigir uma ação dele.
+    if (cfg.operator_number) {
+      try {
+        const esc = await classificarEscalacao(contents);
+        if (esc) await criarEscalacao(supabase, grupo, cfg, esc);
+      } catch (e) { console.error("[alfred] escalonamento:", e instanceof Error ? e.message : e); }
+    }
     return "respondido";
   } catch (e) {
     console.error("[alfred] envio falhou:", e instanceof Error ? e.message : e);
@@ -406,6 +414,118 @@ async function gerarResposta(supabase: SupabaseClient, grupo: Grupo, cfg: Alfred
     }
     return enviadas > 0 ? "parcial" : "falha ao enviar";
   }
+}
+
+// ---- Escalonamento ao operador humano (handoff por DM privada) -------
+interface Escalacao { resumo: string; mensagem_operador: string }
+
+/** Decide se a última interação do cliente exige uma AÇÃO do operador humano. */
+async function classificarEscalacao(contents: { role: "user" | "model"; parts: { text: string }[] }[]): Promise<Escalacao | null> {
+  if (!GEMINI_API_KEY || contents.length === 0) return null;
+  const sys =
+    "Você decide se a ÚLTIMA mensagem do cliente exige uma AÇÃO de um operador humano da equipe que o Alfred NÃO pode executar sozinho — " +
+    "ex.: testar acesso a uma conta com login/senha, validar/configurar algo num sistema, uma decisão que depende do operador. " +
+    "Se exigir, escalar=true e escreva mensagem_operador: uma mensagem CURTA e direta para o operador (em nome do Alfred, em 1ª pessoa), " +
+    "com TODOS os dados necessários (login, senha, links, etc.) e o que ele deve fazer; e resumo: um título curto da tarefa. " +
+    "Se NÃO exigir ação humana externa (dúvida comum, conversa, agradecimento, algo que o Alfred já resolve), escalar=false. " +
+    "Seja CONSERVADOR: só escale quando realmente precisar de uma ação do operador.";
+  const body = {
+    system_instruction: { parts: [{ text: sys }] },
+    contents,
+    generationConfig: {
+      temperature: 0, maxOutputTokens: 400, thinkingConfig: { thinkingBudget: 0 },
+      responseMimeType: "application/json",
+      responseSchema: { type: "OBJECT", properties: { escalar: { type: "BOOLEAN" }, resumo: { type: "STRING" }, mensagem_operador: { type: "STRING" } }, required: ["escalar"] },
+    },
+  };
+  try {
+    const res = await fetch(`${GEMINI_URL}?key=${encodeURIComponent(GEMINI_API_KEY)}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    if (!res.ok) { console.error("[alfred] classificarEscalacao", res.status); return null; }
+    const data = await res.json();
+    // deno-lint-ignore no-explicit-any
+    const txt = (data?.candidates?.[0]?.content?.parts as any[] | undefined)?.map((p) => p?.text ?? "").join("") ?? "";
+    const parsed = JSON.parse(txt);
+    if (!parsed?.escalar) return null;
+    const mo = String(parsed.mensagem_operador ?? "").trim();
+    if (!mo) return null;
+    return { resumo: (String(parsed.resumo ?? "").trim() || "Tarefa").slice(0, 200), mensagem_operador: mo.slice(0, 1500) };
+  } catch (e) { console.error("[alfred] classificarEscalacao erro:", e instanceof Error ? e.message : e); return null; }
+}
+
+/** Cria a escalação e manda a DM ao operador (1 tarefa aberta por grupo). */
+async function criarEscalacao(supabase: SupabaseClient, grupo: Grupo, cfg: AlfredCfg, esc: Escalacao): Promise<void> {
+  const op = (cfg.operator_number ?? "").trim();
+  const instance = cfg.evolution_instance || grupo.evolution_instance || "";
+  if (!op || !instance || !ENV_EVO_URL || !ENV_EVO_KEY) return;
+  const { data: aberta } = await supabase.from("alfred_escalations").select("id").eq("group_id", grupo.id).eq("status", "aberta").limit(1);
+  if (aberta && aberta.length) return; // já há uma pendente p/ este grupo
+  const dm = `[${grupo.client_name}] ${esc.mensagem_operador}`;
+  const { data: ins } = await supabase.from("alfred_escalations").insert({
+    user_id: grupo.user_id, group_id: grupo.id, resumo: esc.resumo, mensagem_operador: dm, status: "aberta",
+  }).select("id").single();
+  if (!ins) return;
+  try { await enviarGrupo(instance, op, dm, 0); }
+  catch (e) { console.error("[alfred] DM operador falhou:", e instanceof Error ? e.message : e); }
+}
+
+/** Compõe a mensagem ao CLIENTE repassando o retorno do operador. */
+async function comporRelay(cfg: AlfredCfg, resumo: string, pedido: string, retorno: string, clientName: string): Promise<string> {
+  if (!GEMINI_API_KEY) return retorno;
+  const sys = `${cfg.system_prompt}\n\nVocê (Alfred) pediu para a equipe executar uma tarefa e recebeu o retorno. Escreva a mensagem PARA O CLIENTE (${clientName}) no grupo repassando o status de forma natural. ` +
+    "Fale como a equipe ('testamos', 'verificamos') — NUNCA mencione 'operador' nem que outra pessoa fez. " +
+    "Curto e direto, no máximo 2 balões separados por LINHA EM BRANCO, sem prefixo, sem markdown, sem rótulos entre colchetes.";
+  const userTxt = `Tarefa: ${resumo}\nO que foi pedido à equipe: ${pedido}\nRetorno da equipe: ${retorno}\n\nEscreva agora a mensagem ao cliente.`;
+  const body = { system_instruction: { parts: [{ text: sys }] }, contents: [{ role: "user", parts: [{ text: userTxt }] }], generationConfig: { temperature: 0.6, maxOutputTokens: 400, thinkingConfig: { thinkingBudget: 0 } } };
+  try {
+    const res = await fetch(`${GEMINI_URL}?key=${encodeURIComponent(GEMINI_API_KEY)}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    if (!res.ok) { console.error("[alfred] comporRelay", res.status); return retorno; }
+    const data = await res.json();
+    // deno-lint-ignore no-explicit-any
+    const txt = (data?.candidates?.[0]?.content?.parts as any[] | undefined)?.map((p) => p?.text ?? "").join("") ?? "";
+    return txt.trim() || retorno;
+  } catch (e) { console.error("[alfred] comporRelay erro:", e instanceof Error ? e.message : e); return retorno; }
+}
+
+/** Operador respondeu (DM): casa com a escalação aberta e repassa ao cliente. */
+export async function responderOperador(
+  supabase: SupabaseClient, cfg: AlfredCfg,
+  args: { userId: string; replyText: string; quotedText: string },
+): Promise<string> {
+  // Acha a escalação aberta: por CITAÇÃO (reply) ou, no fallback, a mais recente.
+  const { data: abertas } = await supabase.from("alfred_escalations")
+    .select("id, group_id, resumo, mensagem_operador")
+    .eq("user_id", args.userId).eq("status", "aberta")
+    .order("created_at", { ascending: false });
+  if (!abertas || abertas.length === 0) return "sem escalação aberta";
+  const q = args.quotedText.trim().toLowerCase();
+  let esc = q
+    ? abertas.find((e) => { const m = (e.mensagem_operador ?? "").trim().toLowerCase(); return m && (m.includes(q) || q.includes(m)); })
+    : undefined;
+  if (!esc) esc = abertas[0]; // fallback: a mais recente
+
+  // Claim atômico: só um repassa (evita duplicar em retry).
+  const { data: claim } = await supabase.from("alfred_escalations")
+    .update({ status: "concluida", resposta_operador: args.replyText, answered_at: new Date().toISOString() })
+    .eq("id", esc.id).eq("status", "aberta").select("id");
+  if (!claim || claim.length === 0) return "já processada";
+
+  const { data: grupo } = await supabase.from("alfred_groups")
+    .select("id, user_id, client_name, remote_jid, evolution_instance")
+    .eq("id", esc.group_id).maybeSingle();
+  if (!grupo) return "grupo não encontrado";
+  const instance = cfg.evolution_instance || grupo.evolution_instance || "";
+  if (!ENV_EVO_URL || !ENV_EVO_KEY || !instance) return "evolution não configurada";
+
+  const relay = await comporRelay(cfg, esc.resumo, esc.mensagem_operador, args.replyText, grupo.client_name);
+  const partes = fracionarResposta(relay);
+  for (const parte of partes) {
+    await enviarGrupo(instance, grupo.remote_jid, parte, delayDigitacao(parte, cfg));
+    await supabase.from("alfred_messages").insert({ user_id: grupo.user_id, group_id: grupo.id, remote_jid: grupo.remote_jid, role: "model", sender_name: "Alfred", body: parte });
+  }
+  if (cfg.operator_number) {
+    try { await enviarGrupo(instance, cfg.operator_number, "Show, repassei pro cliente. Valeu!", 0); } catch { /* ok */ }
+  }
+  return "repassado";
 }
 
 /** Resposta IMEDIATA (modo handoff desligado): chamada pelo webhook. */
