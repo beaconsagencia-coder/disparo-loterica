@@ -56,6 +56,7 @@ function extrairTexto(message: any): string {
 // deno-lint-ignore no-explicit-any
 function montarContexto(ctx: any, clientName: string): string {
   const linhas = [`Cliente: ${clientName}`];
+  if (ctx?.resumo) linhas.push(`Resumo consolidado do cliente: ${ctx.resumo}`);
   if (ctx?.empresa_dados) linhas.push(`Dados da empresa: ${ctx.empresa_dados}`);
   if (ctx?.regras_atendimento) linhas.push(`Regras de atendimento: ${ctx.regras_atendimento}`);
   if (ctx?.cronograma) linhas.push(`Cronograma atual: ${ctx.cronograma}`);
@@ -65,7 +66,15 @@ function montarContexto(ctx: any, clientName: string): string {
   return linhas.join("\n");
 }
 
-interface TaskRow { semana: number; titulo: string; done: boolean }
+/** Bloco da memória aprendida (dados operacionais/sensíveis salvos). */
+function montarMemoria(mem: { chave: string; valor: string }[]): string {
+  if (!mem?.length) return "";
+  const linhas = ["", "INFORMAÇÕES SALVAS (memória do cliente — use quando perguntarem):"];
+  for (const m of mem) linhas.push(`- ${m.chave}: ${m.valor}`);
+  return linhas.join("\n");
+}
+
+interface TaskRow { semana: number; task_key?: string; titulo: string; done: boolean }
 
 /** Bloco do checklist do cronograma ([x] feito / [ ] pendente), por semana. */
 function montarChecklist(tasks: TaskRow[]): string {
@@ -173,6 +182,74 @@ async function interpretarMidia(base64: string, mime: string, tipo: "audio" | "i
   } catch (e) {
     console.error("[alfred] interpretarMidia erro:", e instanceof Error ? e.message : e);
     return "";
+  }
+}
+
+interface Aprendizado {
+  tarefas_concluidas: string[];
+  memorias: { chave: string; valor: string }[];
+  resumo: string;
+}
+
+/**
+ * Aprendizado contínuo: analisa a conversa e extrai, de forma autônoma, as
+ * tarefas concluídas, dados a guardar (memória) e um resumo consolidado.
+ * Usa saída estruturada (JSON) do Gemini. Roda APÓS responder (não atrasa).
+ */
+async function aprenderDaConversa(
+  hist: HistRow[],
+  tarefas: TaskRow[],
+  memoriaAtual: { chave: string; valor: string }[],
+  resumoAtual: string,
+): Promise<Aprendizado | null> {
+  const tasksTxt = tarefas.map((t) => `- ${t.task_key ?? ""} — ${t.titulo} — ${t.done ? "feito" : "pendente"}`).join("\n");
+  const memTxt = memoriaAtual.length ? memoriaAtual.map((m) => `- ${m.chave}: ${m.valor}`).join("\n") : "(vazio)";
+  const histTxt = hist.map((m) => `${m.role === "model" ? "Alfred" : (m.sender_name || "Cliente")}: ${m.body}`).join("\n");
+
+  const sys =
+    "Você analisa a conversa de um grupo de WhatsApp de um cliente da agência e APRENDE com ela. Identifique de forma autônoma: " +
+    "(1) tarefas do checklist concluídas AGORA — use EXATAMENTE as task_key da lista; só marque o que ficou claramente pronto " +
+    "(ex.: alguém diz 'segue a identidade visual' => identidade_visual). " +
+    "(2) dados operacionais/sensíveis para guardar e consultar depois (senhas, logins, @ do Instagram, links, orçamento, decisões, datas combinadas). " +
+    "Use chaves curtas e estáveis em snake_case (ex.: senha_instagram, login_facebook, orcamento_anuncios). Atualize o valor se mudou. " +
+    "(3) um RESUMO consolidado e enxuto (no máximo ~5 linhas) com a ESSÊNCIA do cliente, evoluindo o resumo anterior — guarde só o importante, sem repetir o histórico bruto. " +
+    "Se não houver novidade, devolva listas vazias e repita o resumo anterior.";
+
+  const body = {
+    system_instruction: { parts: [{ text: sys }] },
+    contents: [{ role: "user", parts: [{ text:
+      `CHECKLIST (task_key — título — estado):\n${tasksTxt}\n\nMEMÓRIA ATUAL:\n${memTxt}\n\nRESUMO ATUAL:\n${resumoAtual || "(vazio)"}\n\nCONVERSA RECENTE:\n${histTxt}` }] }],
+    generationConfig: {
+      temperature: 0, maxOutputTokens: 800, thinkingConfig: { thinkingBudget: 0 },
+      responseMimeType: "application/json",
+      responseSchema: {
+        type: "OBJECT",
+        properties: {
+          tarefas_concluidas: { type: "ARRAY", items: { type: "STRING" } },
+          memorias: { type: "ARRAY", items: { type: "OBJECT", properties: { chave: { type: "STRING" }, valor: { type: "STRING" } }, required: ["chave", "valor"] } },
+          resumo: { type: "STRING" },
+        },
+      },
+    },
+  };
+
+  try {
+    const res = await fetch(`${GEMINI_URL}?key=${encodeURIComponent(GEMINI_API_KEY)}`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+    });
+    if (!res.ok) { console.error("[alfred] aprender", res.status, (await res.text()).slice(0, 200)); return null; }
+    const dataR = await res.json();
+    // deno-lint-ignore no-explicit-any
+    const txt = (dataR?.candidates?.[0]?.content?.parts as any[] | undefined)?.map((p) => p?.text ?? "").join("") ?? "";
+    const parsed = JSON.parse(txt);
+    return {
+      tarefas_concluidas: Array.isArray(parsed?.tarefas_concluidas) ? parsed.tarefas_concluidas : [],
+      memorias: Array.isArray(parsed?.memorias) ? parsed.memorias : [],
+      resumo: typeof parsed?.resumo === "string" ? parsed.resumo : "",
+    };
+  } catch (e) {
+    console.error("[alfred] aprender erro:", e instanceof Error ? e.message : e);
+    return null;
   }
 }
 
@@ -289,19 +366,23 @@ Deno.serve(async (req) => {
   const dmin = Number(sdrCfg?.delay_min_seg ?? 3);
   const dmax = Number(sdrCfg?.delay_max_seg ?? 8);
 
-  // Contexto INDIVIDUAL do grupo (cada grupo = uma empresa).
+  // Contexto INDIVIDUAL do grupo (cada grupo = uma empresa) + resumo consolidado.
   const { data: ctx } = await supabase
     .from("alfred_context")
-    .select("empresa_dados, regras_atendimento, drive_link, cronograma, financeiro, observacoes")
+    .select("empresa_dados, regras_atendimento, drive_link, cronograma, financeiro, observacoes, resumo")
     .eq("group_id", grupo.id)
     .maybeSingle();
 
   // Checklist do cronograma deste cliente (o que já foi entregue/coletado).
   const { data: tasks } = await supabase
     .from("alfred_tasks")
-    .select("semana, titulo, done")
+    .select("semana, task_key, titulo, done")
     .eq("group_id", grupo.id)
     .order("semana").order("ordem");
+
+  // Memória aprendida (dados operacionais/sensíveis salvos automaticamente).
+  const { data: memorias } = await supabase
+    .from("alfred_memory").select("chave, valor").eq("group_id", grupo.id);
 
   // D/E) Histórico (últimas >=50) em ordem cronológica + Gemini 2.5.
   const { data: histDesc } = await supabase
@@ -312,7 +393,9 @@ Deno.serve(async (req) => {
     .limit(HISTORICO_MIN);
   const hist = ((histDesc as HistRow[]) ?? []).reverse(); // cronológico (antigo -> novo)
 
-  const contexto = montarContexto(ctx, grupo.client_name) + montarChecklist((tasks as TaskRow[]) ?? []);
+  const contexto = montarContexto(ctx, grupo.client_name)
+    + montarMemoria((memorias as { chave: string; valor: string }[]) ?? [])
+    + montarChecklist((tasks as TaskRow[]) ?? []);
   const contents = montarContents(hist);
   if (contents.length === 0) return json({ ok: true, ignored: "sem histórico utilizável" });
 
@@ -340,9 +423,43 @@ Deno.serve(async (req) => {
       user_id: grupo.user_id, group_id: grupo.id, remote_jid: remoteJid,
       role: "model", sender_name: "Alfred", body: resposta,
     });
-    return json({ ok: true, replied: true });
   } catch (e) {
     console.error("[alfred] envio falhou:", e instanceof Error ? e.message : e);
     return json({ ok: false, error: "falha ao enviar" }, 200);
   }
+
+  // G) APRENDIZADO CONTÍNUO (após responder, p/ não atrasar): marca tarefas
+  //    concluídas, salva dados na memória e atualiza o resumo consolidado.
+  try {
+    const memAtual = ((memorias as { chave: string; valor: string }[]) ?? []);
+    const aprend = await aprenderDaConversa(hist, (tasks as TaskRow[]) ?? [], memAtual, ctx?.resumo ?? "");
+    if (aprend) {
+      const validKeys = new Set(((tasks as TaskRow[]) ?? []).map((t) => t.task_key).filter(Boolean));
+      const agora = new Date().toISOString();
+      for (const key of aprend.tarefas_concluidas) {
+        if (validKeys.has(key)) {
+          await supabase.from("alfred_tasks")
+            .update({ done: true, done_at: agora })
+            .eq("group_id", grupo.id).eq("task_key", key).eq("done", false);
+        }
+      }
+      for (const m of aprend.memorias) {
+        if (!m?.chave || !m?.valor) continue;
+        await supabase.from("alfred_memory").upsert({
+          user_id: grupo.user_id, group_id: grupo.id,
+          chave: String(m.chave).slice(0, 80), valor: String(m.valor).slice(0, 2000), updated_at: agora,
+        }, { onConflict: "group_id,chave" });
+      }
+      if (aprend.resumo && aprend.resumo.trim()) {
+        await supabase.from("alfred_context").upsert(
+          { user_id: grupo.user_id, group_id: grupo.id, resumo: aprend.resumo.trim() },
+          { onConflict: "group_id" },
+        );
+      }
+    }
+  } catch (e) {
+    console.error("[alfred] aprendizado falhou:", e instanceof Error ? e.message : e);
+  }
+
+  return json({ ok: true, replied: true });
 });

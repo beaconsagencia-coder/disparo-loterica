@@ -2,17 +2,17 @@ import { useEffect, useRef, useState } from "react";
 import {
   Bot, Smartphone, Sparkles, Plus, Trash2, Power, PowerOff, ChevronDown,
   Save, Loader2, QrCode, Users, FolderOpen, CalendarRange, Wallet, StickyNote, RefreshCw,
-  Building2, ScrollText, Search, Square, CheckSquare, ListChecks, MessageSquare, Eraser, X,
+  Building2, ScrollText, Search, Square, CheckSquare, ListChecks, MessageSquare, Eraser, X, Brain,
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
-import { useAlfred, type AlfredConfig, type AlfredConnection, type AlfredGroup, type AlfredContext, type AlfredTask, type AlfredMessage } from "@/lib/useAlfred";
+import { useAlfred, type AlfredConfig, type AlfredConnection, type AlfredGroup, type AlfredContext, type AlfredTask, type AlfredMessage, type AlfredMemory } from "@/lib/useAlfred";
 
 // =====================================================================
 // /alfred — CRUD do agente Alfred (grupos de WhatsApp de clientes).
 // Lógica 100% preservada; visual no design system do app (Bento + Apple-like).
 // =====================================================================
 export default function Alfred() {
-  const { config, connection, groups, contexts, tasks, loading, saveConfig, connectWhatsapp, checkStatus, listarGruposWhatsapp, addGroup, toggleGroup, removeGroup, saveContext, toggleTask, clearHistory } = useAlfred();
+  const { config, connection, groups, contexts, tasks, memory, loading, saveConfig, connectWhatsapp, checkStatus, listarGruposWhatsapp, addGroup, toggleGroup, removeGroup, saveContext, toggleTask, clearHistory, deleteMemory } = useAlfred();
   const [conversa, setConversa] = useState<AlfredGroup | null>(null);
 
   if (loading) {
@@ -57,11 +57,13 @@ export default function Alfred() {
               group={g}
               context={contexts[g.id]}
               tasks={tasks[g.id] ?? []}
+              memory={memory[g.id] ?? []}
               onToggle={toggleGroup}
               onRemove={removeGroup}
               onSaveContext={saveContext}
               onToggleTask={toggleTask}
               onVerConversa={() => setConversa(g)}
+              onDeleteMemory={deleteMemory}
             />
           ))}
         </div>
@@ -463,18 +465,63 @@ function ConversaModal({ group, onClose, onClear }: { group: AlfredGroup; onClos
   );
 }
 
+// ---- Conhecimento aprendido pelo Alfred (resumo + dados salvos) ----
+function Conhecimento({ resumo, memory, onDelete }: { resumo?: string | null; memory: AlfredMemory[]; onDelete: (id: string) => Promise<void> }) {
+  if (!resumo && memory.length === 0) return null;
+
+  async function remover(id: string) {
+    if (!confirm("Remover este dado salvo da memória do Alfred?")) return;
+    try { await onDelete(id); } catch (e) { alert(e instanceof Error ? e.message : String(e)); }
+  }
+
+  return (
+    <div className="mb-4 rounded-xl border border-black/5 bg-white p-3 shadow-sm">
+      <div className="mb-2 flex items-center gap-1.5 text-sm font-medium">
+        <Brain size={15} className="text-accent" /> Conhecimento do Alfred
+        <span className="text-[11px] font-normal text-ink-muted">(aprendido automaticamente)</span>
+      </div>
+
+      {resumo && (
+        <div className="mb-3">
+          <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-ink-muted">Resumo do cliente</div>
+          <p className="whitespace-pre-wrap rounded-lg bg-black/[0.02] p-2 text-sm text-ink-soft">{resumo}</p>
+        </div>
+      )}
+
+      {memory.length > 0 && (
+        <div>
+          <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-ink-muted">Dados salvos</div>
+          <div className="space-y-1">
+            {memory.map((m) => (
+              <div key={m.id} className="flex items-start gap-2 rounded-lg px-1.5 py-1 text-sm hover:bg-black/[0.02]">
+                <span className="shrink-0 font-medium text-ink-soft">{m.chave}:</span>
+                <span className="min-w-0 flex-1 break-words text-ink-soft">{m.valor}</span>
+                <button onClick={() => remover(m.id)} title="Remover dado" className="shrink-0 rounded p-0.5 text-ink-muted transition-colors hover:bg-danger/10 hover:text-danger">
+                  <Trash2 size={13} />
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ---- Card de grupo: status + on/off + checklist + editor de contexto
 function GroupItem({
-  group, context, tasks, onToggle, onRemove, onSaveContext, onToggleTask, onVerConversa,
+  group, context, tasks, memory, onToggle, onRemove, onSaveContext, onToggleTask, onVerConversa, onDeleteMemory,
 }: {
   group: AlfredGroup;
   context?: AlfredContext;
   tasks: AlfredTask[];
+  memory: AlfredMemory[];
   onToggle: (id: string, active: boolean) => Promise<void>;
   onRemove: (id: string) => Promise<void>;
   onSaveContext: (groupId: string, patch: Omit<AlfredContext, "group_id">) => Promise<void>;
   onToggleTask: (t: AlfredTask) => Promise<void>;
   onVerConversa: () => void;
+  onDeleteMemory: (id: string, groupId: string) => Promise<void>;
 }) {
   const [aberto, setAberto] = useState(false);
   const [empresa, setEmpresa] = useState(context?.empresa_dados ?? "");
@@ -600,6 +647,7 @@ function GroupItem({
       {aberto && (
         <div className="border-t border-black/5 bg-black/[0.015] p-4">
         <Checklist tasks={tasks} onToggle={onToggleTask} />
+        <Conhecimento resumo={context?.resumo} memory={memory} onDelete={(id) => onDeleteMemory(id, group.id)} />
         <form onSubmit={salvarContexto}>
           <p className="mb-3 text-xs text-ink-muted">
             Contexto exclusivo de <strong className="text-ink-soft">{group.client_name}</strong>. O Alfred usa estes dados ao responder neste grupo.

@@ -22,6 +22,13 @@ export interface AlfredContext {
   cronograma: string | null;
   financeiro: string | null;
   observacoes: string | null;
+  resumo?: string | null; // consolidado automaticamente (aprendizado) — não editável no form
+}
+export interface AlfredMemory {
+  id: string;
+  group_id: string;
+  chave: string;
+  valor: string;
 }
 export interface AlfredConnection {
   evolution_instance: string | null;
@@ -68,19 +75,21 @@ export function useAlfred() {
   const [groups, setGroups] = useState<AlfredGroup[]>([]);
   const [contexts, setContexts] = useState<Record<string, AlfredContext>>({});
   const [tasks, setTasks] = useState<Record<string, AlfredTask[]>>({});
+  const [memory, setMemory] = useState<Record<string, AlfredMemory[]>>({});
   const [loading, setLoading] = useState(true);
 
   const load = useCallback(async () => {
-    const [{ data: cfg }, { data: grp }, { data: ctx }, { data: tk }] = await Promise.all([
+    const [{ data: cfg }, { data: grp }, { data: ctx }, { data: tk }, { data: mem }] = await Promise.all([
       supabase.from("alfred_configs")
         .select("system_prompt, evolution_instance, connection_status, numero")
         .maybeSingle(),
       supabase.from("alfred_groups").select("*").order("created_at", { ascending: false }),
       supabase.from("alfred_context")
-        .select("group_id, empresa_dados, regras_atendimento, drive_link, cronograma, financeiro, observacoes"),
+        .select("group_id, empresa_dados, regras_atendimento, drive_link, cronograma, financeiro, observacoes, resumo"),
       supabase.from("alfred_tasks")
         .select("id, group_id, semana, ordem, task_key, titulo, done")
         .order("semana").order("ordem"),
+      supabase.from("alfred_memory").select("id, group_id, chave, valor").order("chave"),
     ]);
     if (cfg) {
       setConfig({ system_prompt: cfg.system_prompt ?? "" });
@@ -97,6 +106,9 @@ export function useAlfred() {
     const tmap: Record<string, AlfredTask[]> = {};
     for (const t of (tk as AlfredTask[]) ?? []) (tmap[t.group_id] ??= []).push(t);
     setTasks(tmap);
+    const mmap: Record<string, AlfredMemory[]> = {};
+    for (const m of (mem as AlfredMemory[]) ?? []) (mmap[m.group_id] ??= []).push(m);
+    setMemory(mmap);
     setLoading(false);
   }, []);
 
@@ -108,6 +120,7 @@ export function useAlfred() {
       .on("postgres_changes", { event: "*", schema: "public", table: "alfred_context" }, () => load())
       .on("postgres_changes", { event: "*", schema: "public", table: "alfred_configs" }, () => load())
       .on("postgres_changes", { event: "*", schema: "public", table: "alfred_tasks" }, () => load())
+      .on("postgres_changes", { event: "*", schema: "public", table: "alfred_memory" }, () => load())
       .subscribe();
     return () => void supabase.removeChannel(ch);
   }, [load]);
@@ -187,6 +200,13 @@ export function useAlfred() {
     if (error) throw error;
   }, []);
 
+  /** Remove um item da memória aprendida (ex.: dado sensível que não quer guardar). */
+  const deleteMemory = useCallback(async (id: string, groupId: string) => {
+    setMemory((prev) => ({ ...prev, [groupId]: (prev[groupId] ?? []).filter((m) => m.id !== id) }));
+    const { error } = await supabase.from("alfred_memory").delete().eq("id", id);
+    if (error) await load();
+  }, [load]);
+
   // ---- contexto (1 por grupo) ----
   const saveContext = useCallback(async (group_id: string, patch: Omit<AlfredContext, "group_id">) => {
     const user_id = await uid();
@@ -198,8 +218,8 @@ export function useAlfred() {
   }, []);
 
   return {
-    config, connection, groups, contexts, tasks, loading,
+    config, connection, groups, contexts, tasks, memory, loading,
     saveConfig, connectWhatsapp, checkStatus, listarGruposWhatsapp,
-    addGroup, toggleGroup, removeGroup, saveContext, toggleTask, clearHistory, reload: load,
+    addGroup, toggleGroup, removeGroup, saveContext, toggleTask, clearHistory, deleteMemory, reload: load,
   };
 }
