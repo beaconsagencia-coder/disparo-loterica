@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { NavLink } from "react-router-dom";
-import { LayoutDashboard, Upload, Megaphone, GitBranch, Bot, Radar, CalendarDays, MessageSquare, Smartphone, Send, LogOut, Menu, X, BarChart3, Brain, KanbanSquare, Wallet } from "lucide-react";
+import { LayoutDashboard, Upload, Megaphone, GitBranch, Bot, Radar, CalendarDays, MessageSquare, Smartphone, Send, LogOut, Menu, X, BarChart3, Brain, KanbanSquare, Wallet, Users } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 
 const items = [
@@ -16,6 +16,7 @@ const items = [
   { to: "/aprendizado", label: "Aprendizado", icon: Brain },
   { to: "/agenda", label: "Agenda", icon: CalendarDays },
   { to: "/inbox", label: "Inbox CRM", icon: MessageSquare },
+  { to: "/alfred", label: "Alfred (grupos)", icon: Users },
   { to: "/instancias", label: "Instâncias", icon: Smartphone },
 ];
 

@@ -10,6 +10,7 @@ import AiSdr from "./pages/AiSdr";
 import Prospeccao from "./pages/Prospeccao";
 import Crm from "./pages/Crm";
 import Financeiro from "./pages/Financeiro";
+import Alfred from "./pages/Alfred";
 import Relatorios from "./pages/Relatorios";
 import Aprendizado from "./pages/Aprendizado";
 import Agenda from "./pages/Agenda";
@@ -44,6 +45,7 @@ export default function App() {
           <Route path="/prospeccao" element={<Prospeccao />} />
           <Route path="/crm" element={<Crm />} />
           <Route path="/financeiro" element={<Financeiro />} />
+          <Route path="/alfred" element={<Alfred />} />
           <Route path="/relatorios" element={<Relatorios />} />
           <Route path="/agenda" element={<Agenda />} />
           <Route path="/inbox" element={<Inbox />} />
