@@ -112,6 +112,14 @@ export function useAlfred() {
     return (data?.qrcode as string | null) ?? null;
   }, [load]);
 
+  /** Sincroniza o status do chip consultando a Evolution (fallback do webhook). */
+  const checkStatus = useCallback(async (): Promise<string | null> => {
+    const { data, error } = await supabase.functions.invoke("alfred-status", { body: {} });
+    if (error) return null;
+    await load();
+    return (data?.status as string) ?? null;
+  }, [load]);
+
   // ---- grupos ----
   const addGroup = useCallback(async (remote_jid: string, client_name: string, evolution_instance?: string) => {
     const user_id = await uid();
@@ -148,6 +156,6 @@ export function useAlfred() {
 
   return {
     config, connection, groups, contexts, loading,
-    saveConfig, connectWhatsapp, addGroup, toggleGroup, removeGroup, saveContext, reload: load,
+    saveConfig, connectWhatsapp, checkStatus, addGroup, toggleGroup, removeGroup, saveContext, reload: load,
   };
 }

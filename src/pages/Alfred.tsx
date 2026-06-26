@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import {
   Bot, Smartphone, KeyRound, Plus, Trash2, Power, PowerOff, ChevronDown,
-  Save, Loader2, QrCode, Users, FolderOpen, CalendarRange, Wallet, StickyNote,
+  Save, Loader2, QrCode, Users, FolderOpen, CalendarRange, Wallet, StickyNote, RefreshCw,
 } from "lucide-react";
 import { useAlfred, type AlfredConfig, type AlfredConnection, type AlfredGroup, type AlfredContext } from "@/lib/useAlfred";
 
@@ -10,7 +10,7 @@ import { useAlfred, type AlfredConfig, type AlfredConnection, type AlfredGroup, 
 // Lógica 100% preservada; visual no design system do app (Bento + Apple-like).
 // =====================================================================
 export default function Alfred() {
-  const { config, connection, groups, contexts, loading, saveConfig, connectWhatsapp, addGroup, toggleGroup, removeGroup, saveContext } = useAlfred();
+  const { config, connection, groups, contexts, loading, saveConfig, connectWhatsapp, checkStatus, addGroup, toggleGroup, removeGroup, saveContext } = useAlfred();
 
   if (loading) {
     return <p className="mx-auto max-w-6xl text-sm text-ink-muted">Carregando…</p>;
@@ -30,7 +30,7 @@ export default function Alfred() {
 
       {/* Bento: conexão + configurações globais */}
       <div className="mb-4 grid gap-4 lg:grid-cols-2">
-        <ConexaoWhatsapp connection={connection} onConnect={connectWhatsapp} />
+        <ConexaoWhatsapp connection={connection} onConnect={connectWhatsapp} onCheckStatus={checkStatus} />
         <ConfigForm config={config} onSave={saveConfig} />
       </div>
 
@@ -78,13 +78,31 @@ function statusInfo(s: string) {
   return { dot: "bg-ink-muted/60", label: "Desconectado", chip: "bg-black/10 text-ink-muted" };
 }
 
-function ConexaoWhatsapp({ connection, onConnect }: { connection: AlfredConnection; onConnect: () => Promise<string | null> }) {
+function ConexaoWhatsapp({ connection, onConnect, onCheckStatus }: {
+  connection: AlfredConnection;
+  onConnect: () => Promise<string | null>;
+  onCheckStatus: () => Promise<string | null>;
+}) {
   const [qr, setQr] = useState<string | null>(null);
   const [carregando, setCarregando] = useState(false);
+  const [checando, setChecando] = useState(false);
   const [msg, setMsg] = useState("");
   const st = statusInfo(connection.connection_status);
 
   useEffect(() => { if (connection.connection_status === "conectado") setQr(null); }, [connection.connection_status]);
+
+  // Enquanto "conectando", consulta o estado real na Evolution (não depende
+  // só do webhook): a cada 3s, por até ~2 min, até conectar/desconectar.
+  useEffect(() => {
+    if (connection.connection_status !== "conectando") return;
+    let n = 0;
+    const id = setInterval(async () => {
+      n += 1;
+      const s = await onCheckStatus();
+      if (s === "conectado" || s === "desconectado" || n >= 40) clearInterval(id);
+    }, 3000);
+    return () => clearInterval(id);
+  }, [connection.connection_status, onCheckStatus]);
 
   async function conectar() {
     setCarregando(true); setMsg("");
@@ -96,6 +114,16 @@ function ConexaoWhatsapp({ connection, onConnect }: { connection: AlfredConnecti
       setMsg("Erro: " + (err instanceof Error ? err.message : String(err)));
     } finally {
       setCarregando(false);
+    }
+  }
+
+  async function atualizar() {
+    setChecando(true); setMsg("");
+    try {
+      const s = await onCheckStatus();
+      setMsg(s === "conectado" ? "Conectado ✅" : s === "conectando" ? "Ainda conectando…" : "Desconectado.");
+    } finally {
+      setChecando(false);
     }
   }
 
@@ -134,10 +162,13 @@ function ConexaoWhatsapp({ connection, onConnect }: { connection: AlfredConnecti
         </div>
       )}
 
-      <div className="mt-4 flex items-center gap-3">
+      <div className="mt-4 flex flex-wrap items-center gap-2">
         <button className="btn-accent" onClick={conectar} disabled={carregando}>
           {carregando ? <Loader2 size={16} className="animate-spin" /> : <QrCode size={16} />}
           {connection.connection_status === "conectado" ? "Reconectar" : "Conectar WhatsApp"}
+        </button>
+        <button className="btn-ghost" onClick={atualizar} disabled={checando} title="Conferir o status na Evolution">
+          <RefreshCw size={15} className={checando ? "animate-spin" : ""} /> Atualizar status
         </button>
         <Feedback msg={msg} />
       </div>
