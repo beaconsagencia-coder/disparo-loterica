@@ -1,17 +1,19 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Bot, Smartphone, Sparkles, Plus, Trash2, Power, PowerOff, ChevronDown,
   Save, Loader2, QrCode, Users, FolderOpen, CalendarRange, Wallet, StickyNote, RefreshCw,
-  Building2, ScrollText, Search, Square, CheckSquare, ListChecks,
+  Building2, ScrollText, Search, Square, CheckSquare, ListChecks, MessageSquare, Eraser, X,
 } from "lucide-react";
-import { useAlfred, type AlfredConfig, type AlfredConnection, type AlfredGroup, type AlfredContext, type AlfredTask } from "@/lib/useAlfred";
+import { supabase } from "@/lib/supabase";
+import { useAlfred, type AlfredConfig, type AlfredConnection, type AlfredGroup, type AlfredContext, type AlfredTask, type AlfredMessage } from "@/lib/useAlfred";
 
 // =====================================================================
 // /alfred — CRUD do agente Alfred (grupos de WhatsApp de clientes).
 // Lógica 100% preservada; visual no design system do app (Bento + Apple-like).
 // =====================================================================
 export default function Alfred() {
-  const { config, connection, groups, contexts, tasks, loading, saveConfig, connectWhatsapp, checkStatus, listarGruposWhatsapp, addGroup, toggleGroup, removeGroup, saveContext, toggleTask } = useAlfred();
+  const { config, connection, groups, contexts, tasks, loading, saveConfig, connectWhatsapp, checkStatus, listarGruposWhatsapp, addGroup, toggleGroup, removeGroup, saveContext, toggleTask, clearHistory } = useAlfred();
+  const [conversa, setConversa] = useState<AlfredGroup | null>(null);
 
   if (loading) {
     return <p className="mx-auto max-w-6xl text-sm text-ink-muted">Carregando…</p>;
@@ -59,10 +61,13 @@ export default function Alfred() {
               onRemove={removeGroup}
               onSaveContext={saveContext}
               onToggleTask={toggleTask}
+              onVerConversa={() => setConversa(g)}
             />
           ))}
         </div>
       )}
+
+      {conversa && <ConversaModal group={conversa} onClose={() => setConversa(null)} onClear={clearHistory} />}
     </div>
   );
 }
@@ -375,9 +380,92 @@ function Checklist({ tasks, onToggle }: { tasks: AlfredTask[]; onToggle: (t: Alf
   );
 }
 
+// ---- Modal: conversa do grupo (somente leitura) + limpar histórico --
+function ConversaModal({ group, onClose, onClear }: { group: AlfredGroup; onClose: () => void; onClear: (groupId: string) => Promise<void> }) {
+  const [messages, setMessages] = useState<AlfredMessage[]>([]);
+  const [carregando, setCarregando] = useState(true);
+  const [limpando, setLimpando] = useState(false);
+  const endRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      const { data } = await supabase.from("alfred_messages")
+        .select("id, role, sender_name, body, created_at")
+        .eq("group_id", group.id).order("created_at");
+      if (active) { setMessages((data as AlfredMessage[]) ?? []); setCarregando(false); }
+    })();
+    // Tempo real: novas mensagens (recebidas e respostas do Alfred) aparecem sozinhas.
+    const ch = supabase.channel("alfred-conv-" + group.id)
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "alfred_messages", filter: `group_id=eq.${group.id}` },
+        (p) => setMessages((m) => (m.some((x) => x.id === (p.new as AlfredMessage).id) ? m : [...m, p.new as AlfredMessage])))
+      .subscribe();
+    return () => { active = false; void supabase.removeChannel(ch); };
+  }, [group.id]);
+
+  useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
+
+  async function limpar() {
+    if (!confirm(`Limpar todo o histórico de mensagens de "${group.client_name}"? Esta ação não pode ser desfeita.`)) return;
+    setLimpando(true);
+    try { await onClear(group.id); setMessages([]); }
+    catch (e) { alert("Erro ao limpar: " + (e instanceof Error ? e.message : String(e))); }
+    finally { setLimpando(false); }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-3" onClick={onClose}>
+      <div className="glass-strong flex h-[80vh] w-full max-w-2xl flex-col overflow-hidden rounded-xl2" onClick={(e) => e.stopPropagation()}>
+        <header className="flex items-center justify-between gap-2 border-b border-black/5 px-4 py-3">
+          <div className="min-w-0">
+            <div className="truncate font-semibold">{group.client_name}</div>
+            <div className="truncate font-mono text-[11px] text-ink-muted">{group.remote_jid}</div>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <button onClick={limpar} disabled={limpando || messages.length === 0}
+              className="inline-flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-medium text-danger transition-colors hover:bg-danger/10 disabled:opacity-50"
+              title="Apagar todo o histórico deste grupo">
+              {limpando ? <Loader2 size={14} className="animate-spin" /> : <Eraser size={14} />} Limpar histórico
+            </button>
+            <button onClick={onClose} className="rounded-full p-1.5 text-ink-muted hover:bg-black/5"><X size={18} /></button>
+          </div>
+        </header>
+
+        <div className="flex-1 space-y-1.5 overflow-auto bg-black/[0.02] px-4 py-3">
+          {carregando ? (
+            <div className="flex h-full items-center justify-center text-sm text-ink-muted">Carregando…</div>
+          ) : messages.length === 0 ? (
+            <div className="flex h-full items-center justify-center text-sm text-ink-muted">Sem mensagens ainda.</div>
+          ) : (
+            messages.map((m) => {
+              const out = m.role === "model"; // Alfred
+              return (
+                <div key={m.id} className={`max-w-[80%] ${out ? "ml-auto" : ""}`}>
+                  {!out && m.sender_name && <div className="mb-0.5 pl-1 text-[10px] font-medium text-ink-muted">{m.sender_name}</div>}
+                  <div className={`w-fit whitespace-pre-wrap break-words rounded-2xl px-3 py-2 text-sm ${out ? "ml-auto rounded-br-sm bg-accent text-white" : "rounded-bl-sm bg-white"}`}>
+                    {m.body}
+                    <span className={`ml-2 inline-block align-bottom text-[10px] ${out ? "text-white/70" : "text-ink-muted"}`}>
+                      {new Date(m.created_at).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}
+                    </span>
+                  </div>
+                </div>
+              );
+            })
+          )}
+          <div ref={endRef} />
+        </div>
+
+        <div className="border-t border-black/5 px-4 py-2 text-center text-[11px] text-ink-muted">
+          Visualização do grupo — o Alfred responde automaticamente no WhatsApp.
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ---- Card de grupo: status + on/off + checklist + editor de contexto
 function GroupItem({
-  group, context, tasks, onToggle, onRemove, onSaveContext, onToggleTask,
+  group, context, tasks, onToggle, onRemove, onSaveContext, onToggleTask, onVerConversa,
 }: {
   group: AlfredGroup;
   context?: AlfredContext;
@@ -386,6 +474,7 @@ function GroupItem({
   onRemove: (id: string) => Promise<void>;
   onSaveContext: (groupId: string, patch: Omit<AlfredContext, "group_id">) => Promise<void>;
   onToggleTask: (t: AlfredTask) => Promise<void>;
+  onVerConversa: () => void;
 }) {
   const [aberto, setAberto] = useState(false);
   const [empresa, setEmpresa] = useState(context?.empresa_dados ?? "");
@@ -467,6 +556,14 @@ function GroupItem({
         </div>
 
         <div className="flex shrink-0 items-center gap-1">
+          <button
+            onClick={onVerConversa}
+            className="inline-flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-medium text-ink-soft transition-colors hover:bg-black/5"
+            title="Ver a conversa do grupo"
+          >
+            <MessageSquare size={14} />
+            <span className="hidden sm:inline">Conversa</span>
+          </button>
           <button
             onClick={alternar}
             className={`inline-flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-medium transition-colors ${

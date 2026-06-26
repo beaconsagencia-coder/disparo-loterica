@@ -37,6 +37,13 @@ export interface AlfredTask {
   titulo: string;
   done: boolean;
 }
+export interface AlfredMessage {
+  id: string;
+  role: "user" | "model";
+  sender_name: string | null;
+  body: string;
+  created_at: string;
+}
 
 const CONFIG_DEFAULT: AlfredConfig = { system_prompt: "" };
 
@@ -174,6 +181,12 @@ export function useAlfred() {
     if (error) { await load(); throw error; }
   }, [load]);
 
+  /** Apaga todo o histórico de mensagens de um grupo (alfred_messages). */
+  const clearHistory = useCallback(async (groupId: string) => {
+    const { error } = await supabase.from("alfred_messages").delete().eq("group_id", groupId);
+    if (error) throw error;
+  }, []);
+
   // ---- contexto (1 por grupo) ----
   const saveContext = useCallback(async (group_id: string, patch: Omit<AlfredContext, "group_id">) => {
     const user_id = await uid();
@@ -187,6 +200,6 @@ export function useAlfred() {
   return {
     config, connection, groups, contexts, tasks, loading,
     saveConfig, connectWhatsapp, checkStatus, listarGruposWhatsapp,
-    addGroup, toggleGroup, removeGroup, saveContext, toggleTask, reload: load,
+    addGroup, toggleGroup, removeGroup, saveContext, toggleTask, clearHistory, reload: load,
   };
 }
