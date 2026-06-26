@@ -92,10 +92,11 @@ async function chamarGemini(
         text:
           `${systemPrompt}\n\n` +
           `CONTEXTO DO CLIENTE (use para responder):\n${contexto}\n\n` +
-          "REGRAS DE RESPOSTA: seja curto e direto, como uma pessoa real no WhatsApp. " +
-          "Varie a formatação naturalmente (nem sempre listas ou saudações), use poucas palavras e " +
-          "evite texto longo para economizar tokens. Responda só o necessário, com base no contexto e no histórico. " +
-          "Se não souber, diga que vai verificar com a equipe.",
+          "FORMATO DA RESPOSTA (OBRIGATÓRIO): envie ESTRITAMENTE o conteúdo da mensagem, sem nenhum prefixo, nome ou identificação. " +
+          "NUNCA comece com 'Alfred:', com o seu nome, nem com qualquer 'Nome:'. No histórico, as falas aparecem como 'Nome: texto' " +
+          "APENAS para você saber quem falou — isso NÃO é um formato para imitar; escreva só o texto puro da sua resposta. Nada de aspas em volta. " +
+          "ESTILO: curto e direto, como uma pessoa real no WhatsApp — poucas palavras, sem listas/markdown, variando a formatação naturalmente, " +
+          "respondendo só o necessário para economizar créditos da API. Se não souber, diga que vai verificar com a equipe.",
       }],
     },
     contents,
@@ -115,7 +116,13 @@ async function chamarGemini(
   const data = await res.json();
   // deno-lint-ignore no-explicit-any
   const parts = data?.candidates?.[0]?.content?.parts as any[] | undefined;
-  return (parts?.map((p) => p?.text ?? "").join("") ?? "").trim();
+  const txt = (parts?.map((p) => p?.text ?? "").join("") ?? "").trim();
+  // Rede de segurança: remove um prefixo "Alfred:" que o modelo às vezes imita
+  // do histórico, e aspas que envolvam a mensagem inteira.
+  return txt
+    .replace(/^\s*alfred\s*:\s*/i, "")
+    .replace(/^["“](.*)["”]$/s, "$1")
+    .trim();
 }
 
 async function enviarGrupo(url: string, key: string, instance: string, remoteJid: string, texto: string, delayMs = 0): Promise<void> {
