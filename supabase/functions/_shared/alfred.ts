@@ -151,6 +151,10 @@ async function chamarGemini(systemPrompt: string, contexto: string, contents: { 
           "VOCÊ RESPONDE APENAS AO CLIENTE. Mensagens marcadas como [Equipe ...] são da equipe da agência — leia para ter contexto, " +
           "mas NUNCA responda a elas. Se a última mensagem for da equipe, ou se o pedido do cliente já tiver sido resolvido, ou se a " +
           "última mensagem do cliente não pedir resposta (ex.: 'ok', 'obrigado', encerramento), responda com STRING VAZIA (não envie nada).\n\n" +
+          "JAMAIS escreva anotações internas, análises ou rótulos entre colchetes como '[Equipe ...]', '[Cliente ...]', '[imagem ...]', nem narre o que o " +
+          "cliente está fazendo ou o que você pretende fazer. Esses rótulos existem só para o SEU entendimento e NUNCA podem ser enviados ao grupo — " +
+          "mande exclusivamente a mensagem final ao cliente, como uma pessoa real. NUNCA repita no grupo senhas, logins ou outros dados sensíveis que " +
+          "apareçam na conversa (use-os apenas internamente).\n\n" +
           "USO DO CHECKLIST/MEMÓRIA: baseie-se no andamento e nas informações salvas; nunca diga que algo está pronto se está pendente; " +
           "se uma etapa pendente depende do cliente (criativo, conta de Facebook, orçamento), solicite a ele.\n\n" +
           "FASE DO CONTRATO: no Onboarding, priorize o cronograma/checklist de implantação. Na Manutenção, o cronograma é apenas histórico — " +
@@ -202,6 +206,9 @@ function fracionarResposta(raw: string): string[] {
   if (!txt) return [];
   const limpar = (s: string) => s
     .replace(/^\s*alfred\s*:\s*/i, "")
+    // remove rótulos/anotações internas vazadas no início ([Equipe ...], [imagem ...],
+    // [Cliente ...], etc.) — o modelo às vezes imita o formato do histórico.
+    .replace(/^(?:\s*\[[^\]]*\]\s*:?\s*)+/g, "")
     .replace(/^["“”'\s]+|["“”'\s]+$/g, "")
     .trim();
   const partes = txt
