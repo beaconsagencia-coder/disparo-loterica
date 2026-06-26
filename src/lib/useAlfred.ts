@@ -24,6 +24,7 @@ export interface AlfredDemand {
   status: DemandStatus;
   prazo: string; // YYYY-MM-DD
 }
+export type Fase = "onboarding" | "manutencao";
 export interface AlfredGroup {
   id: string;
   remote_jid: string;
@@ -31,6 +32,26 @@ export interface AlfredGroup {
   evolution_instance: string | null;
   active: boolean;
   created_at: string;
+  fase_override: Fase | null; // null = automático pela idade do grupo
+}
+const FASE_THRESHOLD_DIAS = 30; // >= 30 dias => Manutenção (se sem override)
+/** Fase efetiva do grupo: override manual, ou automática pela idade. */
+export function faseEfetiva(g: Pick<AlfredGroup, "created_at" | "fase_override">): Fase {
+  if (g.fase_override === "onboarding" || g.fase_override === "manutencao") return g.fase_override;
+  const dias = (Date.now() - new Date(g.created_at).getTime()) / 86_400_000;
+  return dias >= FASE_THRESHOLD_DIAS ? "manutencao" : "onboarding";
+}
+
+export type AssetStatus = "ativa" | "pausada" | "encerrada" | "substituida";
+export type AssetTipo = "campanha" | "criativo" | "anuncio" | "outro";
+export interface AlfredAsset {
+  id: string;
+  group_id: string;
+  titulo: string;
+  tipo: AssetTipo;
+  status: AssetStatus;
+  descricao: string | null;
+  substituida_por: string | null;
 }
 export interface AlfredContext {
   group_id: string;
@@ -96,10 +117,11 @@ export function useAlfred() {
   const [memory, setMemory] = useState<Record<string, AlfredMemory[]>>({});
   const [members, setMembers] = useState<Record<string, AlfredMember[]>>({});
   const [demands, setDemands] = useState<Record<string, AlfredDemand[]>>({});
+  const [assets, setAssets] = useState<Record<string, AlfredAsset[]>>({});
   const [loading, setLoading] = useState(true);
 
   const load = useCallback(async () => {
-    const [{ data: cfg }, { data: grp }, { data: ctx }, { data: tk }, { data: mem }, { data: mb }, { data: dm }] = await Promise.all([
+    const [{ data: cfg }, { data: grp }, { data: ctx }, { data: tk }, { data: mem }, { data: mb }, { data: dm }, { data: as }] = await Promise.all([
       supabase.from("alfred_configs")
         .select("system_prompt, evolution_instance, connection_status, numero, handoff_ativo, team_cooldown_min, intervene_after_min")
         .maybeSingle(),
@@ -112,6 +134,7 @@ export function useAlfred() {
       supabase.from("alfred_memory").select("id, group_id, chave, valor").order("chave"),
       supabase.from("alfred_group_members").select("id, group_id, numero, nome").order("created_at"),
       supabase.from("alfred_demands").select("id, group_id, titulo, descricao, status, prazo").order("prazo"),
+      supabase.from("alfred_assets").select("id, group_id, titulo, tipo, status, descricao, substituida_por").order("updated_at", { ascending: false }),
     ]);
     if (cfg) {
       setConfig({
@@ -142,6 +165,9 @@ export function useAlfred() {
     const dmap: Record<string, AlfredDemand[]> = {};
     for (const d of (dm as AlfredDemand[]) ?? []) (dmap[d.group_id] ??= []).push(d);
     setDemands(dmap);
+    const amap: Record<string, AlfredAsset[]> = {};
+    for (const a of (as as AlfredAsset[]) ?? []) (amap[a.group_id] ??= []).push(a);
+    setAssets(amap);
     setLoading(false);
   }, []);
 
@@ -156,6 +182,7 @@ export function useAlfred() {
       .on("postgres_changes", { event: "*", schema: "public", table: "alfred_memory" }, () => load())
       .on("postgres_changes", { event: "*", schema: "public", table: "alfred_group_members" }, () => load())
       .on("postgres_changes", { event: "*", schema: "public", table: "alfred_demands" }, () => load())
+      .on("postgres_changes", { event: "*", schema: "public", table: "alfred_assets" }, () => load())
       .subscribe();
     return () => void supabase.removeChannel(ch);
   }, [load]);
@@ -215,6 +242,39 @@ export function useAlfred() {
     setGroups((prev) => prev.filter((g) => g.id !== id));
     const { error } = await supabase.from("alfred_groups").delete().eq("id", id);
     if (error) { await load(); throw error; }
+  }, [load]);
+
+  /** Define a fase do grupo: 'onboarding' | 'manutencao' | null (automático). */
+  const setFase = useCallback(async (id: string, fase: Fase | null) => {
+    setGroups((prev) => prev.map((g) => (g.id === id ? { ...g, fase_override: fase } : g)));
+    const { error } = await supabase.from("alfred_groups").update({ fase_override: fase }).eq("id", id);
+    if (error) { await load(); throw error; }
+  }, [load]);
+
+  // ---- ativos/campanhas do cliente (estado vivo da operação) ----
+  const addAsset = useCallback(async (groupId: string, titulo: string, tipo: AssetTipo, descricao?: string) => {
+    const user_id = await uid();
+    if (!titulo.trim()) throw new Error("Informe o nome da campanha.");
+    const { error } = await supabase.from("alfred_assets").insert({
+      user_id, group_id: groupId, titulo: titulo.trim(), tipo, descricao: descricao?.trim() || null,
+      status: "ativa", origem: "manual", started_at: new Date().toISOString().slice(0, 10),
+    });
+    if (error) throw error;
+    await load();
+  }, [load]);
+
+  const updateAsset = useCallback(async (id: string, groupId: string, patch: Partial<Pick<AlfredAsset, "status" | "titulo" | "tipo" | "descricao">>) => {
+    setAssets((prev) => ({ ...prev, [groupId]: (prev[groupId] ?? []).map((a) => (a.id === id ? { ...a, ...patch } : a)) }));
+    const next: Record<string, unknown> = { ...patch };
+    if (patch.status === "encerrada" || patch.status === "substituida") next.ended_at = new Date().toISOString().slice(0, 10);
+    const { error } = await supabase.from("alfred_assets").update(next).eq("id", id);
+    if (error) await load();
+  }, [load]);
+
+  const deleteAsset = useCallback(async (id: string, groupId: string) => {
+    setAssets((prev) => ({ ...prev, [groupId]: (prev[groupId] ?? []).filter((a) => a.id !== id) }));
+    const { error } = await supabase.from("alfred_assets").delete().eq("id", id);
+    if (error) await load();
   }, [load]);
 
   // ---- checklist (tarefas do cronograma por grupo) ----
@@ -295,9 +355,10 @@ export function useAlfred() {
   }, []);
 
   return {
-    config, connection, groups, contexts, tasks, memory, members, demands, loading,
+    config, connection, groups, contexts, tasks, memory, members, demands, assets, loading,
     saveConfig, connectWhatsapp, checkStatus, listarGruposWhatsapp,
-    addGroup, toggleGroup, removeGroup, saveContext, toggleTask, clearHistory, deleteMemory,
-    addMember, removeMember, addDemand, updateDemand, deleteDemand, reload: load,
+    addGroup, toggleGroup, removeGroup, setFase, saveContext, toggleTask, clearHistory, deleteMemory,
+    addMember, removeMember, addDemand, updateDemand, deleteDemand,
+    addAsset, updateAsset, deleteAsset, reload: load,
   };
 }

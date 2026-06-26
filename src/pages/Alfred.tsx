@@ -3,12 +3,13 @@ import {
   Bot, Smartphone, Sparkles, Plus, Trash2, Power, PowerOff, ChevronDown,
   Save, Loader2, QrCode, Users, FolderOpen, CalendarRange, Wallet, StickyNote, RefreshCw,
   Building2, ScrollText, Search, Square, CheckSquare, ListChecks, MessageSquare, Eraser, X, Brain, UserPlus,
-  KanbanSquare, CalendarClock, AlertTriangle,
+  KanbanSquare, CalendarClock, AlertTriangle, Megaphone, Layers, Rocket,
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import {
-  useAlfred, type AlfredConfig, type AlfredConnection, type AlfredGroup, type AlfredContext, type AlfredTask,
+  useAlfred, faseEfetiva, type AlfredConfig, type AlfredConnection, type AlfredGroup, type AlfredContext, type AlfredTask,
   type AlfredMessage, type AlfredMemory, type AlfredMember, type AlfredDemand, type DemandStatus,
+  type AlfredAsset, type AssetStatus, type AssetTipo, type Fase,
 } from "@/lib/useAlfred";
 
 // =====================================================================
@@ -16,7 +17,7 @@ import {
 // Lógica 100% preservada; visual no design system do app (Bento + Apple-like).
 // =====================================================================
 export default function Alfred() {
-  const { config, connection, groups, contexts, tasks, memory, members, demands, loading, saveConfig, connectWhatsapp, checkStatus, listarGruposWhatsapp, addGroup, toggleGroup, removeGroup, saveContext, toggleTask, clearHistory, deleteMemory, addMember, removeMember, addDemand, updateDemand, deleteDemand } = useAlfred();
+  const { config, connection, groups, contexts, tasks, memory, members, demands, assets, loading, saveConfig, connectWhatsapp, checkStatus, listarGruposWhatsapp, addGroup, toggleGroup, removeGroup, setFase, saveContext, toggleTask, clearHistory, deleteMemory, addMember, removeMember, addDemand, updateDemand, deleteDemand, addAsset, updateAsset, deleteAsset } = useAlfred();
   const [conversa, setConversa] = useState<AlfredGroup | null>(null);
   const [view, setView] = useState<"grupos" | "demandas">("grupos");
 
@@ -79,14 +80,19 @@ export default function Alfred() {
               tasks={tasks[g.id] ?? []}
               memory={memory[g.id] ?? []}
               members={members[g.id] ?? []}
+              assets={assets[g.id] ?? []}
               onToggle={toggleGroup}
               onRemove={removeGroup}
+              onSetFase={setFase}
               onSaveContext={saveContext}
               onToggleTask={toggleTask}
               onVerConversa={() => setConversa(g)}
               onDeleteMemory={deleteMemory}
               onAddMember={addMember}
               onRemoveMember={removeMember}
+              onAddAsset={addAsset}
+              onUpdateAsset={updateAsset}
+              onDeleteAsset={deleteAsset}
             />
           ))}
         </div>
@@ -542,20 +548,24 @@ function NovoGrupoForm({
 }
 
 // ---- Checklist do cronograma (por cliente) -------------------------
-function Checklist({ tasks, onToggle }: { tasks: AlfredTask[]; onToggle: (t: AlfredTask) => Promise<void> }) {
+function Checklist({ tasks, onToggle, fase = "onboarding" }: { tasks: AlfredTask[]; onToggle: (t: AlfredTask) => Promise<void>; fase?: Fase }) {
   if (tasks.length === 0) return null;
   const feitas = tasks.filter((t) => t.done).length;
   const pct = Math.round((feitas / tasks.length) * 100);
   const semanas = [...new Set(tasks.map((t) => t.semana))].sort((a, b) => a - b);
+  const manut = fase === "manutencao";
 
   async function alternar(t: AlfredTask) {
     try { await onToggle(t); } catch (err) { alert(err instanceof Error ? err.message : String(err)); }
   }
 
   return (
-    <div className="mb-4 rounded-xl border border-black/5 bg-white p-3 shadow-sm">
+    <div className={`mb-4 rounded-xl border border-black/5 bg-white p-3 shadow-sm ${manut ? "opacity-80" : ""}`}>
       <div className="mb-2 flex items-center justify-between">
-        <div className="flex items-center gap-1.5 text-sm font-medium"><ListChecks size={15} className="text-accent" /> Checklist do cronograma</div>
+        <div className="flex items-center gap-1.5 text-sm font-medium">
+          <ListChecks size={15} className={manut ? "text-ink-muted" : "text-accent"} />
+          {manut ? "Implantação (histórico)" : "Checklist do cronograma"}
+        </div>
         <span className="text-xs text-ink-muted tabular-nums">{feitas}/{tasks.length} · {pct}%</span>
       </div>
       <div className="mb-3 h-1.5 overflow-hidden rounded-full bg-black/[0.06]">
@@ -768,24 +778,158 @@ function Equipe({ groupId, members, onAdd, onRemove }: {
   );
 }
 
+// ---- Fase do contrato (Onboarding × Manutenção) --------------------
+const FASE_INFO: Record<Fase, { label: string; chip: string }> = {
+  onboarding: { label: "Onboarding", chip: "bg-accent/15 text-accent" },
+  manutencao: { label: "Manutenção", chip: "bg-[#5b53c6]/12 text-[#5b53c6]" },
+};
+
+function PhaseControl({ group, onSetFase }: { group: AlfredGroup; onSetFase: (id: string, fase: Fase | null) => Promise<void> }) {
+  const efetiva = faseEfetiva(group);
+  const atual: Fase | "auto" = group.fase_override ?? "auto";
+  const opcoes: { key: Fase | "auto"; label: string }[] = [
+    { key: "auto", label: "Automático" },
+    { key: "onboarding", label: "Onboarding" },
+    { key: "manutencao", label: "Manutenção" },
+  ];
+  async function escolher(k: Fase | "auto") {
+    try { await onSetFase(group.id, k === "auto" ? null : k); } catch (e) { alert(e instanceof Error ? e.message : String(e)); }
+  }
+  return (
+    <div className="mb-4 rounded-xl border border-black/5 bg-white p-3 shadow-sm">
+      <div className="mb-2 flex items-center gap-1.5 text-sm font-medium">
+        <Layers size={15} className="text-accent" /> Fase do contrato
+        <span className={`ml-auto chip ${FASE_INFO[efetiva].chip}`}>{efetiva === "manutencao" ? <Rocket size={11} /> : <ListChecks size={11} />}{FASE_INFO[efetiva].label}</span>
+      </div>
+      <div className="inline-flex w-full rounded-lg bg-black/5 p-0.5">
+        {opcoes.map((o) => (
+          <button key={o.key} type="button" onClick={() => escolher(o.key)}
+            className={`flex-1 rounded-md px-2 py-1 text-[11px] font-medium transition-colors ${atual === o.key ? "bg-white text-ink shadow-sm" : "text-ink-muted hover:text-ink-soft"}`}>
+            {o.label}
+          </button>
+        ))}
+      </div>
+      <p className="mt-2 text-[11px] text-ink-muted">
+        {atual === "auto"
+          ? `Automático: vira Manutenção após 30 dias de grupo (hoje: ${FASE_INFO[efetiva].label}).`
+          : "Fase travada manualmente."}{" "}
+        Na Manutenção o Alfred prioriza campanhas e demandas; o cronograma vira histórico.
+      </p>
+    </div>
+  );
+}
+
+// ---- Campanhas / ativos do cliente (estado vivo da operação) -------
+const ASSET_STATUS: { key: AssetStatus; label: string; dot: string }[] = [
+  { key: "ativa", label: "Ativa", dot: "bg-success" },
+  { key: "pausada", label: "Pausada", dot: "bg-warning" },
+  { key: "substituida", label: "Substituída", dot: "bg-ink-muted/50" },
+  { key: "encerrada", label: "Encerrada", dot: "bg-danger/60" },
+];
+const assetStatusDot = (s: AssetStatus) => ASSET_STATUS.find((x) => x.key === s)?.dot ?? "bg-ink-muted";
+const ASSET_TIPOS: { key: AssetTipo; label: string }[] = [
+  { key: "campanha", label: "Campanha" }, { key: "criativo", label: "Criativo" },
+  { key: "anuncio", label: "Anúncio" }, { key: "outro", label: "Outro" },
+];
+
+function Campanhas({ groupId, assets, onAdd, onUpdate, onDelete }: {
+  groupId: string;
+  assets: AlfredAsset[];
+  onAdd: (groupId: string, titulo: string, tipo: AssetTipo, descricao?: string) => Promise<void>;
+  onUpdate: (id: string, groupId: string, patch: Partial<Pick<AlfredAsset, "status" | "titulo" | "tipo" | "descricao">>) => Promise<void>;
+  onDelete: (id: string, groupId: string) => Promise<void>;
+}) {
+  const [titulo, setTitulo] = useState("");
+  const [tipo, setTipo] = useState<AssetTipo>("campanha");
+  const [msg, setMsg] = useState("");
+  const byId = new Map(assets.map((a) => [a.id, a]));
+  const ordem: Record<AssetStatus, number> = { ativa: 0, pausada: 1, substituida: 2, encerrada: 3 };
+  const lista = [...assets].sort((a, b) => (ordem[a.status] - ordem[b.status]) || a.titulo.localeCompare(b.titulo));
+  const ativas = assets.filter((a) => a.status === "ativa").length;
+
+  async function adicionar(e: React.FormEvent) {
+    e.preventDefault();
+    setMsg("");
+    try { await onAdd(groupId, titulo, tipo); setTitulo(""); setTipo("campanha"); }
+    catch (err) { setMsg("Erro: " + (err instanceof Error ? err.message : String(err))); }
+  }
+
+  return (
+    <div className="mb-4 rounded-xl border border-black/5 bg-white p-3 shadow-sm">
+      <div className="mb-2 flex items-center gap-1.5 text-sm font-medium">
+        <Megaphone size={15} className="text-accent" /> Campanhas e ativos
+        <span className="text-[11px] font-normal text-ink-muted">(o que está no ar — o Alfred aprende sozinho)</span>
+        <span className="ml-auto rounded-full bg-success/15 px-1.5 text-xs text-[#1b7a35]">{ativas} no ar</span>
+      </div>
+
+      {lista.length > 0 && (
+        <div className="mb-2 space-y-1">
+          {lista.map((a) => {
+            const novo = a.substituida_por ? byId.get(a.substituida_por) : null;
+            const fim = a.status === "substituida" || a.status === "encerrada";
+            return (
+              <div key={a.id} className="flex items-start gap-2 rounded-lg px-1.5 py-1 hover:bg-black/[0.02]">
+                <span className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${assetStatusDot(a.status)}`} />
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <span className={`text-sm font-medium ${fim ? "text-ink-muted line-through" : "text-ink-soft"}`}>{a.titulo}</span>
+                    {a.tipo !== "campanha" && <span className="chip bg-black/5 text-ink-muted">{ASSET_TIPOS.find((t) => t.key === a.tipo)?.label}</span>}
+                  </div>
+                  {a.descricao && <p className="text-[11.5px] text-ink-muted">{a.descricao}</p>}
+                  {novo && <p className="text-[11px] text-ink-muted">→ substituída por “{novo.titulo}”</p>}
+                </div>
+                <select value={a.status} onChange={(e) => onUpdate(a.id, groupId, { status: e.target.value as AssetStatus })}
+                  className="shrink-0 rounded-md border border-black/10 bg-white px-1 py-0.5 text-[11px] text-ink-soft" title="Status da campanha">
+                  {ASSET_STATUS.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}
+                </select>
+                <button onClick={() => onDelete(a.id, groupId)} title="Remover" className="shrink-0 rounded p-0.5 text-ink-muted transition-colors hover:bg-danger/10 hover:text-danger">
+                  <Trash2 size={13} />
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      <form onSubmit={adicionar} className="flex flex-wrap items-end gap-2">
+        <div className="min-w-[160px] flex-1">
+          <label className="mb-1 block text-[11px] font-medium text-ink-soft">Nova campanha/ativo</label>
+          <input className="input !py-1.5 text-sm" placeholder="Ex.: Campanha Dia das Mães" value={titulo} onChange={(e) => setTitulo(e.target.value)} />
+        </div>
+        <select className="input !py-1.5 !w-auto text-sm" value={tipo} onChange={(e) => setTipo(e.target.value as AssetTipo)}>
+          {ASSET_TIPOS.map((t) => <option key={t.key} value={t.key}>{t.label}</option>)}
+        </select>
+        <button type="submit" className="btn-accent !py-2"><Plus size={15} /> Adicionar</button>
+      </form>
+      {msg && <div className="mt-1.5"><Feedback msg={msg} /></div>}
+    </div>
+  );
+}
+
 // ---- Card de grupo: status + on/off + equipe + checklist + contexto
 function GroupItem({
-  group, context, tasks, memory, members, onToggle, onRemove, onSaveContext, onToggleTask, onVerConversa, onDeleteMemory, onAddMember, onRemoveMember,
+  group, context, tasks, memory, members, assets, onToggle, onRemove, onSetFase, onSaveContext, onToggleTask, onVerConversa, onDeleteMemory, onAddMember, onRemoveMember, onAddAsset, onUpdateAsset, onDeleteAsset,
 }: {
   group: AlfredGroup;
   context?: AlfredContext;
   tasks: AlfredTask[];
   memory: AlfredMemory[];
   members: AlfredMember[];
+  assets: AlfredAsset[];
   onToggle: (id: string, active: boolean) => Promise<void>;
   onRemove: (id: string) => Promise<void>;
+  onSetFase: (id: string, fase: Fase | null) => Promise<void>;
   onSaveContext: (groupId: string, patch: Omit<AlfredContext, "group_id">) => Promise<void>;
   onToggleTask: (t: AlfredTask) => Promise<void>;
   onVerConversa: () => void;
   onDeleteMemory: (id: string, groupId: string) => Promise<void>;
   onAddMember: (groupId: string, numero: string, nome?: string) => Promise<void>;
   onRemoveMember: (id: string, groupId: string) => Promise<void>;
+  onAddAsset: (groupId: string, titulo: string, tipo: AssetTipo, descricao?: string) => Promise<void>;
+  onUpdateAsset: (id: string, groupId: string, patch: Partial<Pick<AlfredAsset, "status" | "titulo" | "tipo" | "descricao">>) => Promise<void>;
+  onDeleteAsset: (id: string, groupId: string) => Promise<void>;
 }) {
+  const fase = faseEfetiva(group);
   const [aberto, setAberto] = useState(false);
   const [empresa, setEmpresa] = useState(context?.empresa_dados ?? "");
   const [regras, setRegras] = useState(context?.regras_atendimento ?? "");
@@ -856,6 +1000,9 @@ function GroupItem({
               <span className={`h-1.5 w-1.5 rounded-full ${group.active ? "bg-success" : "bg-ink-muted/60"}`} />
               {group.active ? "Ativo" : "Inativo"}
             </span>
+            <span className={`chip ${FASE_INFO[fase].chip}`} title="Fase do contrato">
+              {fase === "manutencao" ? <Rocket size={11} /> : <ListChecks size={11} />}{FASE_INFO[fase].label}
+            </span>
             {tasks.length > 0 && (
               <span className="chip bg-black/5 text-ink-muted" title="Checklist do cronograma concluído">
                 <ListChecks size={11} /> {feitas}/{tasks.length}
@@ -909,8 +1056,20 @@ function GroupItem({
       {/* Área dedicada: checklist do cronograma + contexto da empresa */}
       {aberto && (
         <div className="border-t border-black/5 bg-black/[0.015] p-4">
+        <PhaseControl group={group} onSetFase={onSetFase} />
         <Equipe groupId={group.id} members={members} onAdd={onAddMember} onRemove={onRemoveMember} />
-        <Checklist tasks={tasks} onToggle={onToggleTask} />
+        {/* Manutenção: campanhas em primeiro plano; Onboarding: cronograma primeiro. */}
+        {fase === "manutencao" ? (
+          <>
+            <Campanhas groupId={group.id} assets={assets} onAdd={onAddAsset} onUpdate={onUpdateAsset} onDelete={onDeleteAsset} />
+            <Checklist tasks={tasks} onToggle={onToggleTask} fase={fase} />
+          </>
+        ) : (
+          <>
+            <Checklist tasks={tasks} onToggle={onToggleTask} fase={fase} />
+            <Campanhas groupId={group.id} assets={assets} onAdd={onAddAsset} onUpdate={onUpdateAsset} onDelete={onDeleteAsset} />
+          </>
+        )}
         <Conhecimento resumo={context?.resumo} memory={memory} onDelete={(id) => onDeleteMemory(id, group.id)} />
         <form onSubmit={salvarContexto}>
           <p className="mb-3 text-xs text-ink-muted">

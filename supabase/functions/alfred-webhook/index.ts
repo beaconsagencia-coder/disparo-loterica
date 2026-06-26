@@ -117,7 +117,7 @@ Deno.serve(async (req) => {
   // Grupo precisa estar ATIVO em alfred_groups.
   const { data: grupo } = await supabase
     .from("alfred_groups")
-    .select("id, user_id, client_name, evolution_instance, last_learned_at, active")
+    .select("id, user_id, client_name, evolution_instance, last_learned_at, active, created_at, fase_override")
     .eq("remote_jid", remoteJid).eq("active", true).maybeSingle();
   if (!grupo) return json({ ok: true, ignored: "grupo inativo ou não cadastrado" });
 
@@ -188,6 +188,7 @@ Deno.serve(async (req) => {
   const r = await responderAgora(supabase, {
     id: grupo.id, user_id: grupo.user_id, client_name: grupo.client_name,
     remote_jid: remoteJid, evolution_instance: grupo.evolution_instance, last_learned_at: grupo.last_learned_at ?? null,
+    created_at: grupo.created_at ?? null, fase_override: grupo.fase_override ?? null,
   }, cfg);
   return json({ ok: true, modo: "imediato", resultado: r });
 });
