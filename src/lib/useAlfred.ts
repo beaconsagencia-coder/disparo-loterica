@@ -28,6 +28,15 @@ export interface AlfredConnection {
   connection_status: string;   // desconectado | conectando | conectado
   numero: string | null;
 }
+export interface AlfredTask {
+  id: string;
+  group_id: string;
+  semana: number;
+  ordem: number;
+  task_key: string;
+  titulo: string;
+  done: boolean;
+}
 
 const CONFIG_DEFAULT: AlfredConfig = { system_prompt: "" };
 
@@ -51,16 +60,20 @@ export function useAlfred() {
   const [connection, setConnection] = useState<AlfredConnection>(CONNECTION_DEFAULT);
   const [groups, setGroups] = useState<AlfredGroup[]>([]);
   const [contexts, setContexts] = useState<Record<string, AlfredContext>>({});
+  const [tasks, setTasks] = useState<Record<string, AlfredTask[]>>({});
   const [loading, setLoading] = useState(true);
 
   const load = useCallback(async () => {
-    const [{ data: cfg }, { data: grp }, { data: ctx }] = await Promise.all([
+    const [{ data: cfg }, { data: grp }, { data: ctx }, { data: tk }] = await Promise.all([
       supabase.from("alfred_configs")
         .select("system_prompt, evolution_instance, connection_status, numero")
         .maybeSingle(),
       supabase.from("alfred_groups").select("*").order("created_at", { ascending: false }),
       supabase.from("alfred_context")
         .select("group_id, empresa_dados, regras_atendimento, drive_link, cronograma, financeiro, observacoes"),
+      supabase.from("alfred_tasks")
+        .select("id, group_id, semana, ordem, task_key, titulo, done")
+        .order("semana").order("ordem"),
     ]);
     if (cfg) {
       setConfig({ system_prompt: cfg.system_prompt ?? "" });
@@ -74,6 +87,9 @@ export function useAlfred() {
     const map: Record<string, AlfredContext> = {};
     for (const c of (ctx as AlfredContext[]) ?? []) map[c.group_id] = c;
     setContexts(map);
+    const tmap: Record<string, AlfredTask[]> = {};
+    for (const t of (tk as AlfredTask[]) ?? []) (tmap[t.group_id] ??= []).push(t);
+    setTasks(tmap);
     setLoading(false);
   }, []);
 
@@ -84,6 +100,7 @@ export function useAlfred() {
       .on("postgres_changes", { event: "*", schema: "public", table: "alfred_groups" }, () => load())
       .on("postgres_changes", { event: "*", schema: "public", table: "alfred_context" }, () => load())
       .on("postgres_changes", { event: "*", schema: "public", table: "alfred_configs" }, () => load())
+      .on("postgres_changes", { event: "*", schema: "public", table: "alfred_tasks" }, () => load())
       .subscribe();
     return () => void supabase.removeChannel(ch);
   }, [load]);
@@ -145,6 +162,18 @@ export function useAlfred() {
     if (error) { await load(); throw error; }
   }, [load]);
 
+  // ---- checklist (tarefas do cronograma por grupo) ----
+  const toggleTask = useCallback(async (task: AlfredTask) => {
+    const done = !task.done;
+    setTasks((prev) => ({
+      ...prev,
+      [task.group_id]: (prev[task.group_id] ?? []).map((t) => (t.id === task.id ? { ...t, done } : t)),
+    }));
+    const { error } = await supabase.from("alfred_tasks")
+      .update({ done, done_at: done ? new Date().toISOString() : null }).eq("id", task.id);
+    if (error) { await load(); throw error; }
+  }, [load]);
+
   // ---- contexto (1 por grupo) ----
   const saveContext = useCallback(async (group_id: string, patch: Omit<AlfredContext, "group_id">) => {
     const user_id = await uid();
@@ -156,8 +185,8 @@ export function useAlfred() {
   }, []);
 
   return {
-    config, connection, groups, contexts, loading,
+    config, connection, groups, contexts, tasks, loading,
     saveConfig, connectWhatsapp, checkStatus, listarGruposWhatsapp,
-    addGroup, toggleGroup, removeGroup, saveContext, reload: load,
+    addGroup, toggleGroup, removeGroup, saveContext, toggleTask, reload: load,
   };
 }

@@ -2,16 +2,16 @@ import { useEffect, useState } from "react";
 import {
   Bot, Smartphone, Sparkles, Plus, Trash2, Power, PowerOff, ChevronDown,
   Save, Loader2, QrCode, Users, FolderOpen, CalendarRange, Wallet, StickyNote, RefreshCw,
-  Building2, ScrollText, Search,
+  Building2, ScrollText, Search, Square, CheckSquare, ListChecks,
 } from "lucide-react";
-import { useAlfred, type AlfredConfig, type AlfredConnection, type AlfredGroup, type AlfredContext } from "@/lib/useAlfred";
+import { useAlfred, type AlfredConfig, type AlfredConnection, type AlfredGroup, type AlfredContext, type AlfredTask } from "@/lib/useAlfred";
 
 // =====================================================================
 // /alfred — CRUD do agente Alfred (grupos de WhatsApp de clientes).
 // Lógica 100% preservada; visual no design system do app (Bento + Apple-like).
 // =====================================================================
 export default function Alfred() {
-  const { config, connection, groups, contexts, loading, saveConfig, connectWhatsapp, checkStatus, listarGruposWhatsapp, addGroup, toggleGroup, removeGroup, saveContext } = useAlfred();
+  const { config, connection, groups, contexts, tasks, loading, saveConfig, connectWhatsapp, checkStatus, listarGruposWhatsapp, addGroup, toggleGroup, removeGroup, saveContext, toggleTask } = useAlfred();
 
   if (loading) {
     return <p className="mx-auto max-w-6xl text-sm text-ink-muted">Carregando…</p>;
@@ -54,9 +54,11 @@ export default function Alfred() {
               key={g.id}
               group={g}
               context={contexts[g.id]}
+              tasks={tasks[g.id] ?? []}
               onToggle={toggleGroup}
               onRemove={removeGroup}
               onSaveContext={saveContext}
+              onToggleTask={toggleTask}
             />
           ))}
         </div>
@@ -327,15 +329,63 @@ function NovoGrupoForm({
   );
 }
 
-// ---- Card de grupo: status + on/off + editor de contexto -----------
+// ---- Checklist do cronograma (por cliente) -------------------------
+function Checklist({ tasks, onToggle }: { tasks: AlfredTask[]; onToggle: (t: AlfredTask) => Promise<void> }) {
+  if (tasks.length === 0) return null;
+  const feitas = tasks.filter((t) => t.done).length;
+  const pct = Math.round((feitas / tasks.length) * 100);
+  const semanas = [...new Set(tasks.map((t) => t.semana))].sort((a, b) => a - b);
+
+  async function alternar(t: AlfredTask) {
+    try { await onToggle(t); } catch (err) { alert(err instanceof Error ? err.message : String(err)); }
+  }
+
+  return (
+    <div className="mb-4 rounded-xl border border-black/5 bg-white p-3 shadow-sm">
+      <div className="mb-2 flex items-center justify-between">
+        <div className="flex items-center gap-1.5 text-sm font-medium"><ListChecks size={15} className="text-accent" /> Checklist do cronograma</div>
+        <span className="text-xs text-ink-muted tabular-nums">{feitas}/{tasks.length} · {pct}%</span>
+      </div>
+      <div className="mb-3 h-1.5 overflow-hidden rounded-full bg-black/[0.06]">
+        <div className="h-full rounded-full bg-success transition-all" style={{ width: `${pct}%` }} />
+      </div>
+      <div className="space-y-3">
+        {semanas.map((s) => (
+          <div key={s}>
+            <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-ink-muted">Semana {s}</div>
+            <div className="space-y-0.5">
+              {tasks.filter((t) => t.semana === s).map((t) => (
+                <button
+                  key={t.id}
+                  type="button"
+                  onClick={() => alternar(t)}
+                  className="flex w-full items-center gap-2 rounded-lg px-1.5 py-1 text-left text-sm transition-colors hover:bg-black/[0.03]"
+                >
+                  {t.done
+                    ? <CheckSquare size={16} className="shrink-0 text-success" />
+                    : <Square size={16} className="shrink-0 text-ink-muted" />}
+                  <span className={t.done ? "text-ink-muted line-through" : "text-ink-soft"}>{t.titulo}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ---- Card de grupo: status + on/off + checklist + editor de contexto
 function GroupItem({
-  group, context, onToggle, onRemove, onSaveContext,
+  group, context, tasks, onToggle, onRemove, onSaveContext, onToggleTask,
 }: {
   group: AlfredGroup;
   context?: AlfredContext;
+  tasks: AlfredTask[];
   onToggle: (id: string, active: boolean) => Promise<void>;
   onRemove: (id: string) => Promise<void>;
   onSaveContext: (groupId: string, patch: Omit<AlfredContext, "group_id">) => Promise<void>;
+  onToggleTask: (t: AlfredTask) => Promise<void>;
 }) {
   const [aberto, setAberto] = useState(false);
   const [empresa, setEmpresa] = useState(context?.empresa_dados ?? "");
@@ -361,6 +411,7 @@ function GroupItem({
     context.empresa_dados || context.regras_atendimento || context.cronograma ||
     context.financeiro || context.drive_link || context.observacoes
   ));
+  const feitas = tasks.filter((t) => t.done).length;
 
   async function salvarContexto(e: React.FormEvent) {
     e.preventDefault();
@@ -400,12 +451,17 @@ function GroupItem({
         </span>
 
         <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <span className="truncate font-medium">{group.client_name}</span>
             <span className={`chip ${group.active ? "bg-success/15 text-[#1b7a35]" : "bg-black/10 text-ink-muted"}`}>
               <span className={`h-1.5 w-1.5 rounded-full ${group.active ? "bg-success" : "bg-ink-muted/60"}`} />
               {group.active ? "Ativo" : "Inativo"}
             </span>
+            {tasks.length > 0 && (
+              <span className="chip bg-black/5 text-ink-muted" title="Checklist do cronograma concluído">
+                <ListChecks size={11} /> {feitas}/{tasks.length}
+              </span>
+            )}
           </div>
           <div className="mt-0.5 truncate font-mono text-xs text-ink-muted">{group.remote_jid}</div>
         </div>
@@ -443,9 +499,11 @@ function GroupItem({
         </div>
       </div>
 
-      {/* Área dedicada de contexto da EMPRESA (individual por grupo) */}
+      {/* Área dedicada: checklist do cronograma + contexto da empresa */}
       {aberto && (
-        <form onSubmit={salvarContexto} className="border-t border-black/5 bg-black/[0.015] p-4">
+        <div className="border-t border-black/5 bg-black/[0.015] p-4">
+        <Checklist tasks={tasks} onToggle={onToggleTask} />
+        <form onSubmit={salvarContexto}>
           <p className="mb-3 text-xs text-ink-muted">
             Contexto exclusivo de <strong className="text-ink-soft">{group.client_name}</strong>. O Alfred usa estes dados ao responder neste grupo.
           </p>
@@ -482,6 +540,7 @@ function GroupItem({
             <Feedback msg={msg} />
           </div>
         </form>
+        </div>
       )}
     </div>
   );

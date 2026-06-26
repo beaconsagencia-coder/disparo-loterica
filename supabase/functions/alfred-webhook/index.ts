@@ -62,6 +62,24 @@ function montarContexto(ctx: any, clientName: string): string {
   return linhas.join("\n");
 }
 
+interface TaskRow { semana: number; titulo: string; done: boolean }
+
+/** Bloco do checklist do cronograma ([x] feito / [ ] pendente), por semana. */
+function montarChecklist(tasks: TaskRow[]): string {
+  if (!tasks?.length) return "";
+  const porSemana = new Map<number, TaskRow[]>();
+  for (const t of tasks) {
+    if (!porSemana.has(t.semana)) porSemana.set(t.semana, []);
+    porSemana.get(t.semana)!.push(t);
+  }
+  const linhas = ["", "ANDAMENTO DO CONTRATO (checklist — [x] já feito, [ ] pendente):"];
+  for (const semana of [...porSemana.keys()].sort((a, b) => a - b)) {
+    linhas.push(`Semana ${semana}:`);
+    for (const t of porSemana.get(semana)!) linhas.push(`  [${t.done ? "x" : " "}] ${t.titulo}`);
+  }
+  return linhas.join("\n");
+}
+
 interface HistRow { role: string; sender_name: string | null; body: string }
 
 /** Converte o histórico (ordenado) em contents do Gemini, mesclando turnos
@@ -92,6 +110,12 @@ async function chamarGemini(
         text:
           `${systemPrompt}\n\n` +
           `CONTEXTO DO CLIENTE (use para responder):\n${contexto}\n\n` +
+          "USO DO CHECKLIST: o contexto traz o ANDAMENTO DO CONTRATO (o que já foi feito ou está pendente). " +
+          "Baseie suas respostas nesse andamento — nunca diga que algo está pronto se está pendente. Se o cliente perguntar os " +
+          "próximos passos ou cobrar algo de uma etapa PENDENTE (ex.: identidade visual ainda não marcada), diga com segurança que " +
+          "estamos trabalhando nisso e que enviaremos em breve no grupo. Se uma etapa PENDENTE depende de algo que o CLIENTE precisa " +
+          "fornecer (ex.: vídeo do criativo, conta de Facebook antiga, orçamento dos anúncios), você mesmo solicita isso a ele de forma natural. " +
+          "Não liste o checklist nem o exponha cru; use-o só para saber o que falar.\n\n" +
           "FORMATO DA RESPOSTA (OBRIGATÓRIO): envie ESTRITAMENTE o conteúdo da mensagem, sem nenhum prefixo, nome ou identificação. " +
           "NUNCA comece com 'Alfred:', com o seu nome, nem com qualquer 'Nome:'. No histórico, as falas aparecem como 'Nome: texto' " +
           "APENAS para você saber quem falou — isso NÃO é um formato para imitar; escreva só o texto puro da sua resposta. Nada de aspas em volta. " +
@@ -225,6 +249,13 @@ Deno.serve(async (req) => {
     .eq("group_id", grupo.id)
     .maybeSingle();
 
+  // Checklist do cronograma deste cliente (o que já foi entregue/coletado).
+  const { data: tasks } = await supabase
+    .from("alfred_tasks")
+    .select("semana, titulo, done")
+    .eq("group_id", grupo.id)
+    .order("semana").order("ordem");
+
   // D/E) Histórico (últimas >=50) em ordem cronológica + Gemini 2.5.
   const { data: histDesc } = await supabase
     .from("alfred_messages")
@@ -234,7 +265,7 @@ Deno.serve(async (req) => {
     .limit(HISTORICO_MIN);
   const hist = ((histDesc as HistRow[]) ?? []).reverse(); // cronológico (antigo -> novo)
 
-  const contexto = montarContexto(ctx, grupo.client_name);
+  const contexto = montarContexto(ctx, grupo.client_name) + montarChecklist((tasks as TaskRow[]) ?? []);
   const contents = montarContents(hist);
   if (contents.length === 0) return json({ ok: true, ignored: "sem histórico utilizável" });
 
