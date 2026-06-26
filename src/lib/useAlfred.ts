@@ -42,6 +42,16 @@ export function faseEfetiva(g: Pick<AlfredGroup, "created_at" | "fase_override">
   return dias >= FASE_THRESHOLD_DIAS ? "manutencao" : "onboarding";
 }
 
+export interface AlfredProposal {
+  group_id: string;
+  valor_mensal: number | null;
+  valor_setup: number | null;
+  vigencia_meses: number | null;
+  forma_pagamento: string | null;
+  entregaveis: string[];
+  observacoes: string | null;
+}
+
 export type AssetStatus = "ativa" | "pausada" | "encerrada" | "substituida";
 export type AssetTipo = "campanha" | "criativo" | "anuncio" | "outro";
 export interface AlfredAsset {
@@ -118,10 +128,11 @@ export function useAlfred() {
   const [members, setMembers] = useState<Record<string, AlfredMember[]>>({});
   const [demands, setDemands] = useState<Record<string, AlfredDemand[]>>({});
   const [assets, setAssets] = useState<Record<string, AlfredAsset[]>>({});
+  const [proposals, setProposals] = useState<Record<string, AlfredProposal>>({});
   const [loading, setLoading] = useState(true);
 
   const load = useCallback(async () => {
-    const [{ data: cfg }, { data: grp }, { data: ctx }, { data: tk }, { data: mem }, { data: mb }, { data: dm }, { data: as }] = await Promise.all([
+    const [{ data: cfg }, { data: grp }, { data: ctx }, { data: tk }, { data: mem }, { data: mb }, { data: dm }, { data: as }, { data: pr }] = await Promise.all([
       supabase.from("alfred_configs")
         .select("system_prompt, evolution_instance, connection_status, numero, handoff_ativo, team_cooldown_min, intervene_after_min")
         .maybeSingle(),
@@ -135,6 +146,7 @@ export function useAlfred() {
       supabase.from("alfred_group_members").select("id, group_id, numero, nome").order("created_at"),
       supabase.from("alfred_demands").select("id, group_id, titulo, descricao, status, prazo").order("prazo"),
       supabase.from("alfred_assets").select("id, group_id, titulo, tipo, status, descricao, substituida_por").order("updated_at", { ascending: false }),
+      supabase.from("alfred_proposals").select("group_id, valor_mensal, valor_setup, vigencia_meses, forma_pagamento, entregaveis, observacoes"),
     ]);
     if (cfg) {
       setConfig({
@@ -168,6 +180,11 @@ export function useAlfred() {
     const amap: Record<string, AlfredAsset[]> = {};
     for (const a of (as as AlfredAsset[]) ?? []) (amap[a.group_id] ??= []).push(a);
     setAssets(amap);
+    const pmap: Record<string, AlfredProposal> = {};
+    for (const p of (pr as (Omit<AlfredProposal, "entregaveis"> & { entregaveis: unknown })[]) ?? []) {
+      pmap[p.group_id] = { ...p, entregaveis: Array.isArray(p.entregaveis) ? (p.entregaveis as string[]) : [] };
+    }
+    setProposals(pmap);
     setLoading(false);
   }, []);
 
@@ -183,6 +200,7 @@ export function useAlfred() {
       .on("postgres_changes", { event: "*", schema: "public", table: "alfred_group_members" }, () => load())
       .on("postgres_changes", { event: "*", schema: "public", table: "alfred_demands" }, () => load())
       .on("postgres_changes", { event: "*", schema: "public", table: "alfred_assets" }, () => load())
+      .on("postgres_changes", { event: "*", schema: "public", table: "alfred_proposals" }, () => load())
       .subscribe();
     return () => void supabase.removeChannel(ch);
   }, [load]);
@@ -354,10 +372,20 @@ export function useAlfred() {
     setContexts((prev) => ({ ...prev, [group_id]: { group_id, ...patch } }));
   }, []);
 
+  // ---- proposta/plano contratado (1 por grupo) ----
+  const saveProposal = useCallback(async (group_id: string, patch: Omit<AlfredProposal, "group_id">) => {
+    const user_id = await uid();
+    const { error } = await supabase.from("alfred_proposals").upsert(
+      { user_id, group_id, ...patch, entregaveis: patch.entregaveis ?? [] }, { onConflict: "group_id" },
+    );
+    if (error) throw error;
+    setProposals((prev) => ({ ...prev, [group_id]: { group_id, ...patch } }));
+  }, []);
+
   return {
-    config, connection, groups, contexts, tasks, memory, members, demands, assets, loading,
+    config, connection, groups, contexts, tasks, memory, members, demands, assets, proposals, loading,
     saveConfig, connectWhatsapp, checkStatus, listarGruposWhatsapp,
-    addGroup, toggleGroup, removeGroup, setFase, saveContext, toggleTask, clearHistory, deleteMemory,
+    addGroup, toggleGroup, removeGroup, setFase, saveContext, saveProposal, toggleTask, clearHistory, deleteMemory,
     addMember, removeMember, addDemand, updateDemand, deleteDemand,
     addAsset, updateAsset, deleteAsset, reload: load,
   };

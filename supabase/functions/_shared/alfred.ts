@@ -51,6 +51,29 @@ function montarMemoria(mem: { chave: string; valor: string }[]): string {
   return linhas.join("\n");
 }
 
+export interface PropostaRow {
+  valor_mensal: number | null; valor_setup: number | null; vigencia_meses: number | null;
+  forma_pagamento: string | null; entregaveis: string[] | null; observacoes: string | null;
+}
+/** Proposta/plano contratado: valores e entregáveis (base p/ falar de preço). */
+function montarProposta(p: PropostaRow | null): string {
+  if (!p) return "";
+  const entreg = Array.isArray(p.entregaveis) ? p.entregaveis.filter((e) => String(e).trim()) : [];
+  if (!p.valor_mensal && !p.valor_setup && !p.vigencia_meses && !p.forma_pagamento && !entreg.length && !p.observacoes) return "";
+  const brl = (v: number) => "R$ " + Number(v).toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const linhas = ["", "PROPOSTA / PLANO CONTRATADO (base para falar de valores e do que está incluído):"];
+  if (p.valor_mensal) linhas.push(`- Valor mensal: ${brl(p.valor_mensal)}`);
+  if (p.valor_setup) linhas.push(`- Setup/entrada: ${brl(p.valor_setup)}`);
+  if (p.vigencia_meses) linhas.push(`- Vigência: ${p.vigencia_meses} meses`);
+  if (p.forma_pagamento) linhas.push(`- Forma de pagamento: ${p.forma_pagamento}`);
+  if (entreg.length) {
+    linhas.push("- Entregáveis incluídos no plano:");
+    for (const e of entreg) linhas.push(`  - ${e}`);
+  }
+  if (p.observacoes) linhas.push(`- Observações da proposta: ${p.observacoes}`);
+  return linhas.join("\n");
+}
+
 function montarDemandas(d: { titulo: string; status: string; prazo: string | null }[]): string {
   if (!d?.length) return "";
   const linhas = ["", "DEMANDAS AVULSAS EM ABERTO (pedidos do cliente — acompanhe e informe prazos quando perguntarem):"];
@@ -132,6 +155,9 @@ async function chamarGemini(systemPrompt: string, contexto: string, contents: { 
           "CAMPANHAS/ATIVOS: a seção de campanhas mostra o que está NO AR agora e o histórico. Se perguntarem o que está rodando, baseie-se nas " +
           "campanhas com status ATIVA; se perguntarem por uma campanha antiga, explique o status (pausada/substituída) e, se houver, qual a substituiu. " +
           "NUNCA afirme que uma campanha está ativa se ela foi pausada, encerrada ou substituída.\n\n" +
+          "PROPOSTA/PLANO: você tem o plano contratado do cliente (valor, vigência, entregáveis). Use-o para responder quanto ele paga e o que está " +
+          "incluído. NUNCA invente valores nem prometa algo fora do plano. Se ele pedir algo que NÃO está nos entregáveis, explique com gentileza que " +
+          "não faz parte do pacote atual e que dá pra orçar à parte.\n\n" +
           "DEMANDAS AVULSAS: se o cliente pedir uma arte específica, uma alteração ou uma tarefa pontual, CONFIRME que vai providenciar e informe um prazo " +
           "aproximado de entrega (poucos dias). A demanda é registrada e acompanhada internamente — fale com naturalidade, sem citar 'sistema' ou 'banco de dados'.\n\n" +
           "FORMATO (REGRA CRÍTICA — siga à risca): fale como uma pessoa REAL da equipe no WhatsApp — tom leve, cotidiano e informal, nada robótico nem formal. " +
@@ -275,9 +301,9 @@ export interface Grupo {
 type HistMsg = HistRow & { created_at: string };
 interface DemandaRow { titulo: string; status: string; prazo: string | null }
 // deno-lint-ignore no-explicit-any
-interface Carga { hist: HistMsg[]; ctx: any; tarefas: TaskRow[]; mem: { chave: string; valor: string }[]; demandas: DemandaRow[]; assets: AssetRow[] }
+interface Carga { hist: HistMsg[]; ctx: any; tarefas: TaskRow[]; mem: { chave: string; valor: string }[]; demandas: DemandaRow[]; assets: AssetRow[]; proposta: PropostaRow | null }
 
-/** Carrega histórico + contexto + checklist + memória + demandas + ativos. */
+/** Carrega histórico + contexto + checklist + memória + demandas + ativos + proposta. */
 async function carregar(supabase: SupabaseClient, groupId: string): Promise<Carga> {
   const { data: msgsDesc } = await supabase
     .from("alfred_messages")
@@ -286,12 +312,13 @@ async function carregar(supabase: SupabaseClient, groupId: string): Promise<Carg
     .order("created_at", { ascending: false })
     .limit(HISTORICO);
   const hist = ((msgsDesc as HistMsg[]) ?? []).reverse();
-  const [{ data: ctx }, { data: tasks }, { data: memorias }, { data: dem }, { data: ats }] = await Promise.all([
+  const [{ data: ctx }, { data: tasks }, { data: memorias }, { data: dem }, { data: ats }, { data: prop }] = await Promise.all([
     supabase.from("alfred_context").select("empresa_dados, regras_atendimento, drive_link, cronograma, financeiro, observacoes, resumo").eq("group_id", groupId).maybeSingle(),
     supabase.from("alfred_tasks").select("semana, task_key, titulo, done").eq("group_id", groupId).order("semana").order("ordem"),
     supabase.from("alfred_memory").select("chave, valor").eq("group_id", groupId),
     supabase.from("alfred_demands").select("titulo, status, prazo").eq("group_id", groupId).neq("status", "concluida"),
     supabase.from("alfred_assets").select("id, titulo, tipo, status, descricao, substituida_por").eq("group_id", groupId).neq("status", "encerrada").order("updated_at", { ascending: false }).limit(40),
+    supabase.from("alfred_proposals").select("valor_mensal, valor_setup, vigencia_meses, forma_pagamento, entregaveis, observacoes").eq("group_id", groupId).maybeSingle(),
   ]);
   return {
     hist, ctx: ctx ?? null,
@@ -299,6 +326,7 @@ async function carregar(supabase: SupabaseClient, groupId: string): Promise<Carg
     mem: (memorias as { chave: string; valor: string }[]) ?? [],
     demandas: (dem as DemandaRow[]) ?? [],
     assets: (ats as AssetRow[]) ?? [],
+    proposta: (prop as PropostaRow | null) ?? null,
   };
 }
 
@@ -310,6 +338,7 @@ async function gerarResposta(supabase: SupabaseClient, grupo: Grupo, cfg: Alfred
 
   const fase = faseEfetiva(grupo.created_at, grupo.fase_override);
   const contexto = montarContexto(carga.ctx, grupo.client_name, fase)
+    + montarProposta(carga.proposta)
     + montarMemoria(carga.mem)
     + montarAtivos(carga.assets)
     + montarDemandas(carga.demandas)

@@ -3,13 +3,13 @@ import {
   Bot, Smartphone, Sparkles, Plus, Trash2, Power, PowerOff, ChevronDown,
   Save, Loader2, QrCode, Users, FolderOpen, CalendarRange, Wallet, StickyNote, RefreshCw,
   Building2, ScrollText, Search, Square, CheckSquare, ListChecks, MessageSquare, Eraser, X, Brain, UserPlus,
-  KanbanSquare, CalendarClock, AlertTriangle, Megaphone, Layers, Rocket,
+  KanbanSquare, CalendarClock, AlertTriangle, Megaphone, Layers, Rocket, Handshake,
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import {
   useAlfred, faseEfetiva, type AlfredConfig, type AlfredConnection, type AlfredGroup, type AlfredContext, type AlfredTask,
   type AlfredMessage, type AlfredMemory, type AlfredMember, type AlfredDemand, type DemandStatus,
-  type AlfredAsset, type AssetStatus, type AssetTipo, type Fase,
+  type AlfredAsset, type AssetStatus, type AssetTipo, type Fase, type AlfredProposal,
 } from "@/lib/useAlfred";
 
 // =====================================================================
@@ -17,7 +17,7 @@ import {
 // Lógica 100% preservada; visual no design system do app (Bento + Apple-like).
 // =====================================================================
 export default function Alfred() {
-  const { config, connection, groups, contexts, tasks, memory, members, demands, assets, loading, saveConfig, connectWhatsapp, checkStatus, listarGruposWhatsapp, addGroup, toggleGroup, removeGroup, setFase, saveContext, toggleTask, clearHistory, deleteMemory, addMember, removeMember, addDemand, updateDemand, deleteDemand, addAsset, updateAsset, deleteAsset } = useAlfred();
+  const { config, connection, groups, contexts, tasks, memory, members, demands, assets, proposals, loading, saveConfig, connectWhatsapp, checkStatus, listarGruposWhatsapp, addGroup, toggleGroup, removeGroup, setFase, saveContext, saveProposal, toggleTask, clearHistory, deleteMemory, addMember, removeMember, addDemand, updateDemand, deleteDemand, addAsset, updateAsset, deleteAsset } = useAlfred();
   const [conversa, setConversa] = useState<AlfredGroup | null>(null);
   const [view, setView] = useState<"grupos" | "demandas">("grupos");
 
@@ -81,10 +81,12 @@ export default function Alfred() {
               memory={memory[g.id] ?? []}
               members={members[g.id] ?? []}
               assets={assets[g.id] ?? []}
+              proposal={proposals[g.id]}
               onToggle={toggleGroup}
               onRemove={removeGroup}
               onSetFase={setFase}
               onSaveContext={saveContext}
+              onSaveProposal={saveProposal}
               onToggleTask={toggleTask}
               onVerConversa={() => setConversa(g)}
               onDeleteMemory={deleteMemory}
@@ -906,9 +908,116 @@ function Campanhas({ groupId, assets, onAdd, onUpdate, onDelete }: {
   );
 }
 
+// ---- Proposta / plano contratado (valores + entregáveis) -----------
+function Proposta({ groupId, proposal, onSave }: {
+  groupId: string;
+  proposal?: AlfredProposal;
+  onSave: (groupId: string, patch: Omit<AlfredProposal, "group_id">) => Promise<void>;
+}) {
+  const [mensal, setMensal] = useState("");
+  const [setup, setSetup] = useState("");
+  const [vigencia, setVigencia] = useState("");
+  const [pagamento, setPagamento] = useState("");
+  const [itens, setItens] = useState<string[]>([]);
+  const [obs, setObs] = useState("");
+  const [salvando, setSalvando] = useState(false);
+  const [msg, setMsg] = useState("");
+
+  useEffect(() => {
+    setMensal(proposal?.valor_mensal != null ? String(proposal.valor_mensal) : "");
+    setSetup(proposal?.valor_setup != null ? String(proposal.valor_setup) : "");
+    setVigencia(proposal?.vigencia_meses != null ? String(proposal.vigencia_meses) : "");
+    setPagamento(proposal?.forma_pagamento ?? "");
+    setItens(proposal?.entregaveis ?? []);
+    setObs(proposal?.observacoes ?? "");
+  }, [proposal]);
+
+  const num = (s: string) => { const n = Number(String(s).replace(/\./g, "").replace(",", ".")); return s.trim() === "" || Number.isNaN(n) ? null : n; };
+
+  async function salvar(e: React.FormEvent) {
+    e.preventDefault();
+    setSalvando(true); setMsg("");
+    try {
+      await onSave(groupId, {
+        valor_mensal: num(mensal),
+        valor_setup: num(setup),
+        vigencia_meses: vigencia.trim() ? Math.max(0, Math.floor(Number(vigencia) || 0)) : null,
+        forma_pagamento: pagamento.trim() || null,
+        entregaveis: itens.map((i) => i.trim()).filter(Boolean),
+        observacoes: obs.trim() || null,
+      });
+      setMsg("Proposta salva ✅");
+      setTimeout(() => setMsg(""), 2500);
+    } catch (err) { setMsg("Erro: " + (err instanceof Error ? err.message : String(err))); }
+    finally { setSalvando(false); }
+  }
+
+  return (
+    <form onSubmit={salvar} className="mb-4 rounded-xl border border-black/5 bg-white p-3 shadow-sm">
+      <div className="mb-2 flex items-center gap-1.5 text-sm font-medium">
+        <Handshake size={15} className="text-accent" /> Proposta e plano contratado
+        <span className="text-[11px] font-normal text-ink-muted">(o Alfred usa pra falar de valores e do que está incluído)</span>
+      </div>
+
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div>
+          <label className="mb-1 block text-xs font-medium text-ink-soft">Valor mensal (R$)</label>
+          <input className="input tabular-nums" inputMode="decimal" placeholder="0,00" value={mensal} onChange={(e) => setMensal(e.target.value)} />
+        </div>
+        <div>
+          <label className="mb-1 block text-xs font-medium text-ink-soft">Setup / entrada (R$)</label>
+          <input className="input tabular-nums" inputMode="decimal" placeholder="0,00" value={setup} onChange={(e) => setSetup(e.target.value)} />
+        </div>
+        <div>
+          <label className="mb-1 block text-xs font-medium text-ink-soft">Vigência (meses)</label>
+          <input className="input tabular-nums" inputMode="numeric" placeholder="12" value={vigencia} onChange={(e) => setVigencia(e.target.value)} />
+        </div>
+        <div>
+          <label className="mb-1 block text-xs font-medium text-ink-soft">Forma de pagamento</label>
+          <input className="input" placeholder="Ex.: Pix dia 5, boleto…" value={pagamento} onChange={(e) => setPagamento(e.target.value)} />
+        </div>
+      </div>
+
+      <div className="mt-3">
+        <label className="mb-1 block text-xs font-medium text-ink-soft">Entregáveis incluídos no plano</label>
+        {itens.length > 0 && (
+          <div className="mb-1.5 space-y-1.5">
+            {itens.map((it, i) => (
+              <div key={i} className="flex items-center gap-2">
+                <input className="input !py-1.5 text-sm" placeholder="Ex.: 8 posts no feed por mês" value={it}
+                  onChange={(e) => setItens((prev) => prev.map((x, j) => (j === i ? e.target.value : x)))} />
+                <button type="button" onClick={() => setItens((prev) => prev.filter((_, j) => j !== i))}
+                  title="Remover entregável" className="shrink-0 rounded p-1 text-ink-muted transition-colors hover:bg-danger/10 hover:text-danger">
+                  <X size={14} />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+        <button type="button" onClick={() => setItens((prev) => [...prev, ""])}
+          className="flex items-center gap-1 rounded-lg border border-dashed border-black/15 px-2.5 py-1.5 text-xs font-medium text-ink-muted transition-colors hover:border-accent/40 hover:text-accent">
+          <Plus size={13} /> Entregável
+        </button>
+      </div>
+
+      <div className="mt-3">
+        <label className="mb-1 block text-xs font-medium text-ink-soft">Observações da proposta</label>
+        <textarea rows={2} className="input resize-none text-sm" placeholder="Condições especiais, descontos, escopo, exceções…" value={obs} onChange={(e) => setObs(e.target.value)} />
+      </div>
+
+      <div className="mt-3 flex items-center gap-3">
+        <button type="submit" className="btn-accent !py-2" disabled={salvando}>
+          {salvando ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />} {salvando ? "Salvando…" : "Salvar proposta"}
+        </button>
+        <Feedback msg={msg} />
+      </div>
+    </form>
+  );
+}
+
 // ---- Card de grupo: status + on/off + equipe + checklist + contexto
 function GroupItem({
-  group, context, tasks, memory, members, assets, onToggle, onRemove, onSetFase, onSaveContext, onToggleTask, onVerConversa, onDeleteMemory, onAddMember, onRemoveMember, onAddAsset, onUpdateAsset, onDeleteAsset,
+  group, context, tasks, memory, members, assets, proposal, onToggle, onRemove, onSetFase, onSaveContext, onSaveProposal, onToggleTask, onVerConversa, onDeleteMemory, onAddMember, onRemoveMember, onAddAsset, onUpdateAsset, onDeleteAsset,
 }: {
   group: AlfredGroup;
   context?: AlfredContext;
@@ -916,10 +1025,12 @@ function GroupItem({
   memory: AlfredMemory[];
   members: AlfredMember[];
   assets: AlfredAsset[];
+  proposal?: AlfredProposal;
   onToggle: (id: string, active: boolean) => Promise<void>;
   onRemove: (id: string) => Promise<void>;
   onSetFase: (id: string, fase: Fase | null) => Promise<void>;
   onSaveContext: (groupId: string, patch: Omit<AlfredContext, "group_id">) => Promise<void>;
+  onSaveProposal: (groupId: string, patch: Omit<AlfredProposal, "group_id">) => Promise<void>;
   onToggleTask: (t: AlfredTask) => Promise<void>;
   onVerConversa: () => void;
   onDeleteMemory: (id: string, groupId: string) => Promise<void>;
@@ -1057,6 +1168,7 @@ function GroupItem({
       {aberto && (
         <div className="border-t border-black/5 bg-black/[0.015] p-4">
         <PhaseControl group={group} onSetFase={onSetFase} />
+        <Proposta groupId={group.id} proposal={proposal} onSave={onSaveProposal} />
         <Equipe groupId={group.id} members={members} onAdd={onAddMember} onRemove={onRemoveMember} />
         {/* Manutenção: campanhas em primeiro plano; Onboarding: cronograma primeiro. */}
         {fase === "manutencao" ? (
