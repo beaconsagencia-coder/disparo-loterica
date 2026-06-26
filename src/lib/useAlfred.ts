@@ -5,6 +5,14 @@ import { supabase } from "./supabase";
 // API Keys saíram daqui: o Alfred herda a chave do Agente SDR (env GEMINI_API_KEY).
 export interface AlfredConfig {
   system_prompt: string;
+  team_cooldown_min: number;   // pausa após a equipe interagir
+  intervene_after_min: number; // prazo p/ o Alfred intervir se a equipe não responder
+}
+export interface AlfredMember {
+  id: string;
+  group_id: string;
+  numero: string;
+  nome: string | null;
 }
 export interface AlfredGroup {
   id: string;
@@ -52,7 +60,7 @@ export interface AlfredMessage {
   created_at: string;
 }
 
-const CONFIG_DEFAULT: AlfredConfig = { system_prompt: "" };
+const CONFIG_DEFAULT: AlfredConfig = { system_prompt: "", team_cooldown_min: 5, intervene_after_min: 30 };
 
 async function uid(): Promise<string> {
   const { data } = await supabase.auth.getUser();
@@ -76,12 +84,13 @@ export function useAlfred() {
   const [contexts, setContexts] = useState<Record<string, AlfredContext>>({});
   const [tasks, setTasks] = useState<Record<string, AlfredTask[]>>({});
   const [memory, setMemory] = useState<Record<string, AlfredMemory[]>>({});
+  const [members, setMembers] = useState<Record<string, AlfredMember[]>>({});
   const [loading, setLoading] = useState(true);
 
   const load = useCallback(async () => {
-    const [{ data: cfg }, { data: grp }, { data: ctx }, { data: tk }, { data: mem }] = await Promise.all([
+    const [{ data: cfg }, { data: grp }, { data: ctx }, { data: tk }, { data: mem }, { data: mb }] = await Promise.all([
       supabase.from("alfred_configs")
-        .select("system_prompt, evolution_instance, connection_status, numero")
+        .select("system_prompt, evolution_instance, connection_status, numero, team_cooldown_min, intervene_after_min")
         .maybeSingle(),
       supabase.from("alfred_groups").select("*").order("created_at", { ascending: false }),
       supabase.from("alfred_context")
@@ -90,9 +99,14 @@ export function useAlfred() {
         .select("id, group_id, semana, ordem, task_key, titulo, done")
         .order("semana").order("ordem"),
       supabase.from("alfred_memory").select("id, group_id, chave, valor").order("chave"),
+      supabase.from("alfred_group_members").select("id, group_id, numero, nome").order("created_at"),
     ]);
     if (cfg) {
-      setConfig({ system_prompt: cfg.system_prompt ?? "" });
+      setConfig({
+        system_prompt: cfg.system_prompt ?? "",
+        team_cooldown_min: Number(cfg.team_cooldown_min ?? 5),
+        intervene_after_min: Number(cfg.intervene_after_min ?? 30),
+      });
       setConnection({
         evolution_instance: cfg.evolution_instance ?? null,
         connection_status: cfg.connection_status ?? "desconectado",
@@ -109,6 +123,9 @@ export function useAlfred() {
     const mmap: Record<string, AlfredMemory[]> = {};
     for (const m of (mem as AlfredMemory[]) ?? []) (mmap[m.group_id] ??= []).push(m);
     setMemory(mmap);
+    const bmap: Record<string, AlfredMember[]> = {};
+    for (const m of (mb as AlfredMember[]) ?? []) (bmap[m.group_id] ??= []).push(m);
+    setMembers(bmap);
     setLoading(false);
   }, []);
 
@@ -121,6 +138,7 @@ export function useAlfred() {
       .on("postgres_changes", { event: "*", schema: "public", table: "alfred_configs" }, () => load())
       .on("postgres_changes", { event: "*", schema: "public", table: "alfred_tasks" }, () => load())
       .on("postgres_changes", { event: "*", schema: "public", table: "alfred_memory" }, () => load())
+      .on("postgres_changes", { event: "*", schema: "public", table: "alfred_group_members" }, () => load())
       .subscribe();
     return () => void supabase.removeChannel(ch);
   }, [load]);
@@ -200,6 +218,24 @@ export function useAlfred() {
     if (error) throw error;
   }, []);
 
+  // ---- equipe do grupo (quem é membro x cliente) ----
+  const addMember = useCallback(async (groupId: string, numero: string, nome?: string) => {
+    const user_id = await uid();
+    const dig = numero.replace(/\D/g, "").replace(/^0+/, "");
+    if (!dig) throw new Error("Informe um número válido.");
+    const { error } = await supabase.from("alfred_group_members").insert({
+      user_id, group_id: groupId, numero: dig, nome: nome?.trim() || null,
+    });
+    if (error) throw error;
+    await load();
+  }, [load]);
+
+  const removeMember = useCallback(async (id: string, groupId: string) => {
+    setMembers((prev) => ({ ...prev, [groupId]: (prev[groupId] ?? []).filter((m) => m.id !== id) }));
+    const { error } = await supabase.from("alfred_group_members").delete().eq("id", id);
+    if (error) await load();
+  }, [load]);
+
   /** Remove um item da memória aprendida (ex.: dado sensível que não quer guardar). */
   const deleteMemory = useCallback(async (id: string, groupId: string) => {
     setMemory((prev) => ({ ...prev, [groupId]: (prev[groupId] ?? []).filter((m) => m.id !== id) }));
@@ -218,8 +254,9 @@ export function useAlfred() {
   }, []);
 
   return {
-    config, connection, groups, contexts, tasks, memory, loading,
+    config, connection, groups, contexts, tasks, memory, members, loading,
     saveConfig, connectWhatsapp, checkStatus, listarGruposWhatsapp,
-    addGroup, toggleGroup, removeGroup, saveContext, toggleTask, clearHistory, deleteMemory, reload: load,
+    addGroup, toggleGroup, removeGroup, saveContext, toggleTask, clearHistory, deleteMemory,
+    addMember, removeMember, reload: load,
   };
 }

@@ -2,17 +2,17 @@ import { useEffect, useRef, useState } from "react";
 import {
   Bot, Smartphone, Sparkles, Plus, Trash2, Power, PowerOff, ChevronDown,
   Save, Loader2, QrCode, Users, FolderOpen, CalendarRange, Wallet, StickyNote, RefreshCw,
-  Building2, ScrollText, Search, Square, CheckSquare, ListChecks, MessageSquare, Eraser, X, Brain,
+  Building2, ScrollText, Search, Square, CheckSquare, ListChecks, MessageSquare, Eraser, X, Brain, UserPlus,
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
-import { useAlfred, type AlfredConfig, type AlfredConnection, type AlfredGroup, type AlfredContext, type AlfredTask, type AlfredMessage, type AlfredMemory } from "@/lib/useAlfred";
+import { useAlfred, type AlfredConfig, type AlfredConnection, type AlfredGroup, type AlfredContext, type AlfredTask, type AlfredMessage, type AlfredMemory, type AlfredMember } from "@/lib/useAlfred";
 
 // =====================================================================
 // /alfred — CRUD do agente Alfred (grupos de WhatsApp de clientes).
 // Lógica 100% preservada; visual no design system do app (Bento + Apple-like).
 // =====================================================================
 export default function Alfred() {
-  const { config, connection, groups, contexts, tasks, memory, loading, saveConfig, connectWhatsapp, checkStatus, listarGruposWhatsapp, addGroup, toggleGroup, removeGroup, saveContext, toggleTask, clearHistory, deleteMemory } = useAlfred();
+  const { config, connection, groups, contexts, tasks, memory, members, loading, saveConfig, connectWhatsapp, checkStatus, listarGruposWhatsapp, addGroup, toggleGroup, removeGroup, saveContext, toggleTask, clearHistory, deleteMemory, addMember, removeMember } = useAlfred();
   const [conversa, setConversa] = useState<AlfredGroup | null>(null);
 
   if (loading) {
@@ -58,12 +58,15 @@ export default function Alfred() {
               context={contexts[g.id]}
               tasks={tasks[g.id] ?? []}
               memory={memory[g.id] ?? []}
+              members={members[g.id] ?? []}
               onToggle={toggleGroup}
               onRemove={removeGroup}
               onSaveContext={saveContext}
               onToggleTask={toggleTask}
               onVerConversa={() => setConversa(g)}
               onDeleteMemory={deleteMemory}
+              onAddMember={addMember}
+              onRemoveMember={removeMember}
             />
           ))}
         </div>
@@ -189,16 +192,26 @@ function ConexaoWhatsapp({ connection, onConnect, onCheckStatus }: {
 // ---- Comportamento global (prompt) — sem chaves (herdadas do SDR) --
 function ConfigForm({ config, onSave }: { config: AlfredConfig; onSave: (c: AlfredConfig) => Promise<void> }) {
   const [prompt, setPrompt] = useState(config.system_prompt ?? "");
+  const [intervir, setIntervir] = useState(String(config.intervene_after_min));
+  const [cooldown, setCooldown] = useState(String(config.team_cooldown_min));
   const [salvando, setSalvando] = useState(false);
   const [msg, setMsg] = useState("");
 
-  useEffect(() => { setPrompt(config.system_prompt ?? ""); }, [config]);
+  useEffect(() => {
+    setPrompt(config.system_prompt ?? "");
+    setIntervir(String(config.intervene_after_min));
+    setCooldown(String(config.team_cooldown_min));
+  }, [config]);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     setSalvando(true); setMsg("");
     try {
-      await onSave({ system_prompt: prompt });
+      await onSave({
+        system_prompt: prompt,
+        intervene_after_min: Math.max(1, Math.floor(Number(intervir) || 30)),
+        team_cooldown_min: Math.max(1, Math.floor(Number(cooldown) || 5)),
+      });
       setMsg("Configurações salvas ✅");
       setTimeout(() => setMsg(""), 2500);
     } catch (err) {
@@ -214,14 +227,25 @@ function ConfigForm({ config, onSave }: { config: AlfredConfig; onSave: (c: Alfr
         <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-accent/10 text-accent"><Sparkles size={17} /></span>
         <div>
           <h2 className="font-medium">Comportamento do Alfred</h2>
-          <p className="text-xs text-ink-muted">Prompt global aplicado a todos os grupos.</p>
+          <p className="text-xs text-ink-muted">Prompt global + regras de espera (handoff com a equipe).</p>
         </div>
       </div>
 
       <div className="flex flex-1 flex-col">
         <label className="mb-1 block text-xs font-medium text-ink-soft">Prompt de sistema global</label>
-        <textarea rows={6} className="input flex-1 resize-none text-sm" value={prompt} onChange={(e) => setPrompt(e.target.value)} />
+        <textarea rows={5} className="input flex-1 resize-none text-sm" value={prompt} onChange={(e) => setPrompt(e.target.value)} />
         <p className="mt-1.5 text-xs text-ink-muted">A chave de IA é a mesma do <strong>Agente SDR</strong> — não precisa configurar aqui.</p>
+      </div>
+
+      <div className="mt-3 grid grid-cols-2 gap-3">
+        <div>
+          <label className="mb-1 block text-xs font-medium text-ink-soft">Intervir após (min)</label>
+          <input type="number" min={1} className="input tabular-nums" value={intervir} onChange={(e) => setIntervir(e.target.value)} title="Tempo sem resposta da equipe até o Alfred intervir" />
+        </div>
+        <div>
+          <label className="mb-1 block text-xs font-medium text-ink-soft">Pausa após equipe (min)</label>
+          <input type="number" min={1} className="input tabular-nums" value={cooldown} onChange={(e) => setCooldown(e.target.value)} title="Tempo que o Alfred espera depois da equipe falar" />
+        </div>
       </div>
 
       <div className="mt-4 flex items-center gap-3">
@@ -508,20 +532,78 @@ function Conhecimento({ resumo, memory, onDelete }: { resumo?: string | null; me
   );
 }
 
-// ---- Card de grupo: status + on/off + checklist + editor de contexto
+// ---- Equipe do grupo (quem é membro x cliente) ---------------------
+function Equipe({ groupId, members, onAdd, onRemove }: {
+  groupId: string;
+  members: AlfredMember[];
+  onAdd: (groupId: string, numero: string, nome?: string) => Promise<void>;
+  onRemove: (id: string, groupId: string) => Promise<void>;
+}) {
+  const [numero, setNumero] = useState("");
+  const [nome, setNome] = useState("");
+  const [msg, setMsg] = useState("");
+
+  async function adicionar(e: React.FormEvent) {
+    e.preventDefault();
+    setMsg("");
+    try { await onAdd(groupId, numero, nome); setNumero(""); setNome(""); }
+    catch (err) { setMsg("Erro: " + (err instanceof Error ? err.message : String(err))); }
+  }
+
+  return (
+    <div className="mb-4 rounded-xl border border-black/5 bg-white p-3 shadow-sm">
+      <div className="mb-2 flex items-center gap-1.5 text-sm font-medium">
+        <UserPlus size={15} className="text-accent" /> Equipe no grupo
+        <span className="text-[11px] font-normal text-ink-muted">(o Alfred nunca responde a estes números)</span>
+      </div>
+
+      {members.length > 0 && (
+        <div className="mb-2 space-y-1">
+          {members.map((m) => (
+            <div key={m.id} className="flex items-center gap-2 rounded-lg px-1.5 py-1 text-sm hover:bg-black/[0.02]">
+              <span className="font-medium text-ink-soft">{m.nome || "—"}</span>
+              <span className="font-mono text-xs text-ink-muted">{m.numero}</span>
+              <button onClick={() => onRemove(m.id, groupId)} title="Remover da equipe" className="ml-auto shrink-0 rounded p-0.5 text-ink-muted transition-colors hover:bg-danger/10 hover:text-danger">
+                <Trash2 size={13} />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <form onSubmit={adicionar} className="flex flex-wrap items-end gap-2">
+        <div className="flex-1 min-w-[140px]">
+          <label className="mb-1 block text-[11px] font-medium text-ink-soft">Número (com DDD)</label>
+          <input className="input !py-1.5 font-mono text-sm" placeholder="5598999998888" value={numero} onChange={(e) => setNumero(e.target.value)} />
+        </div>
+        <div className="flex-1 min-w-[120px]">
+          <label className="mb-1 block text-[11px] font-medium text-ink-soft">Nome (opcional)</label>
+          <input className="input !py-1.5 text-sm" placeholder="Bruna" value={nome} onChange={(e) => setNome(e.target.value)} />
+        </div>
+        <button type="submit" className="btn-accent !py-2"><Plus size={15} /> Adicionar</button>
+      </form>
+      {msg && <div className="mt-1.5"><Feedback msg={msg} /></div>}
+    </div>
+  );
+}
+
+// ---- Card de grupo: status + on/off + equipe + checklist + contexto
 function GroupItem({
-  group, context, tasks, memory, onToggle, onRemove, onSaveContext, onToggleTask, onVerConversa, onDeleteMemory,
+  group, context, tasks, memory, members, onToggle, onRemove, onSaveContext, onToggleTask, onVerConversa, onDeleteMemory, onAddMember, onRemoveMember,
 }: {
   group: AlfredGroup;
   context?: AlfredContext;
   tasks: AlfredTask[];
   memory: AlfredMemory[];
+  members: AlfredMember[];
   onToggle: (id: string, active: boolean) => Promise<void>;
   onRemove: (id: string) => Promise<void>;
   onSaveContext: (groupId: string, patch: Omit<AlfredContext, "group_id">) => Promise<void>;
   onToggleTask: (t: AlfredTask) => Promise<void>;
   onVerConversa: () => void;
   onDeleteMemory: (id: string, groupId: string) => Promise<void>;
+  onAddMember: (groupId: string, numero: string, nome?: string) => Promise<void>;
+  onRemoveMember: (id: string, groupId: string) => Promise<void>;
 }) {
   const [aberto, setAberto] = useState(false);
   const [empresa, setEmpresa] = useState(context?.empresa_dados ?? "");
@@ -646,6 +728,7 @@ function GroupItem({
       {/* Área dedicada: checklist do cronograma + contexto da empresa */}
       {aberto && (
         <div className="border-t border-black/5 bg-black/[0.015] p-4">
+        <Equipe groupId={group.id} members={members} onAdd={onAddMember} onRemove={onRemoveMember} />
         <Checklist tasks={tasks} onToggle={onToggleTask} />
         <Conhecimento resumo={context?.resumo} memory={memory} onDelete={(id) => onDeleteMemory(id, group.id)} />
         <form onSubmit={salvarContexto}>
