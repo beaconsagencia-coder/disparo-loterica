@@ -31,6 +31,8 @@ const WEBHOOK_SECRET = Deno.env.get("ALFRED_WEBHOOK_SECRET") ?? "";
 const GEMINI_MODEL = "gemini-2.5-flash";
 const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
 const HISTORICO_MIN = 50; // nº mínimo de mensagens do grupo no contexto
+const DEBOUNCE_MS = 6000; // espera o cliente terminar de digitar (igual ao SDR)
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 // --- helpers --------------------------------------------------------
 
@@ -116,11 +118,12 @@ async function chamarGemini(
   return (parts?.map((p) => p?.text ?? "").join("") ?? "").trim();
 }
 
-async function enviarGrupo(url: string, key: string, instance: string, remoteJid: string, texto: string): Promise<void> {
+async function enviarGrupo(url: string, key: string, instance: string, remoteJid: string, texto: string, delayMs = 0): Promise<void> {
   const res = await fetch(`${url}/message/sendText/${instance}`, {
     method: "POST",
     headers: { "Content-Type": "application/json", apikey: key },
-    body: JSON.stringify({ number: remoteJid, text: texto }),
+    // delay + presence: a Evolution exibe "digitando…" antes de enviar (efeito humano).
+    body: JSON.stringify({ number: remoteJid, text: texto, ...(delayMs > 0 ? { delay: delayMs, presence: "composing" } : {}) }),
   });
   if (!res.ok) throw new Error(`Evolution sendText ${res.status}: ${(await res.text()).slice(0, 200)}`);
 }
@@ -176,10 +179,20 @@ Deno.serve(async (req) => {
   const senderName: string = data?.pushName ?? (key?.participant ?? "").split("@")[0] ?? "";
 
   // C) Persiste a mensagem recebida no histórico ANTES de montar o contexto.
-  await supabase.from("alfred_messages").insert({
+  const { data: inserida } = await supabase.from("alfred_messages").insert({
     user_id: grupo.user_id, group_id: grupo.id, remote_jid: remoteJid,
     role: "user", sender_name: senderName || null, body: texto,
-  });
+  }).select("created_at").single();
+  const triggerAt = inserida?.created_at ?? new Date().toISOString();
+
+  // Debounce (igual ao SDR): espera o cliente terminar de digitar. Se chegar
+  // mensagem nova no grupo nesse meio, aborta — a execução mais recente
+  // responde, já com o contexto completo (sem responder cada msg da rajada).
+  await sleep(DEBOUNCE_MS);
+  const { count: novas } = await supabase.from("alfred_messages")
+    .select("id", { count: "exact", head: true })
+    .eq("group_id", grupo.id).eq("role", "user").gt("created_at", triggerAt);
+  if ((novas ?? 0) > 0) return json({ ok: true, ignored: "debounce: mensagem mais nova" });
 
   // C) A API Key é a MESMA do Agente SDR (env). Do banco vem só o prompt global.
   if (!GEMINI_API_KEY) {
@@ -191,6 +204,12 @@ Deno.serve(async (req) => {
     .select("system_prompt")
     .eq("user_id", grupo.user_id)
     .maybeSingle();
+
+  // Tempos de "digitando…" HERDADOS do Agente SDR (mesma config por usuário).
+  const { data: sdrCfg } = await supabase
+    .from("ai_config").select("delay_min_seg, delay_max_seg").eq("user_id", grupo.user_id).maybeSingle();
+  const dmin = Number(sdrCfg?.delay_min_seg ?? 3);
+  const dmax = Number(sdrCfg?.delay_max_seg ?? 8);
 
   // Contexto INDIVIDUAL do grupo (cada grupo = uma empresa).
   const { data: ctx } = await supabase
@@ -224,8 +243,14 @@ Deno.serve(async (req) => {
     return json({ ok: false, error: "evolution não configurada" }, 200);
   }
 
+  // Delay humanizado (mesma fórmula do SDR): base aleatória na faixa + proporcional
+  // ao tamanho do texto (mensagens maiores "demoram" mais para digitar).
+  const base = dmin + Math.random() * Math.max(0, dmax - dmin);
+  const porTamanho = Math.min(dmax, resposta.length / 25);
+  const delayMs = Math.round(Math.max(dmin, Math.max(base, porTamanho)) * 1000);
+
   try {
-    await enviarGrupo(evoUrl, evoKey, evoInstance, remoteJid, resposta);
+    await enviarGrupo(evoUrl, evoKey, evoInstance, remoteJid, resposta, delayMs);
     await supabase.from("alfred_messages").insert({
       user_id: grupo.user_id, group_id: grupo.id, remote_jid: remoteJid,
       role: "model", sender_name: "Alfred", body: resposta,
