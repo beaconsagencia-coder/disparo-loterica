@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import {
   Bot, Smartphone, Sparkles, Plus, Trash2, Power, PowerOff, ChevronDown,
   Save, Loader2, QrCode, Users, FolderOpen, CalendarRange, Wallet, StickyNote, RefreshCw,
-  Building2, ScrollText,
+  Building2, ScrollText, Search,
 } from "lucide-react";
 import { useAlfred, type AlfredConfig, type AlfredConnection, type AlfredGroup, type AlfredContext } from "@/lib/useAlfred";
 
@@ -11,7 +11,7 @@ import { useAlfred, type AlfredConfig, type AlfredConnection, type AlfredGroup, 
 // Lógica 100% preservada; visual no design system do app (Bento + Apple-like).
 // =====================================================================
 export default function Alfred() {
-  const { config, connection, groups, contexts, loading, saveConfig, connectWhatsapp, checkStatus, addGroup, toggleGroup, removeGroup, saveContext } = useAlfred();
+  const { config, connection, groups, contexts, loading, saveConfig, connectWhatsapp, checkStatus, listarGruposWhatsapp, addGroup, toggleGroup, removeGroup, saveContext } = useAlfred();
 
   if (loading) {
     return <p className="mx-auto max-w-6xl text-sm text-ink-muted">Carregando…</p>;
@@ -36,7 +36,7 @@ export default function Alfred() {
       </div>
 
       {/* Cadastro de grupo */}
-      <NovoGrupoForm onAdd={addGroup} />
+      <NovoGrupoForm onAdd={addGroup} onListGroups={listarGruposWhatsapp} jaCadastrados={groups.map((g) => g.remote_jid)} />
 
       {/* Painel de grupos */}
       <div className="mb-2 mt-6 flex items-center gap-2">
@@ -226,16 +226,46 @@ function ConfigForm({ config, onSave }: { config: AlfredConfig; onSave: (c: Alfr
 }
 
 // ---- Cadastro de grupo ---------------------------------------------
-function NovoGrupoForm({ onAdd }: { onAdd: (jid: string, cliente: string, instance?: string) => Promise<void> }) {
+function NovoGrupoForm({
+  onAdd, onListGroups, jaCadastrados,
+}: {
+  onAdd: (jid: string, cliente: string, instance?: string) => Promise<void>;
+  onListGroups: () => Promise<{ id: string; subject: string }[]>;
+  jaCadastrados: string[];
+}) {
   const [jid, setJid] = useState("");
   const [cliente, setCliente] = useState("");
   const [instance, setInstance] = useState("");
   const [salvando, setSalvando] = useState(false);
   const [msg, setMsg] = useState("");
+  // Descoberta automática de grupos do chip do Alfred.
+  const [grupos, setGrupos] = useState<{ id: string; subject: string }[]>([]);
+  const [buscando, setBuscando] = useState(false);
+
+  const jaSet = new Set(jaCadastrados);
+
+  async function buscarGrupos() {
+    setBuscando(true); setMsg("");
+    try {
+      const lista = await onListGroups();
+      setGrupos(lista);
+      if (lista.length === 0) setMsg("Nenhum grupo encontrado. O número do Alfred já está nos grupos?");
+    } catch (err) {
+      setMsg("Erro: " + (err instanceof Error ? err.message : String(err)));
+    } finally {
+      setBuscando(false);
+    }
+  }
+
+  function escolher(id: string) {
+    const g = grupos.find((x) => x.id === id);
+    setJid(id);
+    if (g && !cliente.trim()) setCliente(g.subject); // sugere o nome do grupo como cliente
+  }
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
-    if (!jid.trim() || !cliente.trim()) { setMsg("Erro: informe o remoteJid e o cliente."); return; }
+    if (!jid.trim() || !cliente.trim()) { setMsg("Erro: informe o grupo e o cliente."); return; }
     setSalvando(true); setMsg("");
     try {
       await onAdd(jid, cliente, instance);
@@ -250,14 +280,35 @@ function NovoGrupoForm({ onAdd }: { onAdd: (jid: string, cliente: string, instan
 
   return (
     <form onSubmit={submit} className="bento-card">
-      <div className="mb-3 flex items-center gap-2">
-        <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-accent/10 text-accent"><Plus size={17} /></span>
-        <h2 className="font-medium">Novo grupo</h2>
+      <div className="mb-3 flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-accent/10 text-accent"><Plus size={17} /></span>
+          <h2 className="font-medium">Novo grupo</h2>
+        </div>
+        <button type="button" className="btn-ghost" onClick={buscarGrupos} disabled={buscando} title="Listar os grupos em que o chip do Alfred já está">
+          {buscando ? <Loader2 size={15} className="animate-spin" /> : <Search size={15} />} Buscar grupos do WhatsApp
+        </button>
       </div>
+
+      {/* Seletor dos grupos descobertos (preenche o remoteJid automaticamente) */}
+      {grupos.length > 0 && (
+        <div className="mb-3">
+          <label className="mb-1 block text-xs font-medium text-ink-soft">Escolha o grupo</label>
+          <select className="input" value={jid} onChange={(e) => escolher(e.target.value)}>
+            <option value="">Selecione um grupo…</option>
+            {grupos.map((g) => (
+              <option key={g.id} value={g.id} disabled={jaSet.has(g.id)}>
+                {g.subject || "(sem nome)"}{jaSet.has(g.id) ? " — já cadastrado" : ""}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
+
       <div className="grid items-end gap-3 sm:grid-cols-2 lg:grid-cols-[1.4fr_1fr_1fr_auto]">
         <div>
           <label className="mb-1 block text-xs font-medium text-ink-soft">remoteJid do grupo</label>
-          <input className="input font-mono text-xs" placeholder="1203630…@g.us" value={jid} onChange={(e) => setJid(e.target.value)} />
+          <input className="input font-mono text-xs" placeholder="120363…@g.us" value={jid} onChange={(e) => setJid(e.target.value)} />
         </div>
         <div>
           <label className="mb-1 block text-xs font-medium text-ink-soft">Cliente</label>

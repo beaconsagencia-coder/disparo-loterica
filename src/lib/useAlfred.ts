@@ -114,6 +114,13 @@ export function useAlfred() {
     return (data?.status as string) ?? null;
   }, [load]);
 
+  /** Lista os grupos de WhatsApp em que o chip do Alfred está (id + nome). */
+  const listarGruposWhatsapp = useCallback(async (): Promise<{ id: string; subject: string }[]> => {
+    const { data, error } = await supabase.functions.invoke("alfred-grupos", { body: {} });
+    if (error) throw error;
+    return (data?.grupos as { id: string; subject: string }[]) ?? [];
+  }, []);
+
   // ---- grupos ----
   const addGroup = useCallback(async (remote_jid: string, client_name: string, evolution_instance?: string) => {
     const user_id = await uid();
@@ -150,6 +157,7 @@ export function useAlfred() {
 
   return {
     config, connection, groups, contexts, loading,
-    saveConfig, connectWhatsapp, checkStatus, addGroup, toggleGroup, removeGroup, saveContext, reload: load,
+    saveConfig, connectWhatsapp, checkStatus, listarGruposWhatsapp,
+    addGroup, toggleGroup, removeGroup, saveContext, reload: load,
   };
 }
