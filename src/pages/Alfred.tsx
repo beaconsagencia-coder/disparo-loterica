@@ -3,7 +3,7 @@ import {
   Bot, Smartphone, Sparkles, Plus, Trash2, Power, PowerOff, ChevronDown,
   Save, Loader2, QrCode, Users, FolderOpen, CalendarRange, Wallet, StickyNote, RefreshCw,
   Building2, ScrollText, Search, Square, CheckSquare, ListChecks, MessageSquare, Eraser, X, Brain, UserPlus,
-  KanbanSquare, CalendarClock, AlertTriangle, Megaphone, Layers, Rocket, Handshake,
+  KanbanSquare, CalendarClock, AlertTriangle, Megaphone, Layers, Rocket, Handshake, BookOpen,
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import {
@@ -359,6 +359,8 @@ function ConexaoWhatsapp({ connection, onConnect, onCheckStatus }: {
 // ---- Comportamento global (prompt) — sem chaves (herdadas do SDR) --
 function ConfigForm({ config, onSave }: { config: AlfredConfig; onSave: (c: AlfredConfig) => Promise<void> }) {
   const [prompt, setPrompt] = useState(config.system_prompt ?? "");
+  const [base, setBase] = useState(config.base_conhecimento ?? "");
+  const [baseAberta, setBaseAberta] = useState(false);
   const [handoff, setHandoff] = useState(config.handoff_ativo);
   const [intervir, setIntervir] = useState(String(config.intervene_after_min));
   const [cooldown, setCooldown] = useState(String(config.team_cooldown_min));
@@ -367,6 +369,7 @@ function ConfigForm({ config, onSave }: { config: AlfredConfig; onSave: (c: Alfr
 
   useEffect(() => {
     setPrompt(config.system_prompt ?? "");
+    setBase(config.base_conhecimento ?? "");
     setHandoff(config.handoff_ativo);
     setIntervir(String(config.intervene_after_min));
     setCooldown(String(config.team_cooldown_min));
@@ -378,6 +381,7 @@ function ConfigForm({ config, onSave }: { config: AlfredConfig; onSave: (c: Alfr
     try {
       await onSave({
         system_prompt: prompt,
+        base_conhecimento: base,
         handoff_ativo: handoff,
         intervene_after_min: Math.max(1, Math.floor(Number(intervir) || 30)),
         team_cooldown_min: Math.max(1, Math.floor(Number(cooldown) || 5)),
@@ -405,6 +409,28 @@ function ConfigForm({ config, onSave }: { config: AlfredConfig; onSave: (c: Alfr
         <label className="mb-1 block text-xs font-medium text-ink-soft">Prompt de sistema global</label>
         <textarea rows={5} className="input flex-1 resize-none text-sm" value={prompt} onChange={(e) => setPrompt(e.target.value)} />
         <p className="mt-1.5 text-xs text-ink-muted">A chave de IA é a mesma do <strong>Agente SDR</strong> — não precisa configurar aqui.</p>
+      </div>
+
+      {/* Base de conhecimento do SaaS (Bolão Gestor) — global, colapsável */}
+      <div className="mt-3 rounded-xl border border-black/10 bg-white/50">
+        <button type="button" onClick={() => setBaseAberta((v) => !v)} className="flex w-full items-center gap-2 px-3 py-2.5 text-left">
+          <BookOpen size={15} className="text-accent" />
+          <div className="min-w-0 flex-1">
+            <div className="text-sm font-medium">Base de conhecimento — Bolão Gestor</div>
+            <div className="truncate text-xs text-ink-muted">O Alfred usa isto pra tirar dúvidas dos clientes sobre o sistema.</div>
+          </div>
+          <span className={`chip ${base.trim() ? "bg-success/15 text-[#1b7a35]" : "bg-black/10 text-ink-muted"}`}>
+            <span className={`h-1.5 w-1.5 rounded-full ${base.trim() ? "bg-success" : "bg-ink-muted/60"}`} />
+            {base.trim() ? `${base.length.toLocaleString("pt-BR")} caracteres` : "vazia"}
+          </span>
+          <ChevronDown size={15} className={`shrink-0 text-ink-muted transition-transform ${baseAberta ? "rotate-180" : ""}`} />
+        </button>
+        {baseAberta && (
+          <div className="px-3 pb-3">
+            <textarea rows={10} className="input resize-y font-mono text-xs leading-relaxed" placeholder="Cole aqui a documentação do sistema…" value={base} onChange={(e) => setBase(e.target.value)} />
+            <p className="mt-1.5 text-xs text-ink-muted">Conteúdo global (vale para todos os grupos). Edite aqui sempre que o sistema mudar.</p>
+          </div>
+        )}
       </div>
 
       {/* Handoff: aguardar a equipe vs responder na hora */}

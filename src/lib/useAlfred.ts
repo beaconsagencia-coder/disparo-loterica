@@ -5,6 +5,7 @@ import { supabase } from "./supabase";
 // API Keys saíram daqui: o Alfred herda a chave do Agente SDR (env GEMINI_API_KEY).
 export interface AlfredConfig {
   system_prompt: string;
+  base_conhecimento: string;   // base de conhecimento global do SaaS (Bolão Gestor)
   handoff_ativo: boolean;      // true = espera a equipe (cron); false = responde na hora
   team_cooldown_min: number;   // pausa após a equipe interagir
   intervene_after_min: number; // prazo p/ o Alfred intervir se a equipe não responder
@@ -101,7 +102,7 @@ export interface AlfredMessage {
   created_at: string;
 }
 
-const CONFIG_DEFAULT: AlfredConfig = { system_prompt: "", handoff_ativo: true, team_cooldown_min: 5, intervene_after_min: 30 };
+const CONFIG_DEFAULT: AlfredConfig = { system_prompt: "", base_conhecimento: "", handoff_ativo: true, team_cooldown_min: 5, intervene_after_min: 30 };
 
 async function uid(): Promise<string> {
   const { data } = await supabase.auth.getUser();
@@ -134,7 +135,7 @@ export function useAlfred() {
   const load = useCallback(async () => {
     const [{ data: cfg }, { data: grp }, { data: ctx }, { data: tk }, { data: mem }, { data: mb }, { data: dm }, { data: as }, { data: pr }] = await Promise.all([
       supabase.from("alfred_configs")
-        .select("system_prompt, evolution_instance, connection_status, numero, handoff_ativo, team_cooldown_min, intervene_after_min")
+        .select("system_prompt, base_conhecimento, evolution_instance, connection_status, numero, handoff_ativo, team_cooldown_min, intervene_after_min")
         .maybeSingle(),
       supabase.from("alfred_groups").select("*").order("created_at", { ascending: false }),
       supabase.from("alfred_context")
@@ -151,6 +152,7 @@ export function useAlfred() {
     if (cfg) {
       setConfig({
         system_prompt: cfg.system_prompt ?? "",
+        base_conhecimento: cfg.base_conhecimento ?? "",
         handoff_ativo: cfg.handoff_ativo ?? true,
         team_cooldown_min: Number(cfg.team_cooldown_min ?? 5),
         intervene_after_min: Number(cfg.intervene_after_min ?? 30),

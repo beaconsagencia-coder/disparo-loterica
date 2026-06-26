@@ -156,7 +156,7 @@ Deno.serve(async (req) => {
 
   // Modo handoff x imediato.
   const { data: cfgRow } = await supabase.from("alfred_configs")
-    .select("handoff_ativo, system_prompt, evolution_instance, team_cooldown_min, intervene_after_min")
+    .select("handoff_ativo, system_prompt, base_conhecimento, evolution_instance, team_cooldown_min, intervene_after_min")
     .eq("user_id", grupo.user_id).maybeSingle();
   const handoff = cfgRow?.handoff_ativo ?? true;
 
@@ -178,6 +178,7 @@ Deno.serve(async (req) => {
     .select("delay_min_seg, delay_max_seg").eq("user_id", grupo.user_id).maybeSingle();
   const cfg: AlfredCfg = {
     system_prompt: cfgRow?.system_prompt ?? "",
+    base_conhecimento: cfgRow?.base_conhecimento ?? null,
     evolution_instance: cfgRow?.evolution_instance ?? null,
     handoff_ativo: false,
     team_cooldown_min: Number(cfgRow?.team_cooldown_min ?? 5),

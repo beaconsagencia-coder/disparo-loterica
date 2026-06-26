@@ -138,12 +138,15 @@ function montarContents(hist: HistRow[]) {
   return out;
 }
 
-async function chamarGemini(systemPrompt: string, contexto: string, contents: { role: "user" | "model"; parts: { text: string }[] }[]): Promise<string> {
+async function chamarGemini(systemPrompt: string, contexto: string, contents: { role: "user" | "model"; parts: { text: string }[] }[], baseConhecimento: string): Promise<string> {
   const body = {
     system_instruction: {
       parts: [{
         text:
           `${systemPrompt}\n\n` +
+          (baseConhecimento.trim()
+            ? `BASE DE CONHECIMENTO — BOLÃO GESTOR (o SaaS gratuito da agência; use para tirar dúvidas do cliente sobre o sistema):\n${baseConhecimento.trim()}\n\n`
+            : "") +
           `CONTEXTO DO CLIENTE (use para responder):\n${contexto}\n\n` +
           "VOCÊ RESPONDE APENAS AO CLIENTE. Mensagens marcadas como [Equipe ...] são da equipe da agência — leia para ter contexto, " +
           "mas NUNCA responda a elas. Se a última mensagem for da equipe, ou se o pedido do cliente já tiver sido resolvido, ou se a " +
@@ -158,6 +161,9 @@ async function chamarGemini(systemPrompt: string, contexto: string, contents: { 
           "PROPOSTA/PLANO: você tem o plano contratado do cliente (valor, vigência, entregáveis). Use-o para responder quanto ele paga e o que está " +
           "incluído. NUNCA invente valores nem prometa algo fora do plano. Se ele pedir algo que NÃO está nos entregáveis, explique com gentileza que " +
           "não faz parte do pacote atual e que dá pra orçar à parte.\n\n" +
+          "SUPORTE AO SISTEMA (Bolão Gestor): se o cliente tiver dúvida sobre o sistema/SaaS, responda como especialista usando a BASE DE CONHECIMENTO acima — " +
+          "diga o caminho na tela (ex.: 'Atendimento → Automação → ...') e os passos curtos. Se algo NÃO estiver na base, não invente; oriente a conferir a tela " +
+          "ou falar com o suporte. Em dúvidas de premiação, reforce conferir o comprovante oficial antes de pagar.\n\n" +
           "DEMANDAS AVULSAS: se o cliente pedir uma arte específica, uma alteração ou uma tarefa pontual, CONFIRME que vai providenciar e informe um prazo " +
           "aproximado de entrega (poucos dias). A demanda é registrada e acompanhada internamente — fale com naturalidade, sem citar 'sistema' ou 'banco de dados'.\n\n" +
           "FORMATO (REGRA CRÍTICA — siga à risca): fale como uma pessoa REAL da equipe no WhatsApp — tom leve, cotidiano e informal, nada robótico nem formal. " +
@@ -286,6 +292,7 @@ async function enviarGrupo(instance: string, remoteJid: string, texto: string, d
 
 export interface AlfredCfg {
   system_prompt: string;
+  base_conhecimento: string | null; // base global do SaaS (Bolão Gestor)
   evolution_instance: string | null;
   handoff_ativo: boolean;        // true = espera a equipe (cron); false = responde na hora
   team_cooldown_min: number;
@@ -346,7 +353,7 @@ async function gerarResposta(supabase: SupabaseClient, grupo: Grupo, cfg: Alfred
   const contents = montarContents(carga.hist);
   if (contents.length === 0) return "sem histórico";
 
-  const resposta = await chamarGemini(cfg.system_prompt, contexto, contents);
+  const resposta = await chamarGemini(cfg.system_prompt, contexto, contents, cfg.base_conhecimento ?? "");
   const partes = fracionarResposta(resposta);
   if (partes.length === 0) return "sem resposta (não necessária)"; // o modelo decidiu não responder
 

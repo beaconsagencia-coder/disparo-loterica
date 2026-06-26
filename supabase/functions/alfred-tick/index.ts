@@ -30,11 +30,12 @@ Deno.serve(async (req) => {
   async function cfgDe(userId: string): Promise<AlfredCfg> {
     if (cfgCache.has(userId)) return cfgCache.get(userId)!;
     const [{ data: a }, { data: sdr }] = await Promise.all([
-      supabase.from("alfred_configs").select("system_prompt, evolution_instance, handoff_ativo, team_cooldown_min, intervene_after_min").eq("user_id", userId).maybeSingle(),
+      supabase.from("alfred_configs").select("system_prompt, base_conhecimento, evolution_instance, handoff_ativo, team_cooldown_min, intervene_after_min").eq("user_id", userId).maybeSingle(),
       supabase.from("ai_config").select("delay_min_seg, delay_max_seg").eq("user_id", userId).maybeSingle(),
     ]);
     const cfg: AlfredCfg = {
       system_prompt: a?.system_prompt ?? "",
+      base_conhecimento: a?.base_conhecimento ?? null,
       evolution_instance: a?.evolution_instance ?? null,
       handoff_ativo: a?.handoff_ativo ?? true,
       team_cooldown_min: Number(a?.team_cooldown_min ?? 5),
