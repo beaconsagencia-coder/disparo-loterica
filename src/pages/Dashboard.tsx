@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   Clock, Send, Users, Smartphone, CalendarCheck, CalendarClock,
   KanbanSquare, ArrowRight, RotateCcw, AlertTriangle, CalendarClock as PrazoIcon,
@@ -144,24 +144,24 @@ export default function Dashboard() {
   const [savingDisparo, setSavingDisparo] = useState(false);
   const [demandas, setDemandas] = useState<DemandaView[]>([]);
 
-  // Demandas do Alfred (carga leve: só grupos + demandas) com realtime.
-  useEffect(() => {
-    let active = true;
-    async function carregar() {
-      const [{ data: grps }, { data: dem }] = await Promise.all([
-        supabase.from("alfred_groups").select("id, client_name"),
-        supabase.from("alfred_demands").select("id, group_id, titulo, descricao, status, prazo").order("prazo"),
-      ]);
-      if (!active) return;
-      const nome = new Map<string, string>(((grps as { id: string; client_name: string }[]) ?? []).map((g) => [g.id, g.client_name]));
-      setDemandas(((dem as AlfredDemand[]) ?? []).map((d) => ({ ...d, client_name: nome.get(d.group_id) ?? "Cliente" })));
-    }
-    carregar();
-    const ch = supabase.channel("dash-alfred-demands")
-      .on("postgres_changes", { event: "*", schema: "public", table: "alfred_demands" }, () => carregar())
-      .subscribe();
-    return () => { active = false; void supabase.removeChannel(ch); };
+  // Carga leve das demandas do Alfred (só grupos + demandas). Reutilizável.
+  const refreshDemandas = useCallback(async () => {
+    const [{ data: grps }, { data: dem }] = await Promise.all([
+      supabase.from("alfred_groups").select("id, client_name"),
+      supabase.from("alfred_demands").select("id, group_id, titulo, descricao, status, prazo").order("prazo"),
+    ]);
+    const nome = new Map<string, string>(((grps as { id: string; client_name: string }[]) ?? []).map((g) => [g.id, g.client_name]));
+    setDemandas(((dem as AlfredDemand[]) ?? []).map((d) => ({ ...d, client_name: nome.get(d.group_id) ?? "Cliente" })));
   }, []);
+
+  // Demandas: carga inicial + realtime (aparecem sozinhas, sem refresh manual).
+  useEffect(() => {
+    refreshDemandas();
+    const ch = supabase.channel("dash-alfred-demands")
+      .on("postgres_changes", { event: "*", schema: "public", table: "alfred_demands" }, () => refreshDemandas())
+      .subscribe();
+    return () => void supabase.removeChannel(ch);
+  }, [refreshDemandas]);
 
   async function moverDemanda(id: string, status: DemandStatus) {
     setDemandas((p) => p.map((d) => (d.id === id ? { ...d, status } : d))); // otimista
@@ -189,8 +189,8 @@ export default function Dashboard() {
     setSavingDisparo(false);
   }
 
-  useEffect(() => {
-    (async () => {
+  // Métricas + chips (dependem do período). Reutilizável para o auto-refresh.
+  const refreshStats = useCallback(async () => {
       const count = (q: any) => q.then((r: any) => r.count ?? 0);
 
       // Janela do período + janela "hoje" (00:00 → 24:00 local).
@@ -225,8 +225,16 @@ export default function Dashboard() {
         disparosPeriodo: disparos, reunioesPeriodo: reunioes, reunioesHoje,
       });
       setInstances((inst as any).data ?? []);
-    })();
   }, [periodo]);
+
+  useEffect(() => { refreshStats(); }, [refreshStats]);
+
+  // Auto-refresh a cada 15s: métricas e demandas se atualizam sozinhas,
+  // sem o usuário precisar recarregar a página.
+  useEffect(() => {
+    const id = setInterval(() => { refreshStats(); refreshDemandas(); }, 15_000);
+    return () => clearInterval(id);
+  }, [refreshStats, refreshDemandas]);
 
   const conectados = instances.filter((i) => i.status === "conectado").length;
   // Capacidade teórica/h: cada chip ~1 msg / 37.5min (média de 30-45) => ~1.6/h
