@@ -501,16 +501,23 @@ async function gerarResposta(supabase: SupabaseClient, grupo: Grupo, cfg: Alfred
   }
 
   // ÁUDIO: explicações complexas ou pedido do cliente (ElevenLabs -> nota de voz).
-  if (r.audio && ELEVENLABS_KEY) {
-    const textoAudio = partes.join(" ").replace(/\s+/g, " ").trim();
-    const b64 = await sintetizarVoz(textoAudio);
-    if (b64) {
-      try {
-        await enviarAudioGrupo(instance, grupo.remote_jid, b64);
-        await supabase.from("alfred_messages").insert({ user_id: grupo.user_id, group_id: grupo.id, remote_jid: grupo.remote_jid, role: "model", sender_name: "Alfred", body: `🎤 ${textoAudio}` });
-        await escalarSeNecessario();
-        return "respondido (áudio)";
-      } catch (e) { console.error("[alfred] envio áudio falhou, caindo p/ texto:", e instanceof Error ? e.message : e); }
+  // Logs explícitos em cada ponto de falha para diagnóstico (cai p/ texto em qualquer um).
+  if (r.audio) {
+    if (!ELEVENLABS_KEY || !ELEVENLABS_VOICE) {
+      console.warn(`[alfred] áudio solicitado, mas ElevenLabs não configurada (key:${ELEVENLABS_KEY ? "ok" : "FALTA"}, voice:${ELEVENLABS_VOICE ? "ok" : "FALTA"}). Enviando texto.`);
+    } else {
+      const textoAudio = partes.join(" ").replace(/\s+/g, " ").trim();
+      const b64 = await sintetizarVoz(textoAudio);
+      if (!b64) {
+        console.error("[alfred] síntese de voz falhou (ElevenLabs). Enviando texto.");
+      } else {
+        try {
+          await enviarAudioGrupo(instance, grupo.remote_jid, b64);
+          await supabase.from("alfred_messages").insert({ user_id: grupo.user_id, group_id: grupo.id, remote_jid: grupo.remote_jid, role: "model", sender_name: "Alfred", body: `🎤 ${textoAudio}` });
+          await escalarSeNecessario();
+          return "respondido (áudio)";
+        } catch (e) { console.error("[alfred] envio do áudio (Evolution sendWhatsAppAudio) falhou:", e instanceof Error ? e.message : e); }
+      }
     }
   }
 
