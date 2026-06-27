@@ -11,6 +11,7 @@ const GEMINI_MODEL = "gemini-2.5-flash";
 const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
 const HISTORICO = 50;
 const FASE_THRESHOLD_DIAS = 30; // >= 30 dias de grupo => Manutenção (se sem override)
+const PROATIVO_DIAS = new Set([1, 2]); // acompanhamento proativo: seg e ter (0=dom..6=sáb)
 
 export type Fase = "onboarding" | "manutencao";
 
@@ -564,6 +565,7 @@ async function comporProativo(cfg: AlfredCfg, clientName: string, contexto: stri
 export async function acompanhamentoProativo(supabase: SupabaseClient, grupo: Grupo, cfg: AlfredCfg): Promise<string> {
   if (!cfg.proactive_ativo) return "proativo off";
   const b = agoraBrasilia();
+  if (!PROATIVO_DIAS.has(b.getUTCDay())) return "fora dos dias (seg-ter)";
   const hora = b.getUTCHours();
   if (hora < cfg.proactive_hora || hora >= 21) return "fora da janela";
   const hojeB = b.toISOString().slice(0, 10);
