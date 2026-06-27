@@ -24,6 +24,15 @@ export function faseEfetiva(createdAt: string | null, override: string | null): 
 
 export interface HistRow { id?: string; role: string; sender_name: string | null; body: string; is_team?: boolean; quoted_body?: string | null }
 
+/** Nome exibível do remetente: descarta perfis sem nome real (só emoji/símbolos/números).
+ *  O refino fino (primeiro nome, empresa, frase) fica com o modelo via prompt. */
+function nomeExibivel(nome: string | null): string | null {
+  const n = (nome ?? "").trim();
+  if (!n) return null;
+  if (!/\p{L}/u.test(n)) return null; // precisa ter ao menos uma letra
+  return n;
+}
+
 /** Marca uma fala que é resposta a uma mensagem citada (reply do WhatsApp). */
 function refResposta(quoted?: string | null): string {
   const q = (quoted ?? "").trim().replace(/\s+/g, " ");
@@ -137,7 +146,7 @@ function montarContents(hist: HistRow[]) {
   for (const m of hist) {
     const role = m.role === "model" ? "model" : "user";
     if (out.length === 0 && role === "model") continue;
-    const quem = m.is_team ? `[Equipe${m.sender_name ? ` ${m.sender_name}` : ""}]` : (m.sender_name || "Cliente");
+    const quem = m.is_team ? `[Equipe${m.sender_name ? ` ${m.sender_name}` : ""}]` : (nomeExibivel(m.sender_name) || "Cliente");
     const texto = role === "user" ? `${quem}${refResposta(m.quoted_body)}: ${m.body}` : m.body;
     const last = out[out.length - 1];
     if (last && last.role === role) last.parts[0].text += `\n${texto}`;
@@ -187,6 +196,11 @@ async function chamarGemini(systemPrompt: string, contexto: string, contents: { 
           "ou falar com o suporte. Em dúvidas de premiação, reforce conferir o comprovante oficial antes de pagar.\n\n" +
           "DEMANDAS AVULSAS: se o cliente pedir uma arte específica, uma alteração ou uma tarefa pontual, CONFIRME que vai providenciar e informe um prazo " +
           "aproximado de entrega (poucos dias). A demanda é registrada e acompanhada internamente — fale com naturalidade, sem citar 'sistema' ou 'banco de dados'.\n\n" +
+          "NOME DO CLIENTE (filtro de bom senso): o rótulo antes de cada fala é o nome do PERFIL de WhatsApp de quem falou — use com cuidado ao se dirigir ao cliente. " +
+          "(a) se vier misturado com cargo/local (ex.: 'Luiza - Atendente', 'João Silva - Loja'), use só o PRIMEIRO NOME da pessoa ('Luiza', 'João'); " +
+          "(b) NÃO use como nome se for só emoji, frase aleatória/religiosa (ex.: 'Deus seja louvado') ou nome de empresa (ex.: 'Lotérica São José'); " +
+          "(c) se não for claramente um nome próprio real, ou na dúvida, OMITA o nome e use saudação neutra (ex.: 'Olá! Como posso ajudar?'). " +
+          "Nunca chame o cliente por algo que não seja o nome próprio dele.\n\n" +
           "FORMATO (REGRA CRÍTICA — siga à risca): fale como uma pessoa REAL da equipe no WhatsApp — empático e FIRME, mas acima de tudo OBJETIVO e curto. " +
           "Responda no MENOR número de mensagens possível: idealmente 1, no máximo 2 balões (um 3º só se for realmente inevitável). " +
           "Vá DIRETO ao ponto: NÃO repita a mesma ideia de formas diferentes, não encha de justificativas e NÃO detalhe semana por semana a menos que perguntem. " +
@@ -257,7 +271,7 @@ async function aprenderDaConversa(
   const demTxt = demandasAbertas.length ? demandasAbertas.map((d) => `- ${d.titulo}`).join("\n") : "(nenhuma)";
   const ativTxt = ativosAtuais.length ? ativosAtuais.map((a) => `- ${a.titulo} [${a.status}]`).join("\n") : "(nenhum)";
   const histTxt = hist.map((m) => {
-    const quem = m.role === "model" ? "Alfred" : (m.is_team ? `[Equipe ${m.sender_name || ""}]` : (m.sender_name || "Cliente"));
+    const quem = m.role === "model" ? "Alfred" : (m.is_team ? `[Equipe ${m.sender_name || ""}]` : (nomeExibivel(m.sender_name) || "Cliente"));
     return `${quem}${m.role === "model" ? "" : refResposta(m.quoted_body)}: ${m.body}`;
   }).join("\n");
 
