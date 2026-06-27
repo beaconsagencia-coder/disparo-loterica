@@ -1,9 +1,13 @@
 import { useEffect, useState } from "react";
-import { Clock, Send, Users, Smartphone, CalendarCheck, CalendarClock } from "lucide-react";
+import {
+  Clock, Send, Users, Smartphone, CalendarCheck, CalendarClock,
+  KanbanSquare, ArrowRight, RotateCcw, AlertTriangle, CalendarClock as PrazoIcon,
+} from "lucide-react";
 import { BentoGrid, BentoCard, Metric } from "@/components/ui/Bento";
 import { InstanceBadge } from "@/components/ui/StatusBadge";
 import { supabase } from "@/lib/supabase";
 import type { WhatsappInstance } from "@/lib/types";
+import type { AlfredDemand, DemandStatus } from "@/lib/useAlfred";
 
 interface Stats {
   leads: number;
@@ -21,6 +25,115 @@ const PERIODOS = [
   { dias: 30, label: "30 dias" },
 ] as const;
 
+// =====================================================================
+// Kanban de demandas do Alfred (integrado à visão geral)
+// =====================================================================
+interface DemandaView extends AlfredDemand { client_name: string }
+
+const DEMAND_COLS: { key: DemandStatus; label: string; dot: string; soft: string }[] = [
+  { key: "pendente", label: "Pendente", dot: "bg-warning", soft: "bg-warning/10" },
+  { key: "em_andamento", label: "Em andamento", dot: "bg-accent", soft: "bg-accent/10" },
+  { key: "concluida", label: "Concluída", dot: "bg-success", soft: "bg-success/10" },
+];
+const proximoStatus: Record<DemandStatus, DemandStatus> = {
+  pendente: "em_andamento", em_andamento: "concluida", concluida: "pendente",
+};
+
+function prazoBR(iso: string) { const [, m, d] = iso.split("-"); return `${d}/${m}`; }
+function diasAteHoje(iso: string) {
+  const hoje = new Date(); hoje.setHours(0, 0, 0, 0);
+  const [y, m, d] = iso.split("-").map(Number);
+  return Math.round((new Date(y, m - 1, d).getTime() - hoje.getTime()) / 86_400_000);
+}
+
+/** Card de demanda — CSS Grid, drop shadow leve, hover suave. */
+function DemandCard({ d, onMover }: { d: DemandaView; onMover: (id: string, s: DemandStatus) => void }) {
+  const dias = diasAteHoje(d.prazo);
+  const atrasada = d.status !== "concluida" && dias < 0;
+  const hoje = d.status !== "concluida" && dias === 0;
+  const concluida = d.status === "concluida";
+  const next = proximoStatus[d.status];
+  return (
+    <article className="rounded-2xl border border-black/[0.06] bg-white p-3.5 shadow-[0_1px_2px_rgba(16,24,40,0.05),0_4px_12px_rgba(16,24,40,0.04)] transition-all duration-200 hover:-translate-y-0.5 hover:shadow-[0_2px_4px_rgba(16,24,40,0.06),0_10px_24px_rgba(16,24,40,0.08)]">
+      <div className="truncate text-[11px] font-medium uppercase tracking-wide text-ink-muted">{d.client_name}</div>
+      <h4 className={`mt-1 text-sm font-medium leading-snug ${concluida ? "text-ink-muted line-through" : "text-ink"}`}>{d.titulo}</h4>
+      {d.descricao && <p className="mt-1 line-clamp-2 text-xs leading-relaxed text-ink-muted">{d.descricao}</p>}
+
+      <div className="mt-3 flex items-center justify-between gap-2">
+        <span className={`chip ${atrasada ? "bg-danger/12 text-danger" : hoje ? "bg-warning/15 text-[#9a6400]" : "bg-black/[0.04] text-ink-muted"}`}>
+          {atrasada ? <AlertTriangle size={11} /> : <PrazoIcon size={11} />}
+          {prazoBR(d.prazo)}{atrasada ? " · atrasada" : hoje ? " · hoje" : ""}
+        </span>
+        <button
+          onClick={() => onMover(d.id, next)}
+          className={`inline-flex items-center gap-1 rounded-full px-3 py-1.5 text-xs font-medium transition-all duration-200 ${
+            concluida
+              ? "text-ink-muted hover:bg-black/5 hover:text-ink-soft"
+              : "bg-accent/10 text-accent hover:bg-accent hover:text-white"
+          }`}
+          title={concluida ? "Reabrir demanda" : `Mover para ${DEMAND_COLS.find((c) => c.key === next)?.label}`}
+        >
+          {concluida ? <><RotateCcw size={12} /> Reabrir</> : <>Avançar <ArrowRight size={12} /></>}
+        </button>
+      </div>
+    </article>
+  );
+}
+
+/** Seção do Kanban: colunas por status (CSS Grid), mobile-first. */
+function DemandasKanban({ demandas, onMover }: { demandas: DemandaView[]; onMover: (id: string, s: DemandStatus) => void }) {
+  const abertas = demandas.filter((d) => d.status !== "concluida");
+  const atrasadas = abertas.filter((d) => diasAteHoje(d.prazo) < 0).length;
+  const ordenar = (a: DemandaView, b: DemandaView) => a.prazo.localeCompare(b.prazo);
+
+  return (
+    <section className="mt-8 sm:mt-12">
+      <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
+        <div className="flex items-center gap-2">
+          <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-accent/10 text-accent"><KanbanSquare size={18} /></span>
+          <div>
+            <h2 className="text-lg font-semibold tracking-tight">Demandas dos clientes</h2>
+            <p className="text-sm text-ink-muted">Solicitações captadas pelo Alfred, organizadas por status.</p>
+          </div>
+        </div>
+        <div className="flex items-center gap-2 text-xs">
+          <span className="rounded-full bg-black/5 px-2.5 py-1 font-medium text-ink-soft">{abertas.length} aberta(s)</span>
+          {atrasadas > 0 && (
+            <span className="inline-flex items-center gap-1 rounded-full bg-danger/12 px-2.5 py-1 font-medium text-danger">
+              <AlertTriangle size={12} /> {atrasadas} atrasada(s)
+            </span>
+          )}
+        </div>
+      </div>
+
+      {demandas.length === 0 ? (
+        <div className="rounded-2xl border border-dashed border-black/10 bg-white/50 py-10 text-center text-sm text-ink-muted">
+          Nenhuma demanda ainda. Elas aparecem aqui quando o Alfred capta um pedido de um cliente no chat.
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          {DEMAND_COLS.map((col) => {
+            const itens = demandas.filter((d) => d.status === col.key).sort(ordenar);
+            return (
+              <div key={col.key} className={`rounded-2xl ${col.soft} p-3`}>
+                <div className="mb-3 flex items-center gap-2 px-1">
+                  <span className={`h-2 w-2 rounded-full ${col.dot}`} />
+                  <span className="text-sm font-semibold text-ink-soft">{col.label}</span>
+                  <span className="ml-auto rounded-full bg-white/70 px-2 text-xs text-ink-muted">{itens.length}</span>
+                </div>
+                <div className="grid gap-3">
+                  {itens.map((d) => <DemandCard key={d.id} d={d} onMover={onMover} />)}
+                  {itens.length === 0 && <p className="py-3 text-center text-xs text-ink-muted/70">Vazio</p>}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </section>
+  );
+}
+
 export default function Dashboard() {
   const [periodo, setPeriodo] = useState<number>(7);
   const [stats, setStats] = useState<Stats>({
@@ -29,6 +142,32 @@ export default function Dashboard() {
   const [instances, setInstances] = useState<WhatsappInstance[]>([]);
   const [disparosAtivos, setDisparosAtivos] = useState(true);
   const [savingDisparo, setSavingDisparo] = useState(false);
+  const [demandas, setDemandas] = useState<DemandaView[]>([]);
+
+  // Demandas do Alfred (carga leve: só grupos + demandas) com realtime.
+  useEffect(() => {
+    let active = true;
+    async function carregar() {
+      const [{ data: grps }, { data: dem }] = await Promise.all([
+        supabase.from("alfred_groups").select("id, client_name"),
+        supabase.from("alfred_demands").select("id, group_id, titulo, descricao, status, prazo").order("prazo"),
+      ]);
+      if (!active) return;
+      const nome = new Map<string, string>(((grps as { id: string; client_name: string }[]) ?? []).map((g) => [g.id, g.client_name]));
+      setDemandas(((dem as AlfredDemand[]) ?? []).map((d) => ({ ...d, client_name: nome.get(d.group_id) ?? "Cliente" })));
+    }
+    carregar();
+    const ch = supabase.channel("dash-alfred-demands")
+      .on("postgres_changes", { event: "*", schema: "public", table: "alfred_demands" }, () => carregar())
+      .subscribe();
+    return () => { active = false; void supabase.removeChannel(ch); };
+  }, []);
+
+  async function moverDemanda(id: string, status: DemandStatus) {
+    setDemandas((p) => p.map((d) => (d.id === id ? { ...d, status } : d))); // otimista
+    const { error } = await supabase.from("alfred_demands").update({ status }).eq("id", id);
+    if (error) alert("Não foi possível mover a demanda: " + error.message);
+  }
 
   // Estado do interruptor mestre de disparos (independe do período).
   useEffect(() => {
@@ -205,6 +344,9 @@ export default function Dashboard() {
           </div>
         </BentoCard>
       </BentoGrid>
+
+      {/* Kanban de demandas do Alfred — visão centralizada do atendimento */}
+      <DemandasKanban demandas={demandas} onMover={moverDemanda} />
     </div>
   );
 }
