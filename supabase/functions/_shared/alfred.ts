@@ -31,6 +31,14 @@ const REGRA_ESTILO =
   "Ex. ERRADO: '*Já fizemos:* * a identidade visual * validamos a conta do Facebook'. " +
   "Ex. CERTO: 'Pessoal, passando pra atualizar que a identidade visual já tá pronta e a conta do Facebook também já foi validada pra gente rodar o tráfego.'";
 
+const REGRA_SAIDA =
+  "SAÍDA (PROIBIDO PENSAR EM VOZ ALTA — regra absoluta): gere APENAS a mensagem final que será enviada ao cliente. " +
+  "É ESTRITAMENTE PROIBIDO incluir qualquer análise do cenário, reflexão, resumo do problema, plano do que você vai fazer, " +
+  "ou comentário em 3ª pessoa sobre o cliente (ex.: 'O cliente está reclamando...', 'Não vou alterar a estratégia', 'Não pausar as campanhas, apenas tranquilizar'). " +
+  "Nada de raciocínio antes da resposta — a PRIMEIRA palavra que você escrever já é a mensagem ao cliente. " +
+  "Ex. PROIBIDO: 'O cliente está reclamando da qualidade. Não vou alterar a estratégia. Olá, entendo sua percepção...'. " +
+  "Ex. CERTO: 'Entendo sua percepção, mas como as campanhas subiram há pouco tempo, estamos exatamente na fase de otimização...'.";
+
 export type Fase = "onboarding" | "manutencao";
 
 /** Fase efetiva: override manual, ou automática pela idade do grupo. */
@@ -219,7 +227,7 @@ async function chamarGemini(systemPrompt: string, contexto: string, contents: { 
           "(b) NÃO use como nome se for só emoji, frase aleatória/religiosa (ex.: 'Deus seja louvado') ou nome de empresa (ex.: 'Lotérica São José'); " +
           "(c) se não for claramente um nome próprio real, ou na dúvida, OMITA o nome e use saudação neutra (ex.: 'Olá! Como posso ajudar?'). " +
           "Nunca chame o cliente por algo que não seja o nome próprio dele.\n\n" +
-          REGRA_NOME_NEGOCIO + "\n\n" + REGRA_ESTILO + "\n\n" +
+          REGRA_NOME_NEGOCIO + "\n\n" + REGRA_ESTILO + "\n\n" + REGRA_SAIDA + "\n\n" +
           "FORMATO (REGRA CRÍTICA — siga à risca): fale como uma pessoa REAL da equipe no WhatsApp — empático e FIRME, mas acima de tudo OBJETIVO e curto. " +
           "Responda no MENOR número de mensagens possível: idealmente 1, no máximo 2 balões (um 3º só se for realmente inevitável). " +
           "Vá DIRETO ao ponto: NÃO repita a mesma ideia de formas diferentes, não encha de justificativas e NÃO detalhe semana por semana a menos que perguntem. " +
@@ -530,7 +538,7 @@ async function comporRelay(cfg: AlfredCfg, resumo: string, pedido: string, retor
   const sys = `${cfg.system_prompt}\n\nVocê (Alfred) pediu para a equipe executar uma tarefa e recebeu o retorno. Escreva a mensagem PARA O CLIENTE (${clientName}) no grupo repassando o status de forma natural. ` +
     "Fale como a equipe ('testamos', 'verificamos') — NUNCA mencione 'operador' nem que outra pessoa fez. " +
     "Curto e direto, no máximo 2 balões separados por LINHA EM BRANCO, sem prefixo, sem markdown, sem rótulos entre colchetes.\n\n" +
-    REGRA_NOME_NEGOCIO + "\n\n" + REGRA_ESTILO;
+    REGRA_NOME_NEGOCIO + "\n\n" + REGRA_ESTILO + "\n\n" + REGRA_SAIDA;
   const userTxt = `Tarefa: ${resumo}\nO que foi pedido à equipe: ${pedido}\nRetorno da equipe: ${retorno}\n\nEscreva agora a mensagem ao cliente.`;
   const body = { system_instruction: { parts: [{ text: sys }] }, contents: [{ role: "user", parts: [{ text: userTxt }] }], generationConfig: { temperature: 0.6, maxOutputTokens: 400, thinkingConfig: { thinkingBudget: 0 } } };
   try {
@@ -600,7 +608,7 @@ async function comporProativo(cfg: AlfredCfg, clientName: string, contexto: stri
     "tudo seguindo o cronograma; (3) na fase de manutenção, comente o que está rodando (campanhas) ou o próximo passo. " +
     "NÃO invente progresso que não consta no contexto; NÃO cobre o que já foi entregue; não repita demandas já concluídas. Seja caloroso, leve e breve. " +
     "FORMATO: como uma pessoa real da equipe no WhatsApp, no máximo 2 balões separados por LINHA EM BRANCO, sem prefixo, sem markdown, sem rótulos entre colchetes.\n\n" +
-    REGRA_NOME_NEGOCIO + "\n\n" + REGRA_ESTILO;
+    REGRA_NOME_NEGOCIO + "\n\n" + REGRA_ESTILO + "\n\n" + REGRA_SAIDA;
   const body = {
     system_instruction: { parts: [{ text: sys }] },
     contents: [{ role: "user", parts: [{ text: "Escreva agora a mensagem de acompanhamento de hoje para este cliente." }] }],
