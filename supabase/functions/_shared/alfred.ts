@@ -163,10 +163,15 @@ async function chamarGemini(systemPrompt: string, contexto: string, contents: { 
           "cliente está fazendo ou o que você pretende fazer. Esses rótulos existem só para o SEU entendimento e NUNCA podem ser enviados ao grupo — " +
           "mande exclusivamente a mensagem final ao cliente, como uma pessoa real. Sobre dados sensíveis (senhas, logins, @): são dados do próprio cliente — " +
           "se ELE pedir, pode informar normalmente; apenas não fique repetindo esses dados sem necessidade quando ninguém pediu.\n\n" +
-          "NÃO CHUTE / VERIFIQUE ANTES: você NÃO tem acesso direto às contas, perfis e sistemas do cliente (Instagram, Facebook, Gerenciador, etc.). " +
-          "NUNCA afirme com CERTEZA fatos que você não pode verificar — ex.: quem postou um story/publicação, o que aconteceu numa conta, se uma ação foi " +
-          "feita pela equipe. Nesses casos NÃO assuma nem invente: diga que vai VERIFICAR com a equipe e retornar com a resposta. Se o cliente insistir ou " +
-          "contestar, mantenha a postura de que vai confirmar — não bata o pé com uma afirmação que você não pode garantir.\n\n" +
+          "GUARDRAIL ABSOLUTO — O QUE VOCÊ NÃO RESOLVE: nos casos abaixo é TERMINANTEMENTE PROIBIDO tentar resolver, opinar, inventar regras/prazos/valores, " +
+          "criar 'setores' inexistentes (ex.: 'setor financeiro'), ou fingir que sabe/anotou/registrou algo. NÃO invente NADA, NUNCA. Os casos:\n" +
+          "(1) FINANCEIRO — boletos, descontos, cancelamentos, taxas, valores/datas/formas de pagamento, termos de contrato;\n" +
+          "(2) CONTEXTO QUE VOCÊ NÃO TEM — qualquer menção a reuniões, calls, áudios, prints ou combinados feitos FORA deste chat (ex.: 'a call de sexta', " +
+          "'o áudio de ontem', 'o que combinei com o João'); JAMAIS diga 'já anotei', 'já registrei', 'pode deixar que vi' — você NÃO tem acesso a isso;\n" +
+          "(3) TÉCNICO fora da BASE DE CONHECIMENTO — integrações de API, DNS, configurações avançadas, qualquer coisa que não esteja explícita na base;\n" +
+          "(4) ESTRATÉGIA / APROVAÇÃO SUBJETIVA — mudanças de campanha, decisões de estratégia, aprovações que dependem de julgamento.\n" +
+          "Nesses casos, o operador responsável é acionado em paralelo, e a sua ÚNICA resposta ao grupo deve ser CURTÍSSIMA (1 frase), apenas avisando que o " +
+          "responsável já vai atender — ex.: 'Vou chamar o responsável pra te atender sobre isso, só um instante!'. SEM explicar, SEM detalhar, SEM opinião, SEM prazo.\n\n" +
           "USO DO CHECKLIST/MEMÓRIA: baseie-se no andamento e nas informações salvas; nunca diga que algo está pronto se está pendente; " +
           "se uma etapa pendente depende do cliente (criativo, conta de Facebook, orçamento), solicite a ele.\n\n" +
           "FASE DO CONTRATO: no Onboarding, priorize o cronograma/checklist de implantação. Na Manutenção, o cronograma é apenas histórico — " +
@@ -406,6 +411,14 @@ async function gerarResposta(supabase: SupabaseClient, grupo: Grupo, cfg: Alfred
       await supabase.from("alfred_messages").insert({ user_id: grupo.user_id, group_id: grupo.id, remote_jid: grupo.remote_jid, role: "model", sender_name: "Alfred", body: parte });
       enviadas++;
     }
+    // Escalonamento IMEDIATO: aciona o operador na hora (modo imediato).
+    // No handoff, o cron cobre a escalação cedo (a cada 2 min).
+    if (cfg.operator_number) {
+      try {
+        const esc = await classificarEscalacao(contents);
+        if (esc) await criarEscalacao(supabase, grupo, cfg, esc);
+      } catch (e) { console.error("[alfred] escalonamento:", e instanceof Error ? e.message : e); }
+    }
     return "respondido";
   } catch (e) {
     console.error("[alfred] envio falhou:", e instanceof Error ? e.message : e);
@@ -424,18 +437,17 @@ interface Escalacao { resumo: string; mensagem_operador: string }
 async function classificarEscalacao(contents: { role: "user" | "model"; parts: { text: string }[] }[]): Promise<Escalacao | null> {
   if (!GEMINI_API_KEY || contents.length === 0) return null;
   const sys =
-    "Você decide se a conversa pede uma AÇÃO de um operador humano da equipe — algo que o Alfred não resolve só conversando e que exige alguém ir " +
-    "FAZER ou VERIFICAR algo FORA do chat e voltar com um resultado. DEVEM escalar (escalar=true), por exemplo: " +
-    "testar acesso a uma conta (login/senha); VERIFICAR/INVESTIGAR um problema numa plataforma (ex.: por que a conta do Instagram/Facebook foi " +
-    "suspensa ou bloqueada, conferir o status de um anúncio, ver se uma conta está ativa, checar uma pendência no Gerenciador de Anúncios); " +
-    "APURAR/CONFIRMAR quem fez uma ação na conta do cliente (ex.: quem postou um story/publicação no perfil) ou esclarecer uma divergência que o cliente " +
-    "relatou e o Alfred não tem como confirmar sozinho; " +
-    "configurar/ajustar algo num sistema; qualquer pedido que dependa de a equipe acessar uma ferramenta externa e retornar. " +
-    "NÃO escalar (escalar=false): dúvidas que o Alfred responde com o contexto, conversa, agradecimento, e PEDIDOS DE ARTE/MATERIAL/ALTERAÇÃO " +
-    "(isso é uma demanda, não uma escalação). " +
-    "Se escalar, escreva mensagem_operador CURTA e direta para o operador (em nome do Alfred, em 1ª pessoa), com TODOS os dados necessários " +
-    "(login, senha, @ da conta, links, contexto do problema) e o que ele deve verificar/fazer; e resumo: um título curto da tarefa. " +
-    "Na dúvida entre 'precisa de ação humana externa' e 'não precisa', só escale se realmente exigir alguém agir fora do chat.";
+    "Você decide se a conversa deve ACIONAR o operador humano. ESCALE (escalar=true) SEMPRE que a conversa tocar em QUALQUER um destes temas — mesmo que o " +
+    "cliente apenas mencione, pergunte ou peça:\n" +
+    "(1) FINANCEIRO: boleto, desconto, cancelamento, taxa, valor/forma/data de pagamento, termos de contrato.\n" +
+    "(2) CONTEXTO EXTERNO que o agente não tem: reuniões, calls, áudios, prints, conversas ou combinados feitos FORA deste chat (ex.: 'a call de sexta', " +
+    "'o áudio de ontem', 'o que falei com o João').\n" +
+    "(3) TÉCNICO fora da base de conhecimento: integração de API, DNS, configurações avançadas, qualquer pedido técnico não coberto pela base.\n" +
+    "(4) ESTRATÉGIA / APROVAÇÃO subjetiva: mudança de campanha, decisão estratégica, aprovação que depende de julgamento humano.\n" +
+    "TAMBÉM escale: testar acesso/credenciais; verificar/investigar/apurar algo numa conta ou plataforma (ex.: conta suspensa, quem postou um story). " +
+    "NÃO escale apenas para: dúvidas simples já cobertas pela base de conhecimento, conversa/agradecimento, e pedidos de ARTE/MATERIAL/ALTERAÇÃO (isso é DEMANDA). " +
+    "NA DÚVIDA, ESCALE. Se escalar, escreva mensagem_operador CURTA e direta (em nome do Alfred, 1ª pessoa) com o que o cliente pediu e o contexto/dados " +
+    "necessários (logins, @, links, o que verificar); e resumo: um título curto.";
   const body = {
     system_instruction: { parts: [{ text: sys }] },
     contents,
@@ -710,10 +722,10 @@ export async function processarGrupoTick(supabase: SupabaseClient, grupo: Grupo,
         }
       }
     }
-    // Escala ao operador humano se a conversa exigir uma ação dele (DM privada).
-    // Roda aqui (sempre, independente do modo) para não depender de o Alfred ter
-    // respondido; o "1 aberta por grupo" em criarEscalacao evita duplicar.
-    if (cfg.operator_number) {
+    // Escala ao operador no modo HANDOFF (aqui é a via de escalação cedo, ~2 min,
+    // já que o Alfred não responde por mensagem). No modo imediato, quem escala é
+    // o gerarResposta (na hora) — então não classificamos 2x. Dedup por tarefa.
+    if (cfg.operator_number && cfg.handoff_ativo) {
       try {
         const esc = await classificarEscalacao(montarContents(hist));
         if (esc) await criarEscalacao(supabase, grupo, cfg, esc);
