@@ -243,7 +243,10 @@ async function chamarGemini(systemPrompt: string, contexto: string, contents: { 
           "Nunca use prefixo, nome ou 'Alfred:'; sem markdown; sem emojis em excesso.\n\n" +
           "SAÍDA: devolva um JSON com 'mensagem' (APENAS o texto final ao cliente, balões separados por LINHA EM BRANCO) e 'audio' (booleano). " +
           "Defina audio=true APENAS quando a explicação for COMPLEXA o bastante para um áudio ajudar muito, OU quando o cliente PEDIR explicitamente um áudio " +
-          "(ex.: 'manda um áudio', 'pode me explicar falando'); caso contrário audio=false. Quando audio=true, escreva a 'mensagem' em tom FALADO e natural (será lida em voz). " +
+          "(ex.: 'manda um áudio', 'pode me explicar falando'); caso contrário audio=false. " +
+          "Quando audio=true, escreva a 'mensagem' em tom FALADO e natural (ela será LIDA em voz): use vícios de linguagem SUTIS e ocasionais " +
+          "('é...', 'então', 'tipo', 'olha', 'deixa eu te explicar', 'sabe?', 'ó'), pausas naturais (reticências e vírgulas) e contrações da fala ('tá', 'pra', 'cê'). " +
+          "Use com PARCIMÔNIA — só o suficiente pra não soar robótico, sem exagerar nem ficar caricato. " +
           "Pense internamente o quanto precisar para perguntas complexas; esse raciocínio NUNCA entra no campo 'mensagem'.",
       }],
     },
@@ -391,7 +394,7 @@ async function sintetizarVoz(texto: string): Promise<string | null> {
       body: JSON.stringify({
         text: texto.slice(0, 2500), // limita tamanho (custo/duração)
         model_id: ELEVENLABS_MODEL,
-        voice_settings: { stability: 0.45, similarity_boost: 0.8, style: 0.3, use_speaker_boost: true },
+        voice_settings: { stability: 0.4, similarity_boost: 0.8, style: 0.42, use_speaker_boost: true },
       }),
     });
     if (!res.ok) { console.error("[alfred] elevenlabs", res.status, (await res.text()).slice(0, 200)); return null; }
