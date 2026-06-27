@@ -235,11 +235,19 @@ async function chamarGemini(systemPrompt: string, contexto: string, contents: { 
           "Exemplo do tom e do tamanho ideais (este é o alvo — note como é enxuto):\n" +
           "Entendo a urgência, Pedro! Mas a gente precisa seguir o cronograma certinho pra não tomar bloqueio e prejudicar suas campanhas.\n\n" +
           "Essa semana o foco é a identidade visual. Fica tranquilo que deixamos tudo pronto a tempo pra aproveitar a data com segurança. Confia no processo!\n" +
-          "Nunca use prefixo, nome ou 'Alfred:'; sem markdown; sem emojis em excesso.",
+          "Nunca use prefixo, nome ou 'Alfred:'; sem markdown; sem emojis em excesso.\n\n" +
+          "SAÍDA: devolva um JSON com o campo 'mensagem' contendo APENAS o texto final ao cliente (balões separados por LINHA EM BRANCO). " +
+          "Pense internamente o quanto precisar para perguntas complexas; esse raciocínio NUNCA entra no campo 'mensagem'.",
       }],
     },
     contents,
-    generationConfig: { temperature: 0.7, maxOutputTokens: 600, thinkingConfig: { thinkingBudget: 0 } },
+    generationConfig: {
+      temperature: 0.7,
+      maxOutputTokens: 2048,                  // espaço p/ pensar (privado) + responder
+      thinkingConfig: { thinkingBudget: -1 }, // pensamento DINÂMICO: mais em perguntas complexas, ~0 nas simples
+      responseMimeType: "application/json",
+      responseSchema: { type: "OBJECT", properties: { mensagem: { type: "STRING" } }, required: ["mensagem"] },
+    },
   };
   const res = await fetch(`${GEMINI_URL}?key=${encodeURIComponent(GEMINI_API_KEY)}`, {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
@@ -247,8 +255,14 @@ async function chamarGemini(systemPrompt: string, contexto: string, contents: { 
   if (!res.ok) { console.error("[alfred] gemini", res.status, (await res.text()).slice(0, 200)); return ""; }
   const data = await res.json();
   // deno-lint-ignore no-explicit-any
-  const txt = (data?.candidates?.[0]?.content?.parts as any[] | undefined)?.map((p) => p?.text ?? "").join("") ?? "";
-  return txt.trim();
+  const raw = ((data?.candidates?.[0]?.content?.parts as any[] | undefined)?.map((p) => p?.text ?? "").join("") ?? "").trim();
+  // Saída ESTRUTURADA: só o campo "mensagem" é enviado — qualquer raciocínio fica fora.
+  try {
+    const parsed = JSON.parse(raw);
+    return String(parsed?.mensagem ?? "").trim();
+  } catch {
+    return raw; // fallback defensivo caso não venha JSON
+  }
 }
 
 const MAX_MSGS = 3;
@@ -540,7 +554,7 @@ async function comporRelay(cfg: AlfredCfg, resumo: string, pedido: string, retor
     "Curto e direto, no máximo 2 balões separados por LINHA EM BRANCO, sem prefixo, sem markdown, sem rótulos entre colchetes.\n\n" +
     REGRA_NOME_NEGOCIO + "\n\n" + REGRA_ESTILO + "\n\n" + REGRA_SAIDA;
   const userTxt = `Tarefa: ${resumo}\nO que foi pedido à equipe: ${pedido}\nRetorno da equipe: ${retorno}\n\nEscreva agora a mensagem ao cliente.`;
-  const body = { system_instruction: { parts: [{ text: sys }] }, contents: [{ role: "user", parts: [{ text: userTxt }] }], generationConfig: { temperature: 0.6, maxOutputTokens: 400, thinkingConfig: { thinkingBudget: 0 } } };
+  const body = { system_instruction: { parts: [{ text: sys }] }, contents: [{ role: "user", parts: [{ text: userTxt }] }], generationConfig: { temperature: 0.6, maxOutputTokens: 1200, thinkingConfig: { thinkingBudget: -1 } } };
   try {
     const res = await fetch(`${GEMINI_URL}?key=${encodeURIComponent(GEMINI_API_KEY)}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
     if (!res.ok) { console.error("[alfred] comporRelay", res.status); return retorno; }
@@ -612,7 +626,7 @@ async function comporProativo(cfg: AlfredCfg, clientName: string, contexto: stri
   const body = {
     system_instruction: { parts: [{ text: sys }] },
     contents: [{ role: "user", parts: [{ text: "Escreva agora a mensagem de acompanhamento de hoje para este cliente." }] }],
-    generationConfig: { temperature: 0.7, maxOutputTokens: 400, thinkingConfig: { thinkingBudget: 0 } },
+    generationConfig: { temperature: 0.7, maxOutputTokens: 1200, thinkingConfig: { thinkingBudget: -1 } },
   };
   try {
     const res = await fetch(`${GEMINI_URL}?key=${encodeURIComponent(GEMINI_API_KEY)}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
