@@ -546,23 +546,37 @@ async function criarEscalacao(supabase: SupabaseClient, grupo: Grupo, cfg: Alfre
   catch (e) { console.error("[alfred] DM operador falhou:", e instanceof Error ? e.message : e); }
 }
 
-/** Compõe a mensagem ao CLIENTE repassando o retorno do operador. */
-async function comporRelay(cfg: AlfredCfg, resumo: string, pedido: string, retorno: string, clientName: string): Promise<string> {
-  if (!GEMINI_API_KEY) return retorno;
-  const sys = `${cfg.system_prompt}\n\nVocê (Alfred) pediu para a equipe executar uma tarefa e recebeu o retorno. Escreva a mensagem PARA O CLIENTE (${clientName}) no grupo repassando o status de forma natural. ` +
-    "Fale como a equipe ('testamos', 'verificamos') — NUNCA mencione 'operador' nem que outra pessoa fez. " +
-    "Curto e direto, no máximo 2 balões separados por LINHA EM BRANCO, sem prefixo, sem markdown, sem rótulos entre colchetes.\n\n" +
+/** Compõe a mensagem ao CLIENTE repassando o retorno do operador.
+ *  enviar=false quando o operador pede para NÃO mandar nada no grupo. */
+async function comporRelay(cfg: AlfredCfg, resumo: string, pedido: string, retorno: string, _clientName: string): Promise<{ enviar: boolean; mensagem: string }> {
+  if (!GEMINI_API_KEY) return { enviar: false, mensagem: "" };
+  const sys = `${cfg.system_prompt}\n\nVocê (Alfred) pediu para a equipe/operador executar uma tarefa e recebeu o retorno dele. ` +
+    "PRIMEIRO decida se deve enviar algo ao cliente agora: se o retorno indicar que NÃO é para mandar nada no grupo " +
+    "(ex.: 'não precisa falar nada', 'já resolvi', 'deixa quieto', 'eu mesmo falo com ele', 'pode deixar que eu respondo', 'não manda nada', " +
+    "'você já explicou o que devia'), então enviar=false e mensagem vazia. " +
+    "Caso contrário, enviar=true e escreva em 'mensagem' a comunicação PARA O CLIENTE no grupo repassando o status de forma natural " +
+    "(fale como a equipe — 'testamos', 'verificamos' — NUNCA mencione 'operador' nem que outra pessoa fez). " +
+    "Curto, no máximo 2 balões separados por LINHA EM BRANCO, sem prefixo, sem markdown, sem rótulos entre colchetes.\n\n" +
     REGRA_NOME_NEGOCIO + "\n\n" + REGRA_ESTILO + "\n\n" + REGRA_SAIDA;
-  const userTxt = `Tarefa: ${resumo}\nO que foi pedido à equipe: ${pedido}\nRetorno da equipe: ${retorno}\n\nEscreva agora a mensagem ao cliente.`;
-  const body = { system_instruction: { parts: [{ text: sys }] }, contents: [{ role: "user", parts: [{ text: userTxt }] }], generationConfig: { temperature: 0.6, maxOutputTokens: 1200, thinkingConfig: { thinkingBudget: -1 } } };
+  const userTxt = `Tarefa: ${resumo}\nO que foi pedido: ${pedido}\nRetorno do operador: ${retorno}`;
+  const body = {
+    system_instruction: { parts: [{ text: sys }] },
+    contents: [{ role: "user", parts: [{ text: userTxt }] }],
+    generationConfig: {
+      temperature: 0.6, maxOutputTokens: 1200, thinkingConfig: { thinkingBudget: -1 },
+      responseMimeType: "application/json",
+      responseSchema: { type: "OBJECT", properties: { enviar: { type: "BOOLEAN" }, mensagem: { type: "STRING" } }, required: ["enviar"] },
+    },
+  };
   try {
     const res = await fetch(`${GEMINI_URL}?key=${encodeURIComponent(GEMINI_API_KEY)}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-    if (!res.ok) { console.error("[alfred] comporRelay", res.status); return retorno; }
+    if (!res.ok) { console.error("[alfred] comporRelay", res.status); return { enviar: false, mensagem: "" }; }
     const data = await res.json();
     // deno-lint-ignore no-explicit-any
-    const txt = (data?.candidates?.[0]?.content?.parts as any[] | undefined)?.map((p) => p?.text ?? "").join("") ?? "";
-    return txt.trim() || retorno;
-  } catch (e) { console.error("[alfred] comporRelay erro:", e instanceof Error ? e.message : e); return retorno; }
+    const raw = ((data?.candidates?.[0]?.content?.parts as any[] | undefined)?.map((p) => p?.text ?? "").join("") ?? "").trim();
+    const parsed = JSON.parse(raw);
+    return { enviar: parsed?.enviar !== false, mensagem: String(parsed?.mensagem ?? "").trim() };
+  } catch (e) { console.error("[alfred] comporRelay erro:", e instanceof Error ? e.message : e); return { enviar: false, mensagem: "" }; }
 }
 
 /** Operador respondeu (DM): casa com a escalação aberta e repassa ao cliente. */
@@ -596,7 +610,14 @@ export async function responderOperador(
   if (!ENV_EVO_URL || !ENV_EVO_KEY || !instance) return "evolution não configurada";
 
   const relay = await comporRelay(cfg, esc.resumo, esc.mensagem_operador, args.replyText, grupo.client_name);
-  const partes = fracionarResposta(relay);
+  // Operador pode pedir para NÃO mandar nada no grupo — então não posta.
+  if (!relay.enviar || !relay.mensagem) {
+    if (cfg.operator_number) {
+      try { await enviarGrupo(instance, cfg.operator_number, "Beleza, não vou enviar nada no grupo então.", 0); } catch { /* ok */ }
+    }
+    return "sem repasse (operador pediu)";
+  }
+  const partes = fracionarResposta(relay.mensagem);
   for (const parte of partes) {
     await enviarGrupo(instance, grupo.remote_jid, parte, delayDigitacao(parte, cfg));
     await supabase.from("alfred_messages").insert({ user_id: grupo.user_id, group_id: grupo.id, remote_jid: grupo.remote_jid, role: "model", sender_name: "Alfred", body: parte });

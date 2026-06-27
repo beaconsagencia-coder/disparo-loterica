@@ -126,14 +126,26 @@ Deno.serve(async (req) => {
   // 1:1 (não-grupo): pode ser o OPERADOR respondendo a uma escalação por DM.
   if (!remoteJid.endsWith("@g.us")) {
     const senderJidNum = soDigitos(remoteJid.split("@")[0]);
-    const replyText = extrairTexto(msgObj);
-    if (!senderJidNum || !replyText) return json({ ok: true, ignored: "1:1 sem texto" });
+    if (!senderJidNum) return json({ ok: true, ignored: "1:1 sem remetente" });
     const { data: cfgs } = await supabase.from("alfred_configs")
       .select("user_id, operator_number, system_prompt, base_conhecimento, evolution_instance")
       .not("operator_number", "is", null);
     const sv = new Set(variantes(senderJidNum));
     const cfgOp = (cfgs ?? []).find((c) => variantes(String(c.operator_number ?? "")).some((v) => sv.has(v)));
     if (!cfgOp) return json({ ok: true, ignored: "1:1 não é operador" });
+
+    // Operador pode responder por TEXTO ou por ÁUDIO/imagem — interpreta a mídia.
+    let replyText = extrairTexto(msgObj);
+    if (!replyText) {
+      const tipo1: "audio" | "image" | null = msgObj?.audioMessage ? "audio" : msgObj?.imageMessage ? "image" : null;
+      if (tipo1) {
+        const evoMedia = instance || cfgOp.evolution_instance || "";
+        const media = evoMedia ? await getMediaBase64(evoMedia, data) : null;
+        if (media) replyText = await interpretarMidia(media.base64, media.mimetype, tipo1);
+      }
+    }
+    if (!replyText) return json({ ok: true, ignored: "operador sem conteúdo" });
+
     const { data: sdrOp } = await supabase.from("ai_config").select("delay_min_seg, delay_max_seg").eq("user_id", cfgOp.user_id).maybeSingle();
     const cfgA: AlfredCfg = {
       system_prompt: cfgOp.system_prompt ?? "", base_conhecimento: cfgOp.base_conhecimento ?? null,
