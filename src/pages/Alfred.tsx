@@ -362,6 +362,8 @@ function ConfigForm({ config, onSave }: { config: AlfredConfig; onSave: (c: Alfr
   const [base, setBase] = useState(config.base_conhecimento ?? "");
   const [baseAberta, setBaseAberta] = useState(false);
   const [operador, setOperador] = useState(config.operator_number ?? "");
+  const [proativo, setProativo] = useState(config.proactive_ativo);
+  const [proHora, setProHora] = useState(String(config.proactive_hora));
   const [handoff, setHandoff] = useState(config.handoff_ativo);
   const [intervir, setIntervir] = useState(String(config.intervene_after_min));
   const [cooldown, setCooldown] = useState(String(config.team_cooldown_min));
@@ -372,6 +374,8 @@ function ConfigForm({ config, onSave }: { config: AlfredConfig; onSave: (c: Alfr
     setPrompt(config.system_prompt ?? "");
     setBase(config.base_conhecimento ?? "");
     setOperador(config.operator_number ?? "");
+    setProativo(config.proactive_ativo);
+    setProHora(String(config.proactive_hora));
     setHandoff(config.handoff_ativo);
     setIntervir(String(config.intervene_after_min));
     setCooldown(String(config.team_cooldown_min));
@@ -388,6 +392,8 @@ function ConfigForm({ config, onSave }: { config: AlfredConfig; onSave: (c: Alfr
         system_prompt: prompt,
         base_conhecimento: base,
         operator_number,
+        proactive_ativo: proativo,
+        proactive_hora: Math.min(23, Math.max(0, Math.floor(Number(proHora) || 9))),
         handoff_ativo: handoff,
         intervene_after_min: Math.max(1, Math.floor(Number(intervir) || 30)),
         team_cooldown_min: Math.max(1, Math.floor(Number(cooldown) || 5)),
@@ -448,6 +454,32 @@ function ConfigForm({ config, onSave }: { config: AlfredConfig; onSave: (c: Alfr
         <p className="mt-1 text-xs text-ink-muted">
           Quando uma conversa exigir uma ação sua (ex.: testar acesso), o Alfred te chama no privado. Responda <strong>citando</strong> a mensagem dele que ele repassa o resultado ao cliente. Deixe vazio para desligar.
         </p>
+      </div>
+
+      {/* Acompanhamento diário proativo */}
+      <div className="mt-3 rounded-xl border border-black/10 bg-white/50 p-3">
+        <div className="flex items-center justify-between gap-2">
+          <div>
+            <div className="text-sm font-medium">Acompanhamento diário proativo</div>
+            <div className="text-xs text-ink-muted">
+              {proativo ? "O Alfred inicia 1 contato por dia: cobra pendências ou confirma o andamento." : "Desligado: o Alfred só fala quando o cliente fala."}
+            </div>
+          </div>
+          <button type="button" onClick={() => setProativo((v) => !v)}
+            className={`relative h-7 w-12 shrink-0 rounded-full transition-colors ${proativo ? "bg-accent" : "bg-black/15"}`}
+            title={proativo ? "Desligar acompanhamento diário" : "Ligar acompanhamento diário"}>
+            <span className={`absolute top-1 h-5 w-5 rounded-full bg-white shadow transition-all ${proativo ? "left-6" : "left-1"}`} />
+          </button>
+        </div>
+        {proativo && (
+          <div className="mt-3 w-40">
+            <label className="mb-1 block text-xs font-medium text-ink-soft">Horário (Brasília)</label>
+            <div className="flex items-center gap-2">
+              <input type="number" min={0} max={23} className="input tabular-nums" value={proHora} onChange={(e) => setProHora(e.target.value)} />
+              <span className="text-sm text-ink-muted">h</span>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Handoff: aguardar a equipe vs responder na hora */}

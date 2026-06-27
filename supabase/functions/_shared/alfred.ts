@@ -317,6 +317,8 @@ export interface AlfredCfg {
   handoff_ativo: boolean;        // true = espera a equipe (cron); false = responde na hora
   team_cooldown_min: number;
   intervene_after_min: number;
+  proactive_ativo: boolean;      // acompanhamento diário proativo
+  proactive_hora: number;        // hora (0-23, Brasília) do contato diário
   dmin: number;
   dmax: number;
 }
@@ -324,6 +326,7 @@ export interface Grupo {
   id: string; user_id: string; client_name: string; remote_jid: string;
   evolution_instance: string | null; last_learned_at: string | null;
   created_at: string | null; fase_override: string | null;
+  last_proactive_at?: string | null;
 }
 type HistMsg = HistRow & { created_at: string };
 interface DemandaRow { titulo: string; status: string; prazo: string | null }
@@ -523,6 +526,84 @@ export async function responderOperador(
     try { await enviarGrupo(instance, cfg.operator_number, "Show, repassei pro cliente. Valeu!", 0); } catch { /* ok */ }
   }
   return "repassado";
+}
+
+// ---- Acompanhamento diário proativo ---------------------------------
+/** Horário atual em Brasília (UTC-3), como Date deslocado (use getUTC*). */
+function agoraBrasilia(): Date { return new Date(Date.now() - 3 * 3_600_000); }
+
+/** Compõe a mensagem de acompanhamento (Alfred INICIANDO a conversa). */
+async function comporProativo(cfg: AlfredCfg, clientName: string, contexto: string): Promise<string> {
+  if (!GEMINI_API_KEY) return "";
+  const sys = `${cfg.system_prompt}\n\n` +
+    `CONTEXTO DO CLIENTE (${clientName}):\n${contexto}\n\n` +
+    "TAREFA: você vai INICIAR um contato proativo de ACOMPANHAMENTO DIÁRIO com o cliente agora (você está começando a conversa, não respondendo a nada). " +
+    "Com base no contexto: (1) se houver itens PENDENTES que dependem do CLIENTE (acessos, senhas, contas, materiais, aprovações, configurações que faltam), " +
+    "faça uma cobrança gentil e ESPECÍFICA do que falta e por quê; (2) se estiver tudo em dia, dê um update curto e positivo do andamento e confirme que está " +
+    "tudo seguindo o cronograma; (3) na fase de manutenção, comente o que está rodando (campanhas) ou o próximo passo. " +
+    "NÃO invente progresso que não consta no contexto; NÃO cobre o que já foi entregue; não repita demandas já concluídas. Seja caloroso, leve e breve. " +
+    "FORMATO: como uma pessoa real da equipe no WhatsApp, no máximo 2 balões separados por LINHA EM BRANCO, sem prefixo, sem markdown, sem rótulos entre colchetes.";
+  const body = {
+    system_instruction: { parts: [{ text: sys }] },
+    contents: [{ role: "user", parts: [{ text: "Escreva agora a mensagem de acompanhamento de hoje para este cliente." }] }],
+    generationConfig: { temperature: 0.7, maxOutputTokens: 400, thinkingConfig: { thinkingBudget: 0 } },
+  };
+  try {
+    const res = await fetch(`${GEMINI_URL}?key=${encodeURIComponent(GEMINI_API_KEY)}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    if (!res.ok) { console.error("[alfred] comporProativo", res.status); return ""; }
+    const data = await res.json();
+    // deno-lint-ignore no-explicit-any
+    return ((data?.candidates?.[0]?.content?.parts as any[] | undefined)?.map((p) => p?.text ?? "").join("") ?? "").trim();
+  } catch (e) { console.error("[alfred] comporProativo erro:", e instanceof Error ? e.message : e); return ""; }
+}
+
+/**
+ * Contato diário proativo: 1x/dia por grupo, dentro da janela de horário,
+ * sem interromper conversa recente. Claim atômico via last_proactive_at.
+ */
+export async function acompanhamentoProativo(supabase: SupabaseClient, grupo: Grupo, cfg: AlfredCfg): Promise<string> {
+  if (!cfg.proactive_ativo) return "proativo off";
+  const b = agoraBrasilia();
+  const hora = b.getUTCHours();
+  if (hora < cfg.proactive_hora || hora >= 21) return "fora da janela";
+  const hojeB = b.toISOString().slice(0, 10);
+  const lastB = grupo.last_proactive_at ? new Date(new Date(grupo.last_proactive_at).getTime() - 3 * 3_600_000).toISOString().slice(0, 10) : "";
+  if (lastB === hojeB) return "já feito hoje";
+
+  const carga = await carregar(supabase, grupo.id);
+  const ultima = carga.hist[carga.hist.length - 1];
+  if (ultima && Date.now() - new Date(ultima.created_at).getTime() < 90 * 60_000) return "conversa recente";
+
+  const instance = cfg.evolution_instance || grupo.evolution_instance || "";
+  if (!ENV_EVO_URL || !ENV_EVO_KEY || !instance) return "evolution não configurada";
+
+  // Claim atômico do contato de hoje (evita disparo duplo entre ticks).
+  const start = new Date(b); start.setUTCHours(0, 0, 0, 0);
+  const cutoff = new Date(start.getTime() + 3 * 3_600_000).toISOString(); // meia-noite Brasília em UTC
+  const { data: claim } = await supabase.from("alfred_groups")
+    .update({ last_proactive_at: new Date().toISOString() })
+    .eq("id", grupo.id)
+    .or(`last_proactive_at.is.null,last_proactive_at.lt.${cutoff}`)
+    .select("id");
+  if (!claim || claim.length === 0) return "já feito hoje (corrida)";
+
+  const fase = faseEfetiva(grupo.created_at, grupo.fase_override);
+  const contexto = montarContexto(carga.ctx, grupo.client_name, fase)
+    + montarProposta(carga.proposta) + montarMemoria(carga.mem)
+    + montarAtivos(carga.assets) + montarDemandas(carga.demandas) + montarChecklist(carga.tarefas, fase);
+  const partes = fracionarResposta(await comporProativo(cfg, grupo.client_name, contexto));
+  if (partes.length === 0) return "sem mensagem (marcado p/ hoje)";
+
+  try {
+    for (const parte of partes) {
+      await enviarGrupo(instance, grupo.remote_jid, parte, delayDigitacao(parte, cfg));
+      await supabase.from("alfred_messages").insert({ user_id: grupo.user_id, group_id: grupo.id, remote_jid: grupo.remote_jid, role: "model", sender_name: "Alfred", body: parte });
+    }
+    return "proativo enviado";
+  } catch (e) {
+    console.error("[alfred] proativo envio falhou:", e instanceof Error ? e.message : e);
+    return "falha no envio proativo";
+  }
 }
 
 /** Resposta IMEDIATA (modo handoff desligado): chamada pelo webhook. */

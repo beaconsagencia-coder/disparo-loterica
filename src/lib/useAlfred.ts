@@ -10,6 +10,8 @@ export interface AlfredConfig {
   handoff_ativo: boolean;      // true = espera a equipe (cron); false = responde na hora
   team_cooldown_min: number;   // pausa após a equipe interagir
   intervene_after_min: number; // prazo p/ o Alfred intervir se a equipe não responder
+  proactive_ativo: boolean;    // acompanhamento diário proativo
+  proactive_hora: number;      // hora (0-23, Brasília) do contato diário
 }
 export interface AlfredMember {
   id: string;
@@ -104,7 +106,7 @@ export interface AlfredMessage {
   quoted_body?: string | null; // mensagem citada (reply do WhatsApp)
 }
 
-const CONFIG_DEFAULT: AlfredConfig = { system_prompt: "", base_conhecimento: "", operator_number: "", handoff_ativo: true, team_cooldown_min: 5, intervene_after_min: 30 };
+const CONFIG_DEFAULT: AlfredConfig = { system_prompt: "", base_conhecimento: "", operator_number: "", handoff_ativo: true, team_cooldown_min: 5, intervene_after_min: 30, proactive_ativo: true, proactive_hora: 9 };
 
 async function uid(): Promise<string> {
   const { data } = await supabase.auth.getUser();
@@ -137,7 +139,7 @@ export function useAlfred() {
   const load = useCallback(async () => {
     const [{ data: cfg }, { data: grp }, { data: ctx }, { data: tk }, { data: mem }, { data: mb }, { data: dm }, { data: as }, { data: pr }] = await Promise.all([
       supabase.from("alfred_configs")
-        .select("system_prompt, base_conhecimento, operator_number, evolution_instance, connection_status, numero, handoff_ativo, team_cooldown_min, intervene_after_min")
+        .select("system_prompt, base_conhecimento, operator_number, evolution_instance, connection_status, numero, handoff_ativo, team_cooldown_min, intervene_after_min, proactive_ativo, proactive_hora")
         .maybeSingle(),
       supabase.from("alfred_groups").select("*").order("created_at", { ascending: false }),
       supabase.from("alfred_context")
@@ -159,6 +161,8 @@ export function useAlfred() {
         handoff_ativo: cfg.handoff_ativo ?? true,
         team_cooldown_min: Number(cfg.team_cooldown_min ?? 5),
         intervene_after_min: Number(cfg.intervene_after_min ?? 30),
+        proactive_ativo: cfg.proactive_ativo ?? true,
+        proactive_hora: Number(cfg.proactive_hora ?? 9),
       });
       setConnection({
         evolution_instance: cfg.evolution_instance ?? null,

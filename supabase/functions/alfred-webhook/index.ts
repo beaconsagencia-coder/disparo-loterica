@@ -139,6 +139,7 @@ Deno.serve(async (req) => {
       system_prompt: cfgOp.system_prompt ?? "", base_conhecimento: cfgOp.base_conhecimento ?? null,
       operator_number: cfgOp.operator_number ?? null, evolution_instance: cfgOp.evolution_instance ?? null,
       handoff_ativo: false, team_cooldown_min: 5, intervene_after_min: 30,
+      proactive_ativo: false, proactive_hora: 9,
       dmin: Number(sdrOp?.delay_min_seg ?? 3), dmax: Number(sdrOp?.delay_max_seg ?? 8),
     };
     const quoted = extrairCitacao(msgObj);
@@ -237,6 +238,7 @@ Deno.serve(async (req) => {
     handoff_ativo: false,
     team_cooldown_min: Number(cfgRow?.team_cooldown_min ?? 5),
     intervene_after_min: Number(cfgRow?.intervene_after_min ?? 30),
+    proactive_ativo: false, proactive_hora: 9,
     dmin: Number(sdrCfg?.delay_min_seg ?? 3),
     dmax: Number(sdrCfg?.delay_max_seg ?? 8),
   };

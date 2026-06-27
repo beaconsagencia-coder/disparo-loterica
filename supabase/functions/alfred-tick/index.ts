@@ -7,7 +7,7 @@
 // =====================================================================
 import { createClient } from "jsr:@supabase/supabase-js@2";
 import { json } from "../_shared/cors.ts";
-import { processarGrupoTick, type AlfredCfg } from "../_shared/alfred.ts";
+import { processarGrupoTick, acompanhamentoProativo, type AlfredCfg } from "../_shared/alfred.ts";
 
 const supabase = createClient(
   Deno.env.get("SUPABASE_URL")!,
@@ -21,7 +21,7 @@ Deno.serve(async (req) => {
 
   const { data: grupos } = await supabase
     .from("alfred_groups")
-    .select("id, user_id, client_name, remote_jid, evolution_instance, last_learned_at, created_at, fase_override")
+    .select("id, user_id, client_name, remote_jid, evolution_instance, last_learned_at, created_at, fase_override, last_proactive_at")
     .eq("active", true);
   if (!grupos?.length) return json({ ok: true, processados: 0 });
 
@@ -30,7 +30,7 @@ Deno.serve(async (req) => {
   async function cfgDe(userId: string): Promise<AlfredCfg> {
     if (cfgCache.has(userId)) return cfgCache.get(userId)!;
     const [{ data: a }, { data: sdr }] = await Promise.all([
-      supabase.from("alfred_configs").select("system_prompt, base_conhecimento, operator_number, evolution_instance, handoff_ativo, team_cooldown_min, intervene_after_min").eq("user_id", userId).maybeSingle(),
+      supabase.from("alfred_configs").select("system_prompt, base_conhecimento, operator_number, evolution_instance, handoff_ativo, team_cooldown_min, intervene_after_min, proactive_ativo, proactive_hora").eq("user_id", userId).maybeSingle(),
       supabase.from("ai_config").select("delay_min_seg, delay_max_seg").eq("user_id", userId).maybeSingle(),
     ]);
     const cfg: AlfredCfg = {
@@ -41,6 +41,8 @@ Deno.serve(async (req) => {
       handoff_ativo: a?.handoff_ativo ?? true,
       team_cooldown_min: Number(a?.team_cooldown_min ?? 5),
       intervene_after_min: Number(a?.intervene_after_min ?? 30),
+      proactive_ativo: a?.proactive_ativo ?? true,
+      proactive_hora: Number(a?.proactive_hora ?? 9),
       dmin: Number(sdr?.delay_min_seg ?? 3),
       dmax: Number(sdr?.delay_max_seg ?? 8),
     };
@@ -54,6 +56,8 @@ Deno.serve(async (req) => {
       const cfg = await cfgDe(g.user_id);
       const r = await processarGrupoTick(supabase, g, cfg);
       resultados[r] = (resultados[r] ?? 0) + 1;
+      const rp = await acompanhamentoProativo(supabase, g, cfg);
+      if (rp === "proativo enviado") resultados[rp] = (resultados[rp] ?? 0) + 1;
     } catch (e) {
       console.error("[alfred-tick] erro no grupo", g.id, e instanceof Error ? e.message : e);
     }
