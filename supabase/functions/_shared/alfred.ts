@@ -11,7 +11,7 @@ const ENV_EVO_KEY = Deno.env.get("EVOLUTION_API_KEY") ?? "";
 // Síntese de voz (ElevenLabs) — opcional: só ativa se a chave e a voz estiverem no env.
 const ELEVENLABS_KEY = Deno.env.get("ELEVENLABS_API_KEY") ?? "";
 const ELEVENLABS_VOICE = Deno.env.get("ELEVENLABS_VOICE_ID") ?? "";
-const ELEVENLABS_MODEL = Deno.env.get("ELEVENLABS_MODEL_ID") ?? "eleven_multilingual_v2";
+const ELEVENLABS_MODEL = Deno.env.get("ELEVENLABS_MODEL_ID") ?? "eleven_v3";
 const GEMINI_MODEL = "gemini-2.5-flash";
 const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
 const HISTORICO = 50;
@@ -55,9 +55,13 @@ export function faseEfetiva(createdAt: string | null, override: string | null): 
 
 export interface HistRow { id?: string; role: string; sender_name: string | null; body: string; is_team?: boolean; quoted_body?: string | null }
 
-/** Remove as tags de pausa <break ../> (só servem para a síntese de voz, não para texto). */
+/** Remove tags que só servem para a síntese de voz (não para texto):
+ *  <break ../> (v2) e audio tags do v3 como [exhales], [hesitates], [sighs]. */
 function semBreaks(s: string): string {
-  return s.replace(/<break[^>]*>/gi, "").replace(/\s{2,}/g, " ").trim();
+  return s
+    .replace(/<break[^>]*>/gi, "")              // pausa v2
+    .replace(/\[[a-zà-úç ]{1,20}\]/gi, "")       // tags de voz v3
+    .replace(/\s{2,}/g, " ").trim();
 }
 
 /** Nome exibível do remetente: descarta perfis sem nome real (só emoji/símbolos/números).
@@ -249,10 +253,11 @@ async function chamarGemini(systemPrompt: string, contexto: string, contents: { 
           "SAÍDA: devolva um JSON com 'mensagem' (APENAS o texto final ao cliente, balões separados por LINHA EM BRANCO) e 'audio' (booleano). " +
           "Defina audio=true APENAS quando a explicação for COMPLEXA o bastante para um áudio ajudar muito, OU quando o cliente PEDIR explicitamente um áudio " +
           "(ex.: 'manda um áudio', 'pode me explicar falando'); caso contrário audio=false. " +
-          "Quando audio=true, escreva a 'mensagem' em tom FALADO e natural (ela será LIDA em voz): use vícios de linguagem SUTIS e ocasionais " +
-          "('é...', 'então', 'tipo', 'olha', 'deixa eu te explicar', 'sabe?', 'ó'), pausas naturais (reticências e vírgulas) e contrações da fala ('tá', 'pra', 'cê'). " +
-          "Para as pausas de RESPIRAÇÃO/PENSAMENTO, insira a tag <break time=\"0.3s\" /> em pontos naturais (depois de um 'é...', antes de explicar um ponto importante, " +
-          "entre uma ideia e outra), de forma BEM SUTIL — no máximo uma a cada uma ou duas frases, variando entre 0.2s e 0.4s. NÃO use a tag em respostas de texto (audio=false). " +
+          "Quando audio=true, escreva a 'mensagem' em tom FALADO e natural (ela será LIDA em voz pelo ElevenLabs v3): use vícios de linguagem SUTIS e ocasionais " +
+          "('é...', 'então', 'tipo', 'olha', 'deixa eu te explicar', 'sabe?', 'ó') e contrações da fala ('tá', 'pra', 'cê'). " +
+          "Para as PAUSAS de respiração/pensamento, use reticências '...' e vírgulas em pontos naturais — o v3 transforma isso em pausas bem humanas; mantenha SUTIL. " +
+          "Opcionalmente, no MÁXIMO uma vez, uma audio tag do v3 entre colchetes onde couber uma respiração [exhales] ou hesitação [hesitates]. " +
+          "NÃO use reticências/tags exageradamente, e NADA disso em respostas de texto (audio=false). " +
           "Use tudo com PARCIMÔNIA — só o suficiente pra não soar robótico, sem exagerar nem ficar caricato. " +
           "Pense internamente o quanto precisar para perguntas complexas; esse raciocínio NUNCA entra no campo 'mensagem'.",
       }],
@@ -295,9 +300,9 @@ function fracionarResposta(raw: string): string[] {
   if (!txt) return [];
   const limpar = (s: string) => s
     .replace(/^\s*alfred\s*:\s*/i, "")
-    // remove rótulos/anotações internas vazadas no início ([Equipe ...], [imagem ...],
-    // [Cliente ...], etc.) — o modelo às vezes imita o formato do histórico.
-    .replace(/^(?:\s*\[[^\]]*\]\s*:?\s*)+/g, "")
+    // remove SÓ rótulos internos vazados no início ([Equipe ...], [Cliente ...], etc.).
+    // Não toca em audio tags do v3 ([exhales], [hesitates]...) usadas na fala.
+    .replace(/^(?:\s*\[\s*(?:equipe|cliente|usu[aá]rio|imagem|[aá]udio|nota|an[aá]lise|sistema)[^\]]*\]\s*:?\s*)+/gi, "")
     .replace(/^["“”'\s]+|["“”'\s]+$/g, "")
     .trim();
   const partes = txt
@@ -401,7 +406,7 @@ async function sintetizarVoz(texto: string): Promise<string | null> {
       body: JSON.stringify({
         text: texto.slice(0, 2500), // limita tamanho (custo/duração)
         model_id: ELEVENLABS_MODEL,
-        voice_settings: { stability: 0.4, similarity_boost: 0.8, style: 0.42, use_speaker_boost: true },
+        voice_settings: { stability: 0.5, similarity_boost: 0.8, use_speaker_boost: true }, // v3: stability Natural; "style" não se aplica
       }),
     });
     if (!res.ok) { console.error("[alfred] elevenlabs", res.status, (await res.text()).slice(0, 200)); return null; }
