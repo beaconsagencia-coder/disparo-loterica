@@ -3,10 +3,15 @@
 // Monta contexto, chama o Gemini, aprende e aplica as regras de handoff.
 // =====================================================================
 import type { SupabaseClient } from "jsr:@supabase/supabase-js@2";
+import { encodeBase64 } from "jsr:@std/encoding/base64";
 
 const GEMINI_API_KEY = Deno.env.get("GEMINI_API_KEY") ?? "";
 const ENV_EVO_URL = (Deno.env.get("EVOLUTION_API_URL") ?? "").replace(/\/+$/, "");
 const ENV_EVO_KEY = Deno.env.get("EVOLUTION_API_KEY") ?? "";
+// Síntese de voz (ElevenLabs) — opcional: só ativa se a chave e a voz estiverem no env.
+const ELEVENLABS_KEY = Deno.env.get("ELEVENLABS_API_KEY") ?? "";
+const ELEVENLABS_VOICE = Deno.env.get("ELEVENLABS_VOICE_ID") ?? "";
+const ELEVENLABS_MODEL = Deno.env.get("ELEVENLABS_MODEL_ID") ?? "eleven_multilingual_v2";
 const GEMINI_MODEL = "gemini-2.5-flash";
 const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
 const HISTORICO = 50;
@@ -181,7 +186,7 @@ function montarContents(hist: HistRow[]) {
   return out;
 }
 
-async function chamarGemini(systemPrompt: string, contexto: string, contents: { role: "user" | "model"; parts: { text: string }[] }[], baseConhecimento: string): Promise<string> {
+async function chamarGemini(systemPrompt: string, contexto: string, contents: { role: "user" | "model"; parts: { text: string }[] }[], baseConhecimento: string): Promise<{ mensagem: string; audio: boolean }> {
   const body = {
     system_instruction: {
       parts: [{
@@ -236,7 +241,9 @@ async function chamarGemini(systemPrompt: string, contexto: string, contents: { 
           "Entendo a urgência, Pedro! Mas a gente precisa seguir o cronograma certinho pra não tomar bloqueio e prejudicar suas campanhas.\n\n" +
           "Essa semana o foco é a identidade visual. Fica tranquilo que deixamos tudo pronto a tempo pra aproveitar a data com segurança. Confia no processo!\n" +
           "Nunca use prefixo, nome ou 'Alfred:'; sem markdown; sem emojis em excesso.\n\n" +
-          "SAÍDA: devolva um JSON com o campo 'mensagem' contendo APENAS o texto final ao cliente (balões separados por LINHA EM BRANCO). " +
+          "SAÍDA: devolva um JSON com 'mensagem' (APENAS o texto final ao cliente, balões separados por LINHA EM BRANCO) e 'audio' (booleano). " +
+          "Defina audio=true APENAS quando a explicação for COMPLEXA o bastante para um áudio ajudar muito, OU quando o cliente PEDIR explicitamente um áudio " +
+          "(ex.: 'manda um áudio', 'pode me explicar falando'); caso contrário audio=false. Quando audio=true, escreva a 'mensagem' em tom FALADO e natural (será lida em voz). " +
           "Pense internamente o quanto precisar para perguntas complexas; esse raciocínio NUNCA entra no campo 'mensagem'.",
       }],
     },
@@ -246,22 +253,22 @@ async function chamarGemini(systemPrompt: string, contexto: string, contents: { 
       maxOutputTokens: 2048,                  // espaço p/ pensar (privado) + responder
       thinkingConfig: { thinkingBudget: -1 }, // pensamento DINÂMICO: mais em perguntas complexas, ~0 nas simples
       responseMimeType: "application/json",
-      responseSchema: { type: "OBJECT", properties: { mensagem: { type: "STRING" } }, required: ["mensagem"] },
+      responseSchema: { type: "OBJECT", properties: { mensagem: { type: "STRING" }, audio: { type: "BOOLEAN" } }, required: ["mensagem"] },
     },
   };
   const res = await fetch(`${GEMINI_URL}?key=${encodeURIComponent(GEMINI_API_KEY)}`, {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
   });
-  if (!res.ok) { console.error("[alfred] gemini", res.status, (await res.text()).slice(0, 200)); return ""; }
+  if (!res.ok) { console.error("[alfred] gemini", res.status, (await res.text()).slice(0, 200)); return { mensagem: "", audio: false }; }
   const data = await res.json();
   // deno-lint-ignore no-explicit-any
   const raw = ((data?.candidates?.[0]?.content?.parts as any[] | undefined)?.map((p) => p?.text ?? "").join("") ?? "").trim();
   // Saída ESTRUTURADA: só o campo "mensagem" é enviado — qualquer raciocínio fica fora.
   try {
     const parsed = JSON.parse(raw);
-    return String(parsed?.mensagem ?? "").trim();
+    return { mensagem: String(parsed?.mensagem ?? "").trim(), audio: parsed?.audio === true };
   } catch {
-    return raw; // fallback defensivo caso não venha JSON
+    return { mensagem: raw, audio: false }; // fallback defensivo caso não venha JSON
   }
 }
 
@@ -374,6 +381,33 @@ async function enviarGrupo(instance: string, remoteJid: string, texto: string, d
   if (!res.ok) throw new Error(`Evolution sendText ${res.status}: ${(await res.text()).slice(0, 200)}`);
 }
 
+/** Sintetiza o texto em voz natural (ElevenLabs) e devolve o MP3 em base64. */
+async function sintetizarVoz(texto: string): Promise<string | null> {
+  if (!ELEVENLABS_KEY || !ELEVENLABS_VOICE || !texto.trim()) return null;
+  try {
+    const res = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE}`, {
+      method: "POST",
+      headers: { "xi-api-key": ELEVENLABS_KEY, "Content-Type": "application/json", "Accept": "audio/mpeg" },
+      body: JSON.stringify({
+        text: texto.slice(0, 2500), // limita tamanho (custo/duração)
+        model_id: ELEVENLABS_MODEL,
+        voice_settings: { stability: 0.45, similarity_boost: 0.8, style: 0.3, use_speaker_boost: true },
+      }),
+    });
+    if (!res.ok) { console.error("[alfred] elevenlabs", res.status, (await res.text()).slice(0, 200)); return null; }
+    return encodeBase64(new Uint8Array(await res.arrayBuffer()));
+  } catch (e) { console.error("[alfred] elevenlabs erro:", e instanceof Error ? e.message : e); return null; }
+}
+
+/** Envia uma nota de voz (PTT) ao grupo via Evolution. */
+async function enviarAudioGrupo(instance: string, remoteJid: string, base64Mp3: string): Promise<void> {
+  const res = await fetch(`${ENV_EVO_URL}/message/sendWhatsAppAudio/${instance}`, {
+    method: "POST", headers: { "Content-Type": "application/json", apikey: ENV_EVO_KEY },
+    body: JSON.stringify({ number: remoteJid, audio: base64Mp3 }),
+  });
+  if (!res.ok) throw new Error(`Evolution sendWhatsAppAudio ${res.status}: ${(await res.text()).slice(0, 200)}`);
+}
+
 export interface AlfredCfg {
   system_prompt: string;
   base_conhecimento: string | null; // base global do SaaS (Bolão Gestor)
@@ -453,12 +487,34 @@ async function gerarResposta(supabase: SupabaseClient, grupo: Grupo, cfg: Alfred
     if (!claim || claim.length === 0) return "já respondido (duplicado)";
   }
 
-  const resposta = await chamarGemini(cfg.system_prompt, contexto, contents, cfg.base_conhecimento ?? "");
-  const partes = fracionarResposta(resposta);
+  const r = await chamarGemini(cfg.system_prompt, contexto, contents, cfg.base_conhecimento ?? "");
+  const partes = fracionarResposta(r.mensagem);
   if (partes.length === 0) return "sem resposta (não necessária)"; // o modelo decidiu não responder
 
-  // Envia como VÁRIAS mensagens curtas em sequência (humano digitando no zap):
-  // cada uma com seu próprio "digitando…" proporcional ao tamanho.
+  // Escalonamento IMEDIATO (modo imediato; no handoff o cron cobre a cada 2 min).
+  async function escalarSeNecessario() {
+    if (!cfg.operator_number) return;
+    try {
+      const esc = await classificarEscalacao(contents);
+      if (esc) await criarEscalacao(supabase, grupo, cfg, esc);
+    } catch (e) { console.error("[alfred] escalonamento:", e instanceof Error ? e.message : e); }
+  }
+
+  // ÁUDIO: explicações complexas ou pedido do cliente (ElevenLabs -> nota de voz).
+  if (r.audio && ELEVENLABS_KEY) {
+    const textoAudio = partes.join(" ").replace(/\s+/g, " ").trim();
+    const b64 = await sintetizarVoz(textoAudio);
+    if (b64) {
+      try {
+        await enviarAudioGrupo(instance, grupo.remote_jid, b64);
+        await supabase.from("alfred_messages").insert({ user_id: grupo.user_id, group_id: grupo.id, remote_jid: grupo.remote_jid, role: "model", sender_name: "Alfred", body: `🎤 ${textoAudio}` });
+        await escalarSeNecessario();
+        return "respondido (áudio)";
+      } catch (e) { console.error("[alfred] envio áudio falhou, caindo p/ texto:", e instanceof Error ? e.message : e); }
+    }
+  }
+
+  // TEXTO fracionado (default / fallback do áudio): várias mensagens curtas em sequência.
   let enviadas = 0;
   try {
     for (const parte of partes) {
@@ -466,14 +522,7 @@ async function gerarResposta(supabase: SupabaseClient, grupo: Grupo, cfg: Alfred
       await supabase.from("alfred_messages").insert({ user_id: grupo.user_id, group_id: grupo.id, remote_jid: grupo.remote_jid, role: "model", sender_name: "Alfred", body: parte });
       enviadas++;
     }
-    // Escalonamento IMEDIATO: aciona o operador na hora (modo imediato).
-    // No handoff, o cron cobre a escalação cedo (a cada 2 min).
-    if (cfg.operator_number) {
-      try {
-        const esc = await classificarEscalacao(contents);
-        if (esc) await criarEscalacao(supabase, grupo, cfg, esc);
-      } catch (e) { console.error("[alfred] escalonamento:", e instanceof Error ? e.message : e); }
-    }
+    await escalarSeNecessario();
     return "respondido";
   } catch (e) {
     console.error("[alfred] envio falhou:", e instanceof Error ? e.message : e);

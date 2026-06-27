@@ -1,6 +1,7 @@
 {
   "version": "5",
   "specifiers": {
+    "jsr:@std/encoding@*": "1.0.10",
     "jsr:@supabase/supabase-js@2": "2.108.2",
     "npm:@anthropic-ai/sdk@0.104.2": "0.104.2",
     "npm:@google/genai@2.8.0": "2.8.0",
@@ -27,6 +28,9 @@
     "npm:xlsx@~0.18.5": "0.18.5"
   },
   "jsr": {
+    "@std/encoding@1.0.10": {
+      "integrity": "8783c6384a2d13abd5e9e87a7ae0520a30e9f56aeeaa3bdf910a3eaaf5c811a1"
+    },
     "@supabase/supabase-js@2.108.2": {
       "integrity": "db603b534b1939a216ef004fe9fdd0c72bb4ba097fb04be23ea76cb8c70272aa",
       "dependencies": [
