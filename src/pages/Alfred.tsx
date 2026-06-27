@@ -17,7 +17,7 @@ import {
 // Lógica 100% preservada; visual no design system do app (Bento + Apple-like).
 // =====================================================================
 export default function Alfred() {
-  const { config, connection, groups, contexts, tasks, memory, members, demands, assets, proposals, loading, saveConfig, connectWhatsapp, checkStatus, listarGruposWhatsapp, addGroup, toggleGroup, removeGroup, setFase, saveContext, saveProposal, toggleTask, clearHistory, deleteMemory, addMember, removeMember, addDemand, updateDemand, deleteDemand, addAsset, updateAsset, deleteAsset } = useAlfred();
+  const { config, connection, groups, contexts, tasks, memory, members, demands, assets, proposals, configError, loading, saveConfig, connectWhatsapp, checkStatus, listarGruposWhatsapp, addGroup, toggleGroup, removeGroup, setFase, saveContext, saveProposal, toggleTask, clearHistory, deleteMemory, addMember, removeMember, addDemand, updateDemand, deleteDemand, addAsset, updateAsset, deleteAsset } = useAlfred();
   const [conversa, setConversa] = useState<AlfredGroup | null>(null);
   const [view, setView] = useState<"grupos" | "demandas">("grupos");
 
@@ -55,7 +55,7 @@ export default function Alfred() {
       {/* Bento: conexão + configurações globais */}
       <div className="mb-4 grid gap-4 lg:grid-cols-2">
         <ConexaoWhatsapp connection={connection} onConnect={connectWhatsapp} onCheckStatus={checkStatus} />
-        <ConfigForm config={config} onSave={saveConfig} />
+        <ConfigForm config={config} onSave={saveConfig} loadError={configError} />
       </div>
 
       {/* Cadastro de grupo */}
@@ -357,7 +357,7 @@ function ConexaoWhatsapp({ connection, onConnect, onCheckStatus }: {
 }
 
 // ---- Comportamento global (prompt) — sem chaves (herdadas do SDR) --
-function ConfigForm({ config, onSave }: { config: AlfredConfig; onSave: (c: AlfredConfig) => Promise<void> }) {
+function ConfigForm({ config, onSave, loadError = false }: { config: AlfredConfig; onSave: (c: AlfredConfig) => Promise<void>; loadError?: boolean }) {
   const [prompt, setPrompt] = useState(config.system_prompt ?? "");
   const [base, setBase] = useState(config.base_conhecimento ?? "");
   const [baseAberta, setBaseAberta] = useState(false);
@@ -383,6 +383,7 @@ function ConfigForm({ config, onSave }: { config: AlfredConfig; onSave: (c: Alfr
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
+    if (loadError) { setMsg("Erro: configuração não carregada — não é possível salvar (rode o db push)."); return; }
     setSalvando(true); setMsg("");
     try {
       // Normaliza o número do operador para dígitos com DDI 55.
@@ -416,6 +417,16 @@ function ConfigForm({ config, onSave }: { config: AlfredConfig; onSave: (c: Alfr
           <p className="text-xs text-ink-muted">Prompt global + regras de espera (handoff com a equipe).</p>
         </div>
       </div>
+
+      {loadError && (
+        <div className="mb-3 flex items-start gap-2 rounded-xl border border-danger/30 bg-danger/5 p-3 text-xs text-danger">
+          <AlertTriangle size={16} className="mt-0.5 shrink-0" />
+          <span>
+            Não foi possível carregar a configuração (provável <strong>migração pendente</strong>). Seus dados continuam no banco — <strong>não salve</strong> para não sobrescrever.
+            Rode <code className="rounded bg-danger/10 px-1">supabase db push</code> e recarregue a página.
+          </span>
+        </div>
+      )}
 
       <div className="flex flex-1 flex-col">
         <label className="mb-1 block text-xs font-medium text-ink-soft">Prompt de sistema global</label>
@@ -513,7 +524,7 @@ function ConfigForm({ config, onSave }: { config: AlfredConfig; onSave: (c: Alfr
       </div>
 
       <div className="mt-4 flex items-center gap-3">
-        <button type="submit" className="btn-accent" disabled={salvando}>
+        <button type="submit" className="btn-accent" disabled={salvando || loadError}>
           {salvando ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />} {salvando ? "Salvando…" : "Salvar"}
         </button>
         <Feedback msg={msg} />

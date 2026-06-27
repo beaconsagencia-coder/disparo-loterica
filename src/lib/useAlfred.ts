@@ -134,10 +134,11 @@ export function useAlfred() {
   const [demands, setDemands] = useState<Record<string, AlfredDemand[]>>({});
   const [assets, setAssets] = useState<Record<string, AlfredAsset[]>>({});
   const [proposals, setProposals] = useState<Record<string, AlfredProposal>>({});
+  const [configError, setConfigError] = useState(false);
   const [loading, setLoading] = useState(true);
 
   const load = useCallback(async () => {
-    const [{ data: cfg }, { data: grp }, { data: ctx }, { data: tk }, { data: mem }, { data: mb }, { data: dm }, { data: as }, { data: pr }] = await Promise.all([
+    const [{ data: cfg, error: cfgErr }, { data: grp }, { data: ctx }, { data: tk }, { data: mem }, { data: mb }, { data: dm }, { data: as }, { data: pr }] = await Promise.all([
       supabase.from("alfred_configs")
         .select("system_prompt, base_conhecimento, operator_number, evolution_instance, connection_status, numero, handoff_ativo, team_cooldown_min, intervene_after_min, proactive_ativo, proactive_hora")
         .maybeSingle(),
@@ -153,6 +154,10 @@ export function useAlfred() {
       supabase.from("alfred_assets").select("id, group_id, titulo, tipo, status, descricao, substituida_por").order("updated_at", { ascending: false }),
       supabase.from("alfred_proposals").select("group_id, valor_mensal, valor_setup, vigencia_meses, forma_pagamento, entregaveis, observacoes"),
     ]);
+    // Se a leitura do config falhou (ex.: migração pendente, coluna inexistente),
+    // NÃO sobrescreve o estado com defaults vazios e sinaliza o erro — a tela
+    // bloqueia o Salvar para não apagar prompt/base que continuam no banco.
+    setConfigError(!!cfgErr);
     if (cfg) {
       setConfig({
         system_prompt: cfg.system_prompt ?? "",
@@ -392,7 +397,7 @@ export function useAlfred() {
   }, []);
 
   return {
-    config, connection, groups, contexts, tasks, memory, members, demands, assets, proposals, loading,
+    config, connection, groups, contexts, tasks, memory, members, demands, assets, proposals, configError, loading,
     saveConfig, connectWhatsapp, checkStatus, listarGruposWhatsapp,
     addGroup, toggleGroup, removeGroup, setFase, saveContext, saveProposal, toggleTask, clearHistory, deleteMemory,
     addMember, removeMember, addDemand, updateDemand, deleteDemand,
