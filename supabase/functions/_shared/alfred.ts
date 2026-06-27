@@ -163,6 +163,10 @@ async function chamarGemini(systemPrompt: string, contexto: string, contents: { 
           "cliente está fazendo ou o que você pretende fazer. Esses rótulos existem só para o SEU entendimento e NUNCA podem ser enviados ao grupo — " +
           "mande exclusivamente a mensagem final ao cliente, como uma pessoa real. Sobre dados sensíveis (senhas, logins, @): são dados do próprio cliente — " +
           "se ELE pedir, pode informar normalmente; apenas não fique repetindo esses dados sem necessidade quando ninguém pediu.\n\n" +
+          "NÃO CHUTE / VERIFIQUE ANTES: você NÃO tem acesso direto às contas, perfis e sistemas do cliente (Instagram, Facebook, Gerenciador, etc.). " +
+          "NUNCA afirme com CERTEZA fatos que você não pode verificar — ex.: quem postou um story/publicação, o que aconteceu numa conta, se uma ação foi " +
+          "feita pela equipe. Nesses casos NÃO assuma nem invente: diga que vai VERIFICAR com a equipe e retornar com a resposta. Se o cliente insistir ou " +
+          "contestar, mantenha a postura de que vai confirmar — não bata o pé com uma afirmação que você não pode garantir.\n\n" +
           "USO DO CHECKLIST/MEMÓRIA: baseie-se no andamento e nas informações salvas; nunca diga que algo está pronto se está pendente; " +
           "se uma etapa pendente depende do cliente (criativo, conta de Facebook, orçamento), solicite a ele.\n\n" +
           "FASE DO CONTRATO: no Onboarding, priorize o cronograma/checklist de implantação. Na Manutenção, o cronograma é apenas histórico — " +
@@ -424,6 +428,8 @@ async function classificarEscalacao(contents: { role: "user" | "model"; parts: {
     "FAZER ou VERIFICAR algo FORA do chat e voltar com um resultado. DEVEM escalar (escalar=true), por exemplo: " +
     "testar acesso a uma conta (login/senha); VERIFICAR/INVESTIGAR um problema numa plataforma (ex.: por que a conta do Instagram/Facebook foi " +
     "suspensa ou bloqueada, conferir o status de um anúncio, ver se uma conta está ativa, checar uma pendência no Gerenciador de Anúncios); " +
+    "APURAR/CONFIRMAR quem fez uma ação na conta do cliente (ex.: quem postou um story/publicação no perfil) ou esclarecer uma divergência que o cliente " +
+    "relatou e o Alfred não tem como confirmar sozinho; " +
     "configurar/ajustar algo num sistema; qualquer pedido que dependa de a equipe acessar uma ferramenta externa e retornar. " +
     "NÃO escalar (escalar=false): dúvidas que o Alfred responde com o contexto, conversa, agradecimento, e PEDIDOS DE ARTE/MATERIAL/ALTERAÇÃO " +
     "(isso é uma demanda, não uma escalação). " +
@@ -458,8 +464,12 @@ async function criarEscalacao(supabase: SupabaseClient, grupo: Grupo, cfg: Alfre
   const op = (cfg.operator_number ?? "").trim();
   const instance = cfg.evolution_instance || grupo.evolution_instance || "";
   if (!op || !instance || !ENV_EVO_URL || !ENV_EVO_KEY) return;
-  const { data: aberta } = await supabase.from("alfred_escalations").select("id").eq("group_id", grupo.id).eq("status", "aberta").limit(1);
-  if (aberta && aberta.length) return; // já há uma pendente p/ este grupo
+  // Dedup por TAREFA (não "1 por grupo"): evita repetir a MESMA escalação, mas
+  // permite uma tarefa nova mesmo havendo outra antiga ainda aberta.
+  const norm = (s: string) => s.toLowerCase().replace(/\s+/g, " ").trim();
+  const novoN = norm(esc.resumo);
+  const { data: abertas } = await supabase.from("alfred_escalations").select("resumo").eq("group_id", grupo.id).eq("status", "aberta");
+  if ((abertas ?? []).some((a) => { const r = norm(String(a.resumo ?? "")); return !!r && (r === novoN || r.includes(novoN) || novoN.includes(r)); })) return;
   const dm = `[${grupo.client_name}] ${esc.mensagem_operador}`;
   const { data: ins } = await supabase.from("alfred_escalations").insert({
     user_id: grupo.user_id, group_id: grupo.id, resumo: esc.resumo, mensagem_operador: dm, status: "aberta",
