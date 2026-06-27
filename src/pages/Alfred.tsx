@@ -32,9 +32,9 @@ export default function Alfred() {
     <div className="mx-auto max-w-6xl">
       <header className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-center gap-2">
-          <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent/10 text-accent"><Bot size={20} /></span>
-          <div>
-            <h1 className="text-2xl font-semibold tracking-tight">Alfred</h1>
+          <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-accent/10 text-accent"><Bot size={20} /></span>
+          <div className="min-w-0">
+            <h1 className="text-xl font-semibold tracking-tight sm:text-2xl">Alfred</h1>
             <p className="text-sm text-ink-muted">Agente de IA para os grupos de WhatsApp dos seus clientes.</p>
           </div>
         </div>
@@ -1190,7 +1190,8 @@ function GroupItem({
   return (
     <div className="rounded-xl2 border border-black/5 bg-white shadow-sm transition-shadow hover:shadow-md">
       {/* Linha principal — painel de controle */}
-      <div className="flex items-center gap-3 p-4">
+      <div className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center">
+        <div className="flex min-w-0 flex-1 items-center gap-3">
         <span className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl ${group.active ? "bg-success/10 text-[#1b7a35]" : "bg-black/[0.04] text-ink-muted"}`}>
           <Users size={18} />
         </span>
@@ -1213,8 +1214,9 @@ function GroupItem({
           </div>
           <div className="mt-0.5 truncate font-mono text-xs text-ink-muted">{group.remote_jid}</div>
         </div>
+        </div>
 
-        <div className="flex shrink-0 items-center gap-1">
+        <div className="flex shrink-0 items-center gap-1 self-end sm:self-auto">
           <button
             onClick={onVerConversa}
             className="inline-flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-medium text-ink-soft transition-colors hover:bg-black/5"

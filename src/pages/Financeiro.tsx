@@ -95,11 +95,11 @@ export default function Financeiro() {
     <div className="mx-auto max-w-7xl">
       {/* Cabeçalho + ação primária */}
       <header className="mb-5 flex items-center justify-between gap-3">
-        <div className="flex items-center gap-2">
-          <Wallet size={22} className="text-accent" />
-          <div>
-            <h1 className="text-2xl font-semibold tracking-tight">Gestão Financeira</h1>
-            <p className="text-sm text-ink-muted">Carteira, fluxo de caixa e previsibilidade. Tudo recalcula em tempo real.</p>
+        <div className="flex min-w-0 items-center gap-2">
+          <Wallet size={22} className="shrink-0 text-accent" />
+          <div className="min-w-0">
+            <h1 className="text-xl font-semibold tracking-tight sm:text-2xl">Gestão Financeira</h1>
+            <p className="truncate text-sm text-ink-muted">Carteira, fluxo de caixa e previsibilidade em tempo real.</p>
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-2">
@@ -123,11 +123,11 @@ export default function Financeiro() {
       {/* 1) KPIs — uma única linha (4 colunas), compactos */}
       <div className="mb-4 grid grid-cols-2 gap-3 md:grid-cols-4">
         {cards.map((c) => (
-          <div key={c.label} className="bento-card flex items-center gap-3 !p-4">
-            <span className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl ${c.bg}`}><c.icon size={18} /></span>
+          <div key={c.label} className="bento-card flex items-center gap-3 !p-3 sm:!p-4">
+            <span className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl sm:h-10 sm:w-10 ${c.bg}`}><c.icon size={18} /></span>
             <div className="min-w-0">
               <div className="truncate text-xs text-ink-muted">{c.label}</div>
-              <div className={`truncate text-xl font-semibold tracking-tight tabular-nums ${c.accent}`}>{c.value}</div>
+              <div className={`truncate text-lg font-semibold tracking-tight tabular-nums sm:text-xl ${c.accent}`}>{c.value}</div>
               {c.sub && <div className="truncate text-[11px] font-medium tabular-nums text-ink-soft">{c.sub}</div>}
               <div className="truncate text-[11px] capitalize text-ink-muted">{c.hint}</div>
             </div>
@@ -275,7 +275,16 @@ function ContratosTabela({
       ) : lista.length === 0 ? (
         <p className="py-12 text-center text-sm text-ink-muted">Nenhum contrato neste filtro.</p>
       ) : (
-        <div className="overflow-x-auto">
+        <>
+        {/* Mobile: lista de cards (a tabela larga vira scroll horizontal ruim no celular) */}
+        <div className="divide-y divide-black/5 md:hidden">
+          {lista.map((c) => (
+            <ContratoCard key={c.id} c={c} inv={faturas.get(c.id)} onEditar={onEditar} onCancelar={onCancelar} onExcluir={onExcluir} onTogglePago={onTogglePago} />
+          ))}
+        </div>
+
+        {/* Desktop: tabela full-width */}
+        <div className="hidden overflow-x-auto md:block">
           <table className="w-full min-w-[820px] text-sm">
             <thead>
               <tr className="border-b border-black/5 bg-black/[0.015] text-left text-xs uppercase tracking-wide text-ink-muted">
@@ -392,6 +401,7 @@ function ContratosTabela({
             </tbody>
           </table>
         </div>
+        </>
       )}
 
       <p className="border-t border-black/5 px-4 py-3 text-xs text-ink-muted">
@@ -428,6 +438,77 @@ function FaturaCell({ contrato, inv, onToggle }: { contrato: Contract; inv?: Inv
           <Send size={9} /> lembrete enviado
         </span>
       )}
+    </div>
+  );
+}
+
+/** Cartão de contrato para MOBILE (substitui a linha da tabela em telas pequenas). */
+function ContratoCard({
+  c, inv, onEditar, onCancelar, onExcluir, onTogglePago,
+}: {
+  c: Contract; inv?: Invoice;
+  onEditar: (c: Contract) => void; onCancelar: (c: Contract) => void;
+  onExcluir: (c: Contract) => void; onTogglePago: (c: Contract, paga: boolean) => void;
+}) {
+  const prog = vigenciaProgress(c);
+  const pctv = prog.total > 0 ? Math.round((prog.mes / prog.total) * 100) : 0;
+  const dias = c.status === "active" ? daysUntilDue(c.due_date_day) : null;
+  const tone = dias !== null ? dueTone(dias) : null;
+  return (
+    <div className="p-4">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className="font-medium">{c.client_name}</span>
+            <span className={`chip ${STATUS_CHIP[c.status]}`}>{CONTRACT_STATUS_LABEL[c.status]}</span>
+            {c.has_commission && (
+              <span className="chip bg-warning/15 text-[#9a6400]" title={comissaoDescr(c)}><Percent size={11} /> Comissão</span>
+            )}
+          </div>
+          <div className="mt-0.5 text-xs text-ink-muted">
+            {c.payer_contact ? `${c.payer_contact} · ` : ""}início {dataBR(c.start_date)}
+          </div>
+        </div>
+        <span className={`flex h-12 w-12 shrink-0 flex-col items-center justify-center rounded-xl leading-none ${tone ? tone.box : "bg-black/5 text-ink-muted"}`}>
+          <span className="text-[9px] font-medium uppercase opacity-70">dia</span>
+          <span className="text-lg font-bold tabular-nums">{c.due_date_day}</span>
+        </span>
+      </div>
+
+      <div className="mt-3 flex items-end justify-between gap-2">
+        <div>
+          <div className="text-xl font-semibold tabular-nums">
+            {brl(Number(c.contract_value))}<span className="text-xs font-normal text-ink-muted">/mês</span>
+          </div>
+          {c.has_commission && <div className="text-[11px] tabular-nums text-ink-muted">líq. {brl(netValue(c))}</div>}
+        </div>
+        {tone && <span className={`chip ${tone.chip}`}>{tone.label} · {ddmm(nextDueDate(c.due_date_day))}</span>}
+      </div>
+
+      <div className="mt-3">
+        <div className="mb-1 flex items-center justify-between text-xs">
+          <span className="font-medium text-ink-soft">Mês {prog.mes} de {prog.total}</span>
+          <span className="text-ink-muted">até {mesLabel(endMonthIndex(c))}</span>
+        </div>
+        <div className="h-1.5 overflow-hidden rounded-full bg-black/[0.06]">
+          <div className="h-full rounded-full bg-accent transition-all" style={{ width: `${Math.max(4, pctv)}%` }} />
+        </div>
+      </div>
+
+      <div className="mt-3 flex items-center justify-between gap-2">
+        {c.status === "active" ? (
+          <FaturaCell contrato={c} inv={inv} onToggle={onTogglePago} />
+        ) : (
+          <span className="text-xs text-ink-muted">—</span>
+        )}
+        <div className="flex items-center gap-1">
+          <button onClick={() => onEditar(c)} className="flex h-9 w-9 items-center justify-center rounded-lg text-ink-muted transition-colors hover:bg-black/5 hover:text-accent" title="Editar"><Pencil size={16} /></button>
+          {c.status === "active" && (
+            <button onClick={() => onCancelar(c)} className="flex h-9 w-9 items-center justify-center rounded-lg text-ink-muted transition-colors hover:bg-warning/10 hover:text-[#9a6400]" title="Cancelar"><Ban size={16} /></button>
+          )}
+          <button onClick={() => onExcluir(c)} className="flex h-9 w-9 items-center justify-center rounded-lg text-ink-muted transition-colors hover:bg-danger/10 hover:text-danger" title="Excluir"><Trash2 size={16} /></button>
+        </div>
+      </div>
     </div>
   );
 }
