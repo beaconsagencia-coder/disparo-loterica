@@ -398,13 +398,6 @@ async function gerarResposta(supabase: SupabaseClient, grupo: Grupo, cfg: Alfred
       await supabase.from("alfred_messages").insert({ user_id: grupo.user_id, group_id: grupo.id, remote_jid: grupo.remote_jid, role: "model", sender_name: "Alfred", body: parte });
       enviadas++;
     }
-    // Escala para o operador humano se a conversa exigir uma ação dele.
-    if (cfg.operator_number) {
-      try {
-        const esc = await classificarEscalacao(contents);
-        if (esc) await criarEscalacao(supabase, grupo, cfg, esc);
-      } catch (e) { console.error("[alfred] escalonamento:", e instanceof Error ? e.message : e); }
-    }
     return "respondido";
   } catch (e) {
     console.error("[alfred] envio falhou:", e instanceof Error ? e.message : e);
@@ -423,12 +416,16 @@ interface Escalacao { resumo: string; mensagem_operador: string }
 async function classificarEscalacao(contents: { role: "user" | "model"; parts: { text: string }[] }[]): Promise<Escalacao | null> {
   if (!GEMINI_API_KEY || contents.length === 0) return null;
   const sys =
-    "Você decide se a ÚLTIMA mensagem do cliente exige uma AÇÃO de um operador humano da equipe que o Alfred NÃO pode executar sozinho — " +
-    "ex.: testar acesso a uma conta com login/senha, validar/configurar algo num sistema, uma decisão que depende do operador. " +
-    "Se exigir, escalar=true e escreva mensagem_operador: uma mensagem CURTA e direta para o operador (em nome do Alfred, em 1ª pessoa), " +
-    "com TODOS os dados necessários (login, senha, links, etc.) e o que ele deve fazer; e resumo: um título curto da tarefa. " +
-    "Se NÃO exigir ação humana externa (dúvida comum, conversa, agradecimento, algo que o Alfred já resolve), escalar=false. " +
-    "Seja CONSERVADOR: só escale quando realmente precisar de uma ação do operador.";
+    "Você decide se a conversa pede uma AÇÃO de um operador humano da equipe — algo que o Alfred não resolve só conversando e que exige alguém ir " +
+    "FAZER ou VERIFICAR algo FORA do chat e voltar com um resultado. DEVEM escalar (escalar=true), por exemplo: " +
+    "testar acesso a uma conta (login/senha); VERIFICAR/INVESTIGAR um problema numa plataforma (ex.: por que a conta do Instagram/Facebook foi " +
+    "suspensa ou bloqueada, conferir o status de um anúncio, ver se uma conta está ativa, checar uma pendência no Gerenciador de Anúncios); " +
+    "configurar/ajustar algo num sistema; qualquer pedido que dependa de a equipe acessar uma ferramenta externa e retornar. " +
+    "NÃO escalar (escalar=false): dúvidas que o Alfred responde com o contexto, conversa, agradecimento, e PEDIDOS DE ARTE/MATERIAL/ALTERAÇÃO " +
+    "(isso é uma demanda, não uma escalação). " +
+    "Se escalar, escreva mensagem_operador CURTA e direta para o operador (em nome do Alfred, em 1ª pessoa), com TODOS os dados necessários " +
+    "(login, senha, @ da conta, links, contexto do problema) e o que ele deve verificar/fazer; e resumo: um título curto da tarefa. " +
+    "Na dúvida entre 'precisa de ação humana externa' e 'não precisa', só escale se realmente exigir alguém agir fora do chat.";
   const body = {
     system_instruction: { parts: [{ text: sys }] },
     contents,
@@ -619,6 +616,15 @@ export async function processarGrupoTick(supabase: SupabaseClient, grupo: Grupo,
           }
         }
       }
+    }
+    // Escala ao operador humano se a conversa exigir uma ação dele (DM privada).
+    // Roda aqui (sempre, independente do modo) para não depender de o Alfred ter
+    // respondido; o "1 aberta por grupo" em criarEscalacao evita duplicar.
+    if (cfg.operator_number) {
+      try {
+        const esc = await classificarEscalacao(montarContents(hist));
+        if (esc) await criarEscalacao(supabase, grupo, cfg, esc);
+      } catch (e) { console.error("[alfred] escalonamento:", e instanceof Error ? e.message : e); }
     }
     await supabase.from("alfred_groups").update({ last_learned_at: new Date(lastMsgMs).toISOString() }).eq("id", grupo.id);
   }
