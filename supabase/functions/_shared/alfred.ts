@@ -55,6 +55,11 @@ export function faseEfetiva(createdAt: string | null, override: string | null): 
 
 export interface HistRow { id?: string; role: string; sender_name: string | null; body: string; is_team?: boolean; quoted_body?: string | null }
 
+/** Remove as tags de pausa <break ../> (só servem para a síntese de voz, não para texto). */
+function semBreaks(s: string): string {
+  return s.replace(/<break[^>]*>/gi, "").replace(/\s{2,}/g, " ").trim();
+}
+
 /** Nome exibível do remetente: descarta perfis sem nome real (só emoji/símbolos/números).
  *  O refino fino (primeiro nome, empresa, frase) fica com o modelo via prompt. */
 function nomeExibivel(nome: string | null): string | null {
@@ -246,7 +251,9 @@ async function chamarGemini(systemPrompt: string, contexto: string, contents: { 
           "(ex.: 'manda um áudio', 'pode me explicar falando'); caso contrário audio=false. " +
           "Quando audio=true, escreva a 'mensagem' em tom FALADO e natural (ela será LIDA em voz): use vícios de linguagem SUTIS e ocasionais " +
           "('é...', 'então', 'tipo', 'olha', 'deixa eu te explicar', 'sabe?', 'ó'), pausas naturais (reticências e vírgulas) e contrações da fala ('tá', 'pra', 'cê'). " +
-          "Use com PARCIMÔNIA — só o suficiente pra não soar robótico, sem exagerar nem ficar caricato. " +
+          "Para as pausas de RESPIRAÇÃO/PENSAMENTO, insira a tag <break time=\"0.3s\" /> em pontos naturais (depois de um 'é...', antes de explicar um ponto importante, " +
+          "entre uma ideia e outra), de forma BEM SUTIL — no máximo uma a cada uma ou duas frases, variando entre 0.2s e 0.4s. NÃO use a tag em respostas de texto (audio=false). " +
+          "Use tudo com PARCIMÔNIA — só o suficiente pra não soar robótico, sem exagerar nem ficar caricato. " +
           "Pense internamente o quanto precisar para perguntas complexas; esse raciocínio NUNCA entra no campo 'mensagem'.",
       }],
     },
@@ -516,7 +523,7 @@ async function gerarResposta(supabase: SupabaseClient, grupo: Grupo, cfg: Alfred
       } else {
         try {
           await enviarAudioGrupo(instance, grupo.remote_jid, b64);
-          await supabase.from("alfred_messages").insert({ user_id: grupo.user_id, group_id: grupo.id, remote_jid: grupo.remote_jid, role: "model", sender_name: "Alfred", body: `🎤 ${textoAudio}` });
+          await supabase.from("alfred_messages").insert({ user_id: grupo.user_id, group_id: grupo.id, remote_jid: grupo.remote_jid, role: "model", sender_name: "Alfred", body: `🎤 ${semBreaks(textoAudio)}` });
           await escalarSeNecessario();
           return "respondido (áudio)";
         } catch (e) { console.error("[alfred] envio do áudio (Evolution sendWhatsAppAudio) falhou:", e instanceof Error ? e.message : e); }
@@ -527,7 +534,9 @@ async function gerarResposta(supabase: SupabaseClient, grupo: Grupo, cfg: Alfred
   // TEXTO fracionado (default / fallback do áudio): várias mensagens curtas em sequência.
   let enviadas = 0;
   try {
-    for (const parte of partes) {
+    for (const bruta of partes) {
+      const parte = semBreaks(bruta); // texto nunca leva tag <break> (só o áudio usa)
+      if (!parte) continue;
       await enviarGrupo(instance, grupo.remote_jid, parte, delayDigitacao(parte, cfg));
       await supabase.from("alfred_messages").insert({ user_id: grupo.user_id, group_id: grupo.id, remote_jid: grupo.remote_jid, role: "model", sender_name: "Alfred", body: parte });
       enviadas++;
