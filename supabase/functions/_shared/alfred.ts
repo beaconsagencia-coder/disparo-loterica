@@ -17,6 +17,7 @@ const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/${GE
 const HISTORICO = 50;
 const FASE_THRESHOLD_DIAS = 30; // >= 30 dias de grupo => Manutenção (se sem override)
 const PROATIVO_DIAS = new Set([1, 2, 3, 4, 5]); // acompanhamento proativo: seg a sex (0=dom..6=sáb)
+const BOT_NOME = "Alfred"; // como o bot se apresenta no grupo
 
 // Regra de naturalidade aplicada a TODA mensagem ao cliente (resposta, proativo, repasse).
 const REGRA_NOME_NEGOCIO =
@@ -71,6 +72,54 @@ function nomeExibivel(nome: string | null): string | null {
   if (!n) return null;
   if (!/\p{L}/u.test(n)) return null; // precisa ter ao menos uma letra
   return n;
+}
+
+/** Primeiro nome plausível a partir do pushName (ou null se não parecer nome próprio).
+ *  Aplica de forma determinística o mesmo bom senso do prompt: pega só o 1º token
+ *  alfabético, ignorando nomes de empresa/frase/emoji. */
+function primeiroNome(nome: string | null): string | null {
+  const limpo = nomeExibivel(nome);
+  if (!limpo) return null;
+  const tok = limpo.trim().split(/\s+/)[0];
+  if (!/^[a-zà-ú']{2,15}$/i.test(tok)) return null; // só letras (com acento), 2-15
+  return tok.charAt(0).toUpperCase() + tok.slice(1).toLowerCase();
+}
+
+/** Alfred já enviou alguma mensagem neste grupo? (define se precisa se apresentar antes). */
+async function jaSeApresentou(supabase: SupabaseClient, groupId: string): Promise<boolean> {
+  const { count } = await supabase.from("alfred_messages")
+    .select("id", { count: "exact", head: true })
+    .eq("group_id", groupId).eq("role", "model");
+  return (count ?? 0) > 0;
+}
+
+/** Texto fixo de apresentação — a PRIMEIRA fala do Alfred em qualquer grupo. */
+function montarApresentacao(nomeCliente: string | null): string {
+  const abertura = nomeCliente ? `Prazer, ${nomeCliente}!` : "Prazer, pessoal!";
+  return `${abertura} Eu sou o ${BOT_NOME} e vou ser o gerente de vocês. ` +
+    "Toda a parte de organização de demandas fica comigo.";
+}
+
+/** Se o Alfred ainda não falou no grupo, envia a apresentação como 1ª mensagem.
+ *  Retorna true se apresentou agora (para os fluxos darem um respiro antes de seguir). */
+async function apresentarSeNecessario(
+  supabase: SupabaseClient, grupo: Grupo, cfg: AlfredCfg, nomeCliente: string | null,
+): Promise<boolean> {
+  const instance = cfg.evolution_instance || grupo.evolution_instance || "";
+  if (!ENV_EVO_URL || !ENV_EVO_KEY || !instance) return false;
+  if (await jaSeApresentou(supabase, grupo.id)) return false;
+  const texto = montarApresentacao(nomeCliente);
+  try {
+    await enviarGrupo(instance, grupo.remote_jid, texto, delayDigitacao(texto, cfg));
+    await supabase.from("alfred_messages").insert({
+      user_id: grupo.user_id, group_id: grupo.id, remote_jid: grupo.remote_jid,
+      role: "model", sender_name: "Alfred", body: texto,
+    });
+    return true;
+  } catch (e) {
+    console.error("[alfred] apresentação falhou:", e instanceof Error ? e.message : e);
+    return false;
+  }
 }
 
 /** Marca uma fala que é resposta a uma mensagem citada (reply do WhatsApp). */
@@ -502,6 +551,9 @@ async function gerarResposta(supabase: SupabaseClient, grupo: Grupo, cfg: Alfred
     if (!claim || claim.length === 0) return "já respondido (duplicado)";
   }
 
+  // PRIMEIRA fala do Alfred no grupo: apresenta-se antes de responder qualquer coisa.
+  await apresentarSeNecessario(supabase, grupo, cfg, primeiroNome(ultimaUser?.sender_name ?? null));
+
   const r = await chamarGemini(cfg.system_prompt, contexto, contents, cfg.base_conhecimento ?? "");
   const partes = fracionarResposta(r.mensagem);
   if (partes.length === 0) return "sem resposta (não necessária)"; // o modelo decidiu não responder
@@ -766,6 +818,9 @@ export async function acompanhamentoProativo(supabase: SupabaseClient, grupo: Gr
   const contexto = montarContexto(carga.ctx, grupo.client_name, fase)
     + montarProposta(carga.proposta) + montarMemoria(carga.mem)
     + montarAtivos(carga.assets) + montarDemandas(carga.demandas) + montarChecklist(carga.tarefas, fase);
+  // Se o acompanhamento for a 1ª fala do Alfred no grupo, apresenta-se antes.
+  await apresentarSeNecessario(supabase, grupo, cfg, null);
+
   const partes = fracionarResposta(await comporProativo(cfg, grupo.client_name, contexto));
   if (partes.length === 0) return "sem mensagem (marcado p/ hoje)";
 
