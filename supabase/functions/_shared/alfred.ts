@@ -318,6 +318,11 @@ async function chamarGemini(systemPrompt: string, contexto: string, contents: { 
           "(4) ESTRATÉGIA / APROVAÇÃO SUBJETIVA — mudanças de campanha, decisões de estratégia, aprovações que dependem de julgamento.\n" +
           "Nesses casos, o operador responsável é acionado em paralelo, e a sua ÚNICA resposta ao grupo deve ser CURTÍSSIMA (1 frase), apenas avisando que o " +
           "responsável já vai atender — ex.: 'Vou chamar o responsável pra te atender sobre isso, só um instante!'. SEM explicar, SEM detalhar, SEM opinião, SEM prazo.\n\n" +
+          "PEDIDO DE LIGAÇÃO/CHAMADA DE VOZ: se o cliente demonstrar interesse em conversar por LIGAÇÃO, chamada de áudio/vídeo ou 'por telefone', você está " +
+          "TERMINANTEMENTE PROIBIDO de dizer que é um bot, que não atende ligações, que não tem telefone ou que não pode falar por voz. Responda com naturalidade e " +
+          "educação que vai VERIFICAR a disponibilidade na agenda do Pedro e já retorna com um horário — ex.: 'Claro! Deixa eu verificar a disponibilidade na agenda do " +
+          "Pedro aqui e já te confirmo um horário pra gente conversar, tá?'. NÃO marque horário você mesmo, NÃO invente disponibilidade: o operador é acionado em " +
+          "paralelo para combinar a ligação direto com o cliente.\n\n" +
           "USO DO CHECKLIST/MEMÓRIA: baseie-se no andamento e nas informações salvas; nunca diga que algo está pronto se está pendente; " +
           "se uma etapa pendente depende do cliente (criativo, conta de Facebook, orçamento), solicite a ele.\n\n" +
           "FASE DO CONTRATO: no Onboarding, priorize o cronograma/checklist de implantação. Na Manutenção, o cronograma é apenas histórico — " +
@@ -672,6 +677,8 @@ async function classificarEscalacao(contents: { role: "user" | "model"; parts: {
     "'o áudio de ontem', 'o que falei com o João').\n" +
     "(3) TÉCNICO fora da base de conhecimento: integração de API, DNS, configurações avançadas, qualquer pedido técnico não coberto pela base.\n" +
     "(4) ESTRATÉGIA / APROVAÇÃO subjetiva: mudança de campanha, decisão estratégica, aprovação que depende de julgamento humano.\n" +
+    "(5) LIGAÇÃO / CHAMADA DE VOZ: o cliente demonstra interesse em conversar por ligação, chamada de áudio ou videochamada, ou quer 'falar por telefone'. " +
+    "Nesse caso a mensagem_operador deve avisar que o cliente quer uma ligação e pedir para o operador combinar o horário direto com ele.\n" +
     "TAMBÉM escale: testar acesso/credenciais; verificar/investigar/apurar algo numa conta ou plataforma (ex.: conta suspensa, quem postou um story). " +
     "NÃO escale apenas para: dúvidas simples já cobertas pela base de conhecimento, conversa/agradecimento, e pedidos de ARTE/MATERIAL/ALTERAÇÃO (isso é DEMANDA). " +
     "NA DÚVIDA, ESCALE. Se escalar, escreva mensagem_operador CURTA e direta (em nome do Alfred, 1ª pessoa) com o que o cliente pediu e o contexto/dados " +
