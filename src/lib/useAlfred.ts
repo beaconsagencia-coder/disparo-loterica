@@ -19,6 +19,14 @@ export interface AlfredMember {
   numero: string;
   nome: string | null;
 }
+/** Remetente que já apareceu no grupo — base do botão "marcar como equipe". */
+export interface RecentSender {
+  sender_number: string;
+  sender_name: string | null;
+  is_team: boolean;
+  last_body: string;
+  count: number;
+}
 export type DemandStatus = "pendente" | "em_andamento" | "concluida";
 export interface AlfredDemand {
   id: string;
@@ -345,6 +353,36 @@ export function useAlfred() {
     if (error) await load();
   }, [load]);
 
+  /**
+   * Lista quem já falou no grupo (remetentes distintos das mensagens de cliente),
+   * para marcar como equipe sem precisar descobrir telefone/LID manualmente.
+   * Com LID ativo o WhatsApp não manda o número real — então casar por telefone
+   * não funciona; aqui usamos o identificador exato que chegou (sender_number).
+   */
+  const fetchSenders = useCallback(async (groupId: string): Promise<RecentSender[]> => {
+    const { data, error } = await supabase
+      .from("alfred_messages")
+      .select("sender_number, sender_name, is_team, body, created_at")
+      .eq("group_id", groupId).eq("role", "user")
+      .order("created_at", { ascending: false }).limit(200);
+    if (error) throw error;
+    const seen = new Map<string, RecentSender>();
+    for (const m of (data ?? []) as { sender_number: string | null; sender_name: string | null; is_team: boolean | null; body: string | null }[]) {
+      const num = (m.sender_number ?? "").trim();
+      if (!num) continue;
+      const atual = seen.get(num);
+      if (atual) { atual.count++; continue; }
+      seen.set(num, {
+        sender_number: num,
+        sender_name: m.sender_name ?? null,
+        is_team: !!m.is_team,
+        last_body: (m.body ?? "").slice(0, 60),
+        count: 1,
+      });
+    }
+    return [...seen.values()];
+  }, []);
+
   // ---- demandas avulsas (Kanban) ----
   const addDemand = useCallback(async (groupId: string, titulo: string, prazo: string, descricao?: string) => {
     const user_id = await uid();
@@ -400,7 +438,7 @@ export function useAlfred() {
     config, connection, groups, contexts, tasks, memory, members, demands, assets, proposals, configError, loading,
     saveConfig, connectWhatsapp, checkStatus, listarGruposWhatsapp,
     addGroup, toggleGroup, removeGroup, setFase, saveContext, saveProposal, toggleTask, clearHistory, deleteMemory,
-    addMember, removeMember, addDemand, updateDemand, deleteDemand,
+    addMember, removeMember, fetchSenders, addDemand, updateDemand, deleteDemand,
     addAsset, updateAsset, deleteAsset, reload: load,
   };
 }

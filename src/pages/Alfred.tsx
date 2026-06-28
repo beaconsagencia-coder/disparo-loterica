@@ -9,7 +9,7 @@ import { supabase } from "@/lib/supabase";
 import {
   useAlfred, faseEfetiva, type AlfredConfig, type AlfredConnection, type AlfredGroup, type AlfredContext, type AlfredTask,
   type AlfredMessage, type AlfredMemory, type AlfredMember, type AlfredDemand, type DemandStatus,
-  type AlfredAsset, type AssetStatus, type AssetTipo, type Fase, type AlfredProposal,
+  type AlfredAsset, type AssetStatus, type AssetTipo, type Fase, type AlfredProposal, type RecentSender,
 } from "@/lib/useAlfred";
 
 // =====================================================================
@@ -17,7 +17,7 @@ import {
 // Lógica 100% preservada; visual no design system do app (Bento + Apple-like).
 // =====================================================================
 export default function Alfred() {
-  const { config, connection, groups, contexts, tasks, memory, members, demands, assets, proposals, configError, loading, saveConfig, connectWhatsapp, checkStatus, listarGruposWhatsapp, addGroup, toggleGroup, removeGroup, setFase, saveContext, saveProposal, toggleTask, clearHistory, deleteMemory, addMember, removeMember, addDemand, updateDemand, deleteDemand, addAsset, updateAsset, deleteAsset } = useAlfred();
+  const { config, connection, groups, contexts, tasks, memory, members, demands, assets, proposals, configError, loading, saveConfig, connectWhatsapp, checkStatus, listarGruposWhatsapp, addGroup, toggleGroup, removeGroup, setFase, saveContext, saveProposal, toggleTask, clearHistory, deleteMemory, addMember, removeMember, fetchSenders, addDemand, updateDemand, deleteDemand, addAsset, updateAsset, deleteAsset } = useAlfred();
   const [conversa, setConversa] = useState<AlfredGroup | null>(null);
   const [view, setView] = useState<"grupos" | "demandas">("grupos");
 
@@ -92,6 +92,7 @@ export default function Alfred() {
               onDeleteMemory={deleteMemory}
               onAddMember={addMember}
               onRemoveMember={removeMember}
+              onFetchSenders={fetchSenders}
               onAddAsset={addAsset}
               onUpdateAsset={updateAsset}
               onDeleteAsset={deleteAsset}
@@ -817,15 +818,38 @@ function Conhecimento({ resumo, memory, onDelete }: { resumo?: string | null; me
 }
 
 // ---- Equipe do grupo (quem é membro x cliente) ---------------------
-function Equipe({ groupId, members, onAdd, onRemove }: {
+function Equipe({ groupId, members, onAdd, onRemove, onFetchSenders }: {
   groupId: string;
   members: AlfredMember[];
   onAdd: (groupId: string, numero: string, nome?: string) => Promise<void>;
   onRemove: (id: string, groupId: string) => Promise<void>;
+  onFetchSenders: (groupId: string) => Promise<RecentSender[]>;
 }) {
   const [numero, setNumero] = useState("");
   const [nome, setNome] = useState("");
   const [msg, setMsg] = useState("");
+  const [manual, setManual] = useState(false);
+  const [senders, setSenders] = useState<RecentSender[] | null>(null);
+  const [carregando, setCarregando] = useState(false);
+  const [marcando, setMarcando] = useState<string | null>(null);
+
+  // Já é equipe? Comparamos pelo identificador exato gravado (telefone OU LID).
+  const jaEquipe = new Set(members.map((m) => m.numero));
+  const candidatos = (senders ?? []).filter((s) => !jaEquipe.has(s.sender_number));
+
+  async function detectar() {
+    setMsg(""); setCarregando(true);
+    try { setSenders(await onFetchSenders(groupId)); }
+    catch (err) { setMsg("Erro: " + (err instanceof Error ? err.message : String(err))); }
+    finally { setCarregando(false); }
+  }
+
+  async function marcar(s: RecentSender) {
+    setMsg(""); setMarcando(s.sender_number);
+    try { await onAdd(groupId, s.sender_number, s.sender_name ?? undefined); }
+    catch (err) { setMsg("Erro: " + (err instanceof Error ? err.message : String(err))); }
+    finally { setMarcando(null); }
+  }
 
   async function adicionar(e: React.FormEvent) {
     e.preventDefault();
@@ -855,17 +879,61 @@ function Equipe({ groupId, members, onAdd, onRemove }: {
         </div>
       )}
 
-      <form onSubmit={adicionar} className="flex flex-wrap items-end gap-2">
-        <div className="flex-1 min-w-[140px]">
-          <label className="mb-1 block text-[11px] font-medium text-ink-soft">Número (com DDD)</label>
-          <input className="input !py-1.5 font-mono text-sm" placeholder="5598999998888" value={numero} onChange={(e) => setNumero(e.target.value)} />
+      {/* Detecção automática — evita ter que descobrir telefone/LID na mão. */}
+      <button type="button" onClick={detectar} disabled={carregando}
+        className="btn-ghost !py-1.5 w-full justify-center text-sm disabled:opacity-60">
+        {carregando ? <Loader2 size={15} className="animate-spin" /> : <Search size={15} />}
+        {senders === null ? "Detectar quem falou no grupo" : "Atualizar lista"}
+      </button>
+
+      {senders !== null && (
+        <div className="mt-2 space-y-1">
+          {candidatos.length === 0 ? (
+            <p className="px-1 py-1 text-[11px] text-ink-muted">
+              Ninguém de fora da equipe falou ainda — ou todos já estão marcados.
+            </p>
+          ) : candidatos.map((s) => (
+            <div key={s.sender_number} className="flex items-center gap-2 rounded-lg border border-black/5 px-2 py-1.5">
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-1.5 text-sm">
+                  <span className="font-medium text-ink-soft truncate">{s.sender_name || "Sem nome"}</span>
+                  <span className="shrink-0 chip bg-black/5 text-ink-muted !px-1.5 !py-0">{s.count} msg</span>
+                </div>
+                <div className="truncate font-mono text-[10px] text-ink-muted">{s.sender_number}</div>
+                {s.last_body && <div className="truncate text-[11px] text-ink-muted">“{s.last_body}”</div>}
+              </div>
+              <button type="button" onClick={() => marcar(s)} disabled={marcando === s.sender_number}
+                title="Marcar como equipe" className="btn-ghost !py-1 shrink-0 text-[11px] disabled:opacity-60">
+                {marcando === s.sender_number ? <Loader2 size={13} className="animate-spin" /> : <UserPlus size={13} />}
+                marcar como equipe
+              </button>
+            </div>
+          ))}
+          <p className="px-1 pt-0.5 text-[10px] text-ink-muted">
+            Confira pela última mensagem quem é da equipe antes de marcar. Cliente fica de fora.
+          </p>
         </div>
-        <div className="flex-1 min-w-[120px]">
-          <label className="mb-1 block text-[11px] font-medium text-ink-soft">Nome (opcional)</label>
-          <input className="input !py-1.5 text-sm" placeholder="Bruna" value={nome} onChange={(e) => setNome(e.target.value)} />
-        </div>
-        <button type="submit" className="btn-accent !py-2"><Plus size={15} /> Adicionar</button>
-      </form>
+      )}
+
+      <button type="button" onClick={() => setManual((v) => !v)}
+        className="mt-2 flex items-center gap-1 text-[11px] font-medium text-ink-muted hover:text-ink-soft">
+        <ChevronDown size={12} className={manual ? "rotate-180 transition-transform" : "transition-transform"} />
+        Adicionar manualmente
+      </button>
+
+      {manual && (
+        <form onSubmit={adicionar} className="mt-2 flex flex-wrap items-end gap-2">
+          <div className="flex-1 min-w-[140px]">
+            <label className="mb-1 block text-[11px] font-medium text-ink-soft">Número ou ID</label>
+            <input className="input !py-1.5 font-mono text-sm" placeholder="5598999998888" value={numero} onChange={(e) => setNumero(e.target.value)} />
+          </div>
+          <div className="flex-1 min-w-[120px]">
+            <label className="mb-1 block text-[11px] font-medium text-ink-soft">Nome (opcional)</label>
+            <input className="input !py-1.5 text-sm" placeholder="Bruna" value={nome} onChange={(e) => setNome(e.target.value)} />
+          </div>
+          <button type="submit" className="btn-accent !py-2"><Plus size={15} /> Adicionar</button>
+        </form>
+      )}
       {msg && <div className="mt-1.5"><Feedback msg={msg} /></div>}
     </div>
   );
@@ -1108,7 +1176,7 @@ function Proposta({ groupId, proposal, onSave }: {
 
 // ---- Card de grupo: status + on/off + equipe + checklist + contexto
 function GroupItem({
-  group, context, tasks, memory, members, assets, proposal, onToggle, onRemove, onSetFase, onSaveContext, onSaveProposal, onToggleTask, onVerConversa, onDeleteMemory, onAddMember, onRemoveMember, onAddAsset, onUpdateAsset, onDeleteAsset,
+  group, context, tasks, memory, members, assets, proposal, onToggle, onRemove, onSetFase, onSaveContext, onSaveProposal, onToggleTask, onVerConversa, onDeleteMemory, onAddMember, onRemoveMember, onFetchSenders, onAddAsset, onUpdateAsset, onDeleteAsset,
 }: {
   group: AlfredGroup;
   context?: AlfredContext;
@@ -1127,6 +1195,7 @@ function GroupItem({
   onDeleteMemory: (id: string, groupId: string) => Promise<void>;
   onAddMember: (groupId: string, numero: string, nome?: string) => Promise<void>;
   onRemoveMember: (id: string, groupId: string) => Promise<void>;
+  onFetchSenders: (groupId: string) => Promise<RecentSender[]>;
   onAddAsset: (groupId: string, titulo: string, tipo: AssetTipo, descricao?: string) => Promise<void>;
   onUpdateAsset: (id: string, groupId: string, patch: Partial<Pick<AlfredAsset, "status" | "titulo" | "tipo" | "descricao">>) => Promise<void>;
   onDeleteAsset: (id: string, groupId: string) => Promise<void>;
@@ -1262,7 +1331,7 @@ function GroupItem({
         <div className="border-t border-black/5 bg-black/[0.015] p-4">
         <PhaseControl group={group} onSetFase={onSetFase} />
         <Proposta groupId={group.id} proposal={proposal} onSave={onSaveProposal} />
-        <Equipe groupId={group.id} members={members} onAdd={onAddMember} onRemove={onRemoveMember} />
+        <Equipe groupId={group.id} members={members} onAdd={onAddMember} onRemove={onRemoveMember} onFetchSenders={onFetchSenders} />
         {/* Manutenção: campanhas em primeiro plano; Onboarding: cronograma primeiro. */}
         {fase === "manutencao" ? (
           <>
