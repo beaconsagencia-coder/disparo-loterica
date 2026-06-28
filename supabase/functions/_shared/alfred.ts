@@ -105,23 +105,25 @@ function montarApresentacao(nomeCliente: string | null): string {
 async function comporApresentacao(cfg: AlfredCfg, nomeCliente: string | null, gatilho: string | null): Promise<string> {
   if (!GEMINI_API_KEY) return montarApresentacao(nomeCliente);
   const alvo = nomeCliente
-    ? `A pessoa que falou se chama ${nomeCliente} — use o primeiro nome no cumprimento.`
+    ? `A pessoa que falou se chama ${nomeCliente} — use o primeiro nome dela no cumprimento.`
     : "Você ainda não sabe o nome de quem está no grupo; cumprimente com 'pessoal'.";
   const ctx = gatilho
-    ? `A última mensagem no grupo foi: "${gatilho}". Pode reagir brevemente a ela no cumprimento, mas NÃO resolva nem responda o assunto agora — isso vem depois.`
+    ? `A última mensagem da pessoa foi: "${gatilho}". Use-a SÓ para espelhar o cumprimento (bom dia/boa tarde/boa noite) — ignore o conteúdo/pergunta, isso é respondido depois.`
     : "Ninguém falou ainda; você está iniciando a conversa.";
   const sys = `${cfg.system_prompt}\n\n` +
-    "TAREFA: esta é a SUA PRIMEIRA mensagem neste grupo. Apresente-se como o gerente do cliente, de forma calorosa e natural. " +
-    "Mantenha FIELMENTE estas três ideias (pode adaptar as palavras e o cumprimento ao tom/horário): " +
-    `(1) um cumprimento de boas-vindas/prazer, com o nome da pessoa quando houver; (2) você é o ${BOT_NOME} e vai ser o gerente deles; ` +
-    "(3) toda a organização de demandas fica por sua conta. " +
+    "TAREFA: esta é a SUA PRIMEIRA mensagem neste grupo — uma APRESENTAÇÃO sua ao cliente (você ainda NÃO falou aqui). " +
+    "Escreva UMA mensagem curta, calorosa e com personalidade que contenha, OBRIGATORIAMENTE, as TRÊS coisas a seguir — nenhuma pode faltar:\n" +
+    "(1) um cumprimento de boas-vindas/prazer usando o primeiro nome da pessoa quando houver;\n" +
+    `(2) DIGA SEU NOME claramente: que você se chama ${BOT_NOME} e que vai ser o GERENTE deles;\n` +
+    "(3) que toda a ORGANIZAÇÃO/GESTÃO de demandas fica por sua conta.\n" +
     `${alvo} ${ctx} ` +
-    "Seja BREVE: uma única mensagem curta de WhatsApp. NÃO resolva pedidos nem entre em detalhes técnicos aqui — só a apresentação.\n\n" +
+    "PROIBIDO: frases de preenchimento como 'vi sua mensagem', 'recebi seu contato'; e PROIBIDO responder/resolver o que a pessoa perguntou (isso vem na próxima mensagem). " +
+    "Apenas se apresente. Soe humano e simpático, nunca robótico.\n\n" +
     REGRA_NOME_NEGOCIO + "\n\n" + REGRA_ESTILO + "\n\n" + REGRA_SAIDA;
   const body = {
     system_instruction: { parts: [{ text: sys }] },
     contents: [{ role: "user", parts: [{ text: "Escreva agora a sua mensagem de apresentação." }] }],
-    generationConfig: { temperature: 0.7, maxOutputTokens: 400, thinkingConfig: { thinkingBudget: -1 } },
+    generationConfig: { temperature: 0.75, maxOutputTokens: 1200, thinkingConfig: { thinkingBudget: -1 } },
   };
   try {
     const res = await fetch(`${GEMINI_URL}?key=${encodeURIComponent(GEMINI_API_KEY)}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
@@ -285,12 +287,17 @@ function montarContents(hist: HistRow[]) {
   return out;
 }
 
-async function chamarGemini(systemPrompt: string, contexto: string, contents: { role: "user" | "model"; parts: { text: string }[] }[], baseConhecimento: string): Promise<{ mensagem: string; audio: boolean }> {
+async function chamarGemini(systemPrompt: string, contexto: string, contents: { role: "user" | "model"; parts: { text: string }[] }[], baseConhecimento: string, recemApresentado = false): Promise<{ mensagem: string; audio: boolean }> {
+  const avisoApresentacao = recemApresentado
+    ? "ATENÇÃO: você ACABOU de se apresentar e cumprimentar o cliente AGORA, na mensagem anterior. NÃO cumprimente de novo " +
+      "(nada de 'Olá', 'Oi', 'Bom dia/Boa tarde' nem repetir o nome dele no começo) — vá DIRETO ao conteúdo da resposta.\n\n"
+    : "";
   const body = {
     system_instruction: {
       parts: [{
         text:
           `${systemPrompt}\n\n` +
+          avisoApresentacao +
           (baseConhecimento.trim()
             ? `BASE DE CONHECIMENTO — BOLÃO GESTOR (o SaaS gratuito da agência; use para tirar dúvidas do cliente sobre o sistema):\n${baseConhecimento.trim()}\n\n`
             : "") +
@@ -593,9 +600,9 @@ async function gerarResposta(supabase: SupabaseClient, grupo: Grupo, cfg: Alfred
   }
 
   // PRIMEIRA fala do Alfred no grupo: apresenta-se antes de responder qualquer coisa.
-  await apresentarSeNecessario(supabase, grupo, cfg, primeiroNome(ultimaUser?.sender_name ?? null), ultimaUser?.body ?? null);
+  const apresentou = await apresentarSeNecessario(supabase, grupo, cfg, primeiroNome(ultimaUser?.sender_name ?? null), ultimaUser?.body ?? null);
 
-  const r = await chamarGemini(cfg.system_prompt, contexto, contents, cfg.base_conhecimento ?? "");
+  const r = await chamarGemini(cfg.system_prompt, contexto, contents, cfg.base_conhecimento ?? "", apresentou);
   const partes = fracionarResposta(r.mensagem);
   if (partes.length === 0) return "sem resposta (não necessária)"; // o modelo decidiu não responder
 
