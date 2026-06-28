@@ -56,16 +56,23 @@ function extrairCitacao(message: any): string {
 
 const soDigitos = (s: string) => (s ?? "").replace(/\D/g, "").replace(/^0+/, "");
 
-/** Variações do 9º dígito (BR) para casar o número da equipe com/sem o 9. */
+/** Formas equivalentes de um número BR para casar: com/sem DDI 55 e com/sem 9º dígito.
+ *  Ex.: "98999998888", "5598999998888", "9899998888", "559899998888" casam entre si. */
 function variantes(num: string): string[] {
   const d = soDigitos(num);
+  if (!d) return [];
   const out = new Set<string>([d]);
-  if (d.startsWith("55") && d.length === 13) {
-    const dd = d.slice(2, 4), rest = d.slice(4);
-    if (rest.startsWith("9")) out.add("55" + dd + rest.slice(1));
-  } else if (d.startsWith("55") && d.length === 12) {
-    const dd = d.slice(2, 4), rest = d.slice(4);
-    out.add("55" + dd + "9" + rest);
+  const semDDI = (d.startsWith("55") && d.length >= 12) ? d.slice(2) : d; // tira o 55, se houver
+  if (semDDI.length >= 10) {
+    const dd = semDDI.slice(0, 2);
+    const local = semDDI.slice(2);
+    const formas = new Set<string>([local]);
+    if (local.length === 9 && local.startsWith("9")) formas.add(local.slice(1)); // sem o 9
+    if (local.length === 8) formas.add("9" + local);                             // com o 9
+    for (const loc of formas) {
+      out.add(dd + loc);          // sem DDI
+      out.add("55" + dd + loc);   // com DDI
+    }
   }
   return [...out];
 }
@@ -196,8 +203,9 @@ Deno.serve(async (req) => {
   }
   if (!texto) return json({ ok: true, ignored: "sem conteúdo após mídia" });
 
-  // Quem enviou? Em grupo, o remetente real é key.participant.
-  const senderNumber = soDigitos(key?.participant ?? "");
+  // Quem enviou? Em grupo, o remetente real é key.participant. Com LID ativo, o
+  // telefone real costuma vir em participantPn — priorizamos esse para casar a equipe.
+  const senderNumber = soDigitos(key?.participantPn ?? data?.participantPn ?? key?.participant ?? "");
   const senderName: string = data?.pushName ?? (senderNumber || "").slice(-4) ?? "";
 
   // EQUIPE x CLIENTE: cruza o número com os membros cadastrados do grupo.
