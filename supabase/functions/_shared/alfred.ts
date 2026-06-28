@@ -93,28 +93,69 @@ async function jaSeApresentou(supabase: SupabaseClient, groupId: string): Promis
   return (count ?? 0) > 0;
 }
 
-/** Texto fixo de apresentação — a PRIMEIRA fala do Alfred em qualquer grupo. */
+/** Texto fixo de apresentação — FALLBACK caso o Gemini falhe. */
 function montarApresentacao(nomeCliente: string | null): string {
   const abertura = nomeCliente ? `Prazer, ${nomeCliente}!` : "Prazer, pessoal!";
   return `${abertura} Eu sou o ${BOT_NOME} e vou ser o gerente de vocês. ` +
     "Toda a parte de organização de demandas fica comigo.";
 }
 
-/** Se o Alfred ainda não falou no grupo, envia a apresentação como 1ª mensagem.
+/** Apresentação gerada pelo Gemini (adapta tom/cumprimento), com o roteiro fixo como
+ *  base obrigatória. Cai no texto determinístico se a API falhar. */
+async function comporApresentacao(cfg: AlfredCfg, nomeCliente: string | null, gatilho: string | null): Promise<string> {
+  if (!GEMINI_API_KEY) return montarApresentacao(nomeCliente);
+  const alvo = nomeCliente
+    ? `A pessoa que falou se chama ${nomeCliente} — use o primeiro nome no cumprimento.`
+    : "Você ainda não sabe o nome de quem está no grupo; cumprimente com 'pessoal'.";
+  const ctx = gatilho
+    ? `A última mensagem no grupo foi: "${gatilho}". Pode reagir brevemente a ela no cumprimento, mas NÃO resolva nem responda o assunto agora — isso vem depois.`
+    : "Ninguém falou ainda; você está iniciando a conversa.";
+  const sys = `${cfg.system_prompt}\n\n` +
+    "TAREFA: esta é a SUA PRIMEIRA mensagem neste grupo. Apresente-se como o gerente do cliente, de forma calorosa e natural. " +
+    "Mantenha FIELMENTE estas três ideias (pode adaptar as palavras e o cumprimento ao tom/horário): " +
+    `(1) um cumprimento de boas-vindas/prazer, com o nome da pessoa quando houver; (2) você é o ${BOT_NOME} e vai ser o gerente deles; ` +
+    "(3) toda a organização de demandas fica por sua conta. " +
+    `${alvo} ${ctx} ` +
+    "Seja BREVE: uma única mensagem curta de WhatsApp. NÃO resolva pedidos nem entre em detalhes técnicos aqui — só a apresentação.\n\n" +
+    REGRA_NOME_NEGOCIO + "\n\n" + REGRA_ESTILO + "\n\n" + REGRA_SAIDA;
+  const body = {
+    system_instruction: { parts: [{ text: sys }] },
+    contents: [{ role: "user", parts: [{ text: "Escreva agora a sua mensagem de apresentação." }] }],
+    generationConfig: { temperature: 0.7, maxOutputTokens: 400, thinkingConfig: { thinkingBudget: -1 } },
+  };
+  try {
+    const res = await fetch(`${GEMINI_URL}?key=${encodeURIComponent(GEMINI_API_KEY)}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    if (!res.ok) { console.error("[alfred] comporApresentacao", res.status); return montarApresentacao(nomeCliente); }
+    const data = await res.json();
+    // deno-lint-ignore no-explicit-any
+    const txt = ((data?.candidates?.[0]?.content?.parts as any[] | undefined)?.map((p) => p?.text ?? "").join("") ?? "").trim();
+    return txt || montarApresentacao(nomeCliente);
+  } catch (e) {
+    console.error("[alfred] comporApresentacao erro:", e instanceof Error ? e.message : e);
+    return montarApresentacao(nomeCliente);
+  }
+}
+
+/** Se o Alfred ainda não falou no grupo, envia a apresentação (via Gemini) como 1ª mensagem.
  *  Retorna true se apresentou agora (para os fluxos darem um respiro antes de seguir). */
 async function apresentarSeNecessario(
-  supabase: SupabaseClient, grupo: Grupo, cfg: AlfredCfg, nomeCliente: string | null,
+  supabase: SupabaseClient, grupo: Grupo, cfg: AlfredCfg, nomeCliente: string | null, gatilho: string | null = null,
 ): Promise<boolean> {
   const instance = cfg.evolution_instance || grupo.evolution_instance || "";
   if (!ENV_EVO_URL || !ENV_EVO_KEY || !instance) return false;
   if (await jaSeApresentou(supabase, grupo.id)) return false;
-  const texto = montarApresentacao(nomeCliente);
+  const partes = fracionarResposta(await comporApresentacao(cfg, nomeCliente, gatilho));
+  if (partes.length === 0) return false;
   try {
-    await enviarGrupo(instance, grupo.remote_jid, texto, delayDigitacao(texto, cfg));
-    await supabase.from("alfred_messages").insert({
-      user_id: grupo.user_id, group_id: grupo.id, remote_jid: grupo.remote_jid,
-      role: "model", sender_name: "Alfred", body: texto,
-    });
+    for (const bruta of partes) {
+      const parte = semBreaks(bruta);
+      if (!parte) continue;
+      await enviarGrupo(instance, grupo.remote_jid, parte, delayDigitacao(parte, cfg));
+      await supabase.from("alfred_messages").insert({
+        user_id: grupo.user_id, group_id: grupo.id, remote_jid: grupo.remote_jid,
+        role: "model", sender_name: "Alfred", body: parte,
+      });
+    }
     return true;
   } catch (e) {
     console.error("[alfred] apresentação falhou:", e instanceof Error ? e.message : e);
@@ -552,7 +593,7 @@ async function gerarResposta(supabase: SupabaseClient, grupo: Grupo, cfg: Alfred
   }
 
   // PRIMEIRA fala do Alfred no grupo: apresenta-se antes de responder qualquer coisa.
-  await apresentarSeNecessario(supabase, grupo, cfg, primeiroNome(ultimaUser?.sender_name ?? null));
+  await apresentarSeNecessario(supabase, grupo, cfg, primeiroNome(ultimaUser?.sender_name ?? null), ultimaUser?.body ?? null);
 
   const r = await chamarGemini(cfg.system_prompt, contexto, contents, cfg.base_conhecimento ?? "");
   const partes = fracionarResposta(r.mensagem);
