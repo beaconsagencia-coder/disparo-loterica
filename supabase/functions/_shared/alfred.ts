@@ -379,8 +379,10 @@ async function chamarGemini(systemPrompt: string, contexto: string, contents: { 
           "Essa semana o foco é a identidade visual. Fica tranquilo que deixamos tudo pronto a tempo pra aproveitar a data com segurança. Confia no processo!\n" +
           "Nunca use prefixo, nome ou 'Alfred:'; sem markdown; sem emojis em excesso.\n\n" +
           "SAÍDA: devolva um JSON com 'mensagem' (APENAS o texto final ao cliente, balões separados por LINHA EM BRANCO) e 'audio' (booleano). " +
-          "Defina audio=true APENAS quando a explicação for COMPLEXA o bastante para um áudio ajudar muito, OU quando o cliente PEDIR explicitamente um áudio " +
-          "(ex.: 'manda um áudio', 'pode me explicar falando'); caso contrário audio=false. " +
+          "Defina audio=true quando: (a) o cliente PEDIR explicitamente um áudio (ex.: 'manda um áudio', 'pode me explicar falando'); OU " +
+          "(b) a sua resposta for uma EXPLICAÇÃO mais longa/detalhada — várias frases, um passo a passo, um 'porquê' elaborado ou mais de um balão de conteúdo — " +
+          "porque ouvir fica bem mais fácil que ler um textão. Use audio=false apenas para respostas CURTAS e diretas (1 frase, confirmações, 'ok', avisos rápidos, " +
+          "ou a resposta curtíssima de escalonamento). Na dúvida entre texto e áudio numa resposta que ficou longa, PREFIRA o áudio. " +
           "Quando audio=true, escreva a 'mensagem' em tom FALADO e natural (ela será LIDA em voz pelo ElevenLabs v3): use vícios de linguagem SUTIS e ocasionais " +
           "('é...', 'então', 'tipo', 'olha', 'deixa eu te explicar', 'sabe?', 'ó') e contrações da fala ('tá', 'pra', 'cê'). " +
           "Para as PAUSAS de respiração/pensamento, use reticências '...' e vírgulas em pontos naturais — o v3 transforma isso em pausas bem humanas; mantenha SUTIL. " +
@@ -416,6 +418,13 @@ async function chamarGemini(systemPrompt: string, contexto: string, contents: { 
 }
 
 const MAX_MSGS = 3;
+
+// Resposta "longa" => manda áudio mesmo que o modelo não tenha marcado audio=true.
+// Garante o comportamento de explicação detalhada virar nota de voz.
+const TAM_AUDIO_AUTO = 320; // nº de caracteres do texto final (juntando os balões)
+function respostaLonga(partes: string[]): boolean {
+  return partes.join(" ").replace(/\s+/g, " ").trim().length >= TAM_AUDIO_AUTO;
+}
 /**
  * Quebra a resposta do modelo em poucos "balões" (estilo WhatsApp), priorizando
  * concisão. Separa por PARÁGRAFO (linha em branco), "---" ou marcadores
@@ -654,9 +663,10 @@ async function gerarResposta(supabase: SupabaseClient, grupo: Grupo, cfg: Alfred
     } catch (e) { console.error("[alfred] escalonamento:", e instanceof Error ? e.message : e); }
   }
 
-  // ÁUDIO: explicações complexas ou pedido do cliente (ElevenLabs -> nota de voz).
+  // ÁUDIO: pedido do cliente, decisão do modelo, OU resposta longa (explicação detalhada).
   // Logs explícitos em cada ponto de falha para diagnóstico (cai p/ texto em qualquer um).
-  if (r.audio) {
+  const querAudio = r.audio || respostaLonga(partes);
+  if (querAudio) {
     if (!ELEVENLABS_KEY || !ELEVENLABS_VOICE) {
       console.warn(`[alfred] áudio solicitado, mas ElevenLabs não configurada (key:${ELEVENLABS_KEY ? "ok" : "FALTA"}, voice:${ELEVENLABS_VOICE ? "ok" : "FALTA"}). Enviando texto.`);
     } else {
