@@ -1454,7 +1454,7 @@ export async function cobrancaProativa(supabase: SupabaseClient, grupo: Grupo, c
 // ---- Bolão Gestor (dados ao vivo via ponte alfred-bridge) -----------
 // Só busca quando o cliente TOCA no assunto (gate por palavras), para não
 // dar latência/custo em toda mensagem.
-const BOLAO_GATE = /\b(venda|vendas|vendid|vendi|cota|cotas|bol[ãa]o|bol[õo]es|pr[êe]mi|premi|ganhador|faturament|arrecad|assinatura|plano|mensalidade do bol|modalidad|post|posts|postagem|postagens|postar|postad|programa[çc][ãa]o|agenda|agendad|feed|fid|story|stories|sa[ií][a-z]*\s.*(hoje|post|feed|fid|sorteio)|quando.*(post|sai)|quanto.*(vend|arrecad)|como.*(t[áa]|est[ãa]).*(venda|bol))/i;
+const BOLAO_GATE = /\b(venda|vendas|vendid|vendi|cota|cotas|bol[ãa]o|bol[õo]es|pr[êe]mi|premi|ganhador|faturament|arrecad|assinatura|plano|mensalidade do bol|modalidad|post|posts|postagem|postagens|postar|postad|programa[çc][ãa]o|agenda|agendad|feed|fid|story|stories|instagram|insta|arroba|@|perfil|conta conectad|conta vinculad|sa[ií][a-z]*\s.*(hoje|post|feed|fid|sorteio)|quando.*(post|sai)|quanto.*(vend|arrecad)|como.*(t[áa]|est[ãa]).*(venda|bol))/i;
 
 const DIAS_SEMANA = ["domingo", "segunda", "terça", "quarta", "quinta", "sexta", "sábado"];
 
@@ -1465,6 +1465,7 @@ interface BolaoResumo {
   assinatura: { plano: string; status: string; vigente_ate: string | null; trial_ate: string | null } | null;
   programacao_posts?: { modalidade: string; frequencia: string; hora: string | null; dia_semana: number | null }[];
   proximos_posts?: { modalidade: string; dia: string; status: string }[];
+  instagram?: { username: string | null; status: string; conectado_em: string | null } | null;
 }
 
 /** Chama a ponte do Bolão Gestor para o retrato ao vivo da conta. */
@@ -1541,8 +1542,16 @@ async function carregarBolaoContexto(grupo: Grupo, gatilho: string, forcar = fal
       linhas.push(`  • ${p.modalidade} em ${dia} (${st}).`);
     }
   }
+  if (r.instagram) {
+    const ig = r.instagram;
+    const user = (ig.username ?? "").trim();
+    const stTxt = ig.status === "connected" ? "conectada" : ig.status === "revoked" ? "revogada" : ig.status === "error" ? "com erro" : "pendente";
+    linhas.push(`- Instagram conectado no Bolão Gestor: ${user ? (user.startsWith("@") ? user : "@" + user) : "(sem @ registrado)"} — conexão ${stTxt}. Essa é a conta REAL configurada; use ESSE @ quando perguntarem qual Instagram está conectado, e não chute outro nome.`);
+  } else {
+    linhas.push("- Instagram conectado no Bolão Gestor: nenhuma conta conectada no momento. Se perguntarem, diga isso — não invente um @.");
+  }
   linhas.push(
-    "REGRA BOLÃO GESTOR: você PODE informar esses números reais e a PROGRAMAÇÃO de posts ao cliente. Mas você NÃO executa ações no sistema (criar/editar bolão, agendar/cancelar post, dar baixa, mexer em cota): " +
+    "REGRA BOLÃO GESTOR: você PODE informar esses números reais, a PROGRAMAÇÃO de posts e a conta de Instagram ao cliente. Mas você NÃO executa ações no sistema (criar/editar bolão, agendar/cancelar post, dar baixa, mexer em cota): " +
     "se o cliente pedir uma AÇÃO, confirme com gentileza e acione o operador. Se algum dado não estiver acima, não invente — diga que vai verificar.",
   );
   return linhas.join("\n");
