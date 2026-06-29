@@ -801,15 +801,20 @@ async function criarEscalacao(supabase: SupabaseClient, grupo: Grupo, cfg: Alfre
 
 /** Compõe a mensagem ao CLIENTE repassando o retorno do operador.
  *  enviar=false quando o operador pede para NÃO mandar nada no grupo. */
-async function comporRelay(cfg: AlfredCfg, resumo: string, pedido: string, retorno: string, _clientName: string): Promise<{ enviar: boolean; mensagem: string }> {
-  if (!GEMINI_API_KEY) return { enviar: false, mensagem: "" };
+async function comporRelay(cfg: AlfredCfg, resumo: string, pedido: string, retorno: string, _clientName: string): Promise<{ enviar: boolean; mensagem: string; audio: boolean }> {
+  if (!GEMINI_API_KEY) return { enviar: false, mensagem: "", audio: false };
   const sys = `${cfg.system_prompt}\n\nVocê (Alfred) pediu para a equipe/operador executar uma tarefa e recebeu o retorno dele. ` +
     "PRIMEIRO decida se deve enviar algo ao cliente agora: se o retorno indicar que NÃO é para mandar nada no grupo " +
     "(ex.: 'não precisa falar nada', 'já resolvi', 'deixa quieto', 'eu mesmo falo com ele', 'pode deixar que eu respondo', 'não manda nada', " +
     "'você já explicou o que devia'), então enviar=false e mensagem vazia. " +
     "Caso contrário, enviar=true e escreva em 'mensagem' a comunicação PARA O CLIENTE no grupo repassando o status de forma natural " +
     "(fale como a equipe — 'testamos', 'verificamos' — NUNCA mencione 'operador' nem que outra pessoa fez). " +
+    "A CONVERSA JÁ ESTÁ EM ANDAMENTO no grupo: NÃO cumprimente de novo (nada de 'Olá', 'Oi', 'Bom dia/Boa tarde' nem repetir o nome do cliente no começo) — vá DIRETO ao conteúdo. " +
     "Curto, no máximo 2 balões separados por LINHA EM BRANCO, sem prefixo, sem markdown, sem rótulos entre colchetes.\n\n" +
+    "DECISÃO DE ÁUDIO (campo 'audio'): defina audio=true se o operador PEDIR explicitamente para repassar em áudio/voz (ex.: 'manda em áudio', 'explica por áudio', " +
+    "'responde falando pro cliente'), OU se a orientação for uma EXPLICAÇÃO mais longa/detalhada (vários passos). Caso contrário audio=false. " +
+    "Quando audio=true, escreva a 'mensagem' em tom FALADO e natural (será LIDA em voz): use vícios de linguagem SUTIS ('é...', 'então', 'olha', 'tá', 'pra') e reticências/vírgulas " +
+    "para pausas naturais; opcionalmente, no MÁXIMO uma vez, uma tag [exhales] ou [hesitates] onde couber respiração. NADA disso em texto (audio=false).\n\n" +
     REGRA_NOME_NEGOCIO + "\n\n" + REGRA_ESTILO + "\n\n" + REGRA_SAIDA;
   const userTxt = `Tarefa: ${resumo}\nO que foi pedido: ${pedido}\nRetorno do operador: ${retorno}`;
   const body = {
@@ -818,18 +823,18 @@ async function comporRelay(cfg: AlfredCfg, resumo: string, pedido: string, retor
     generationConfig: {
       temperature: 0.6, maxOutputTokens: 1200, thinkingConfig: { thinkingBudget: -1 },
       responseMimeType: "application/json",
-      responseSchema: { type: "OBJECT", properties: { enviar: { type: "BOOLEAN" }, mensagem: { type: "STRING" } }, required: ["enviar"] },
+      responseSchema: { type: "OBJECT", properties: { enviar: { type: "BOOLEAN" }, mensagem: { type: "STRING" }, audio: { type: "BOOLEAN" } }, required: ["enviar"] },
     },
   };
   try {
     const res = await fetch(`${GEMINI_URL}?key=${encodeURIComponent(GEMINI_API_KEY)}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-    if (!res.ok) { console.error("[alfred] comporRelay", res.status); return { enviar: false, mensagem: "" }; }
+    if (!res.ok) { console.error("[alfred] comporRelay", res.status); return { enviar: false, mensagem: "", audio: false }; }
     const data = await res.json();
     // deno-lint-ignore no-explicit-any
     const raw = ((data?.candidates?.[0]?.content?.parts as any[] | undefined)?.map((p) => p?.text ?? "").join("") ?? "").trim();
     const parsed = JSON.parse(raw);
-    return { enviar: parsed?.enviar !== false, mensagem: String(parsed?.mensagem ?? "").trim() };
-  } catch (e) { console.error("[alfred] comporRelay erro:", e instanceof Error ? e.message : e); return { enviar: false, mensagem: "" }; }
+    return { enviar: parsed?.enviar !== false, mensagem: String(parsed?.mensagem ?? "").trim(), audio: parsed?.audio === true };
+  } catch (e) { console.error("[alfred] comporRelay erro:", e instanceof Error ? e.message : e); return { enviar: false, mensagem: "", audio: false }; }
 }
 
 /** Operador respondeu (DM): casa com a escalação aberta e repassa ao cliente. */
@@ -871,7 +876,26 @@ export async function responderOperador(
     return "sem repasse (operador pediu)";
   }
   const partes = fracionarResposta(relay.mensagem);
-  for (const parte of partes) {
+
+  // ÁUDIO: operador pediu em voz, ou explicação longa (igual à resposta normal).
+  if ((relay.audio || respostaLonga(partes)) && ELEVENLABS_KEY && ELEVENLABS_VOICE) {
+    const textoAudio = partes.join(" ").replace(/\s+/g, " ").trim();
+    const b64 = await sintetizarVoz(textoAudio);
+    if (b64) {
+      try {
+        await enviarAudioGrupo(instance, grupo.remote_jid, b64);
+        await supabase.from("alfred_messages").insert({ user_id: grupo.user_id, group_id: grupo.id, remote_jid: grupo.remote_jid, role: "model", sender_name: "Alfred", body: `🎤 ${semBreaks(textoAudio)}` });
+        if (cfg.operator_number) { try { await enviarGrupo(instance, cfg.operator_number, "Show, repassei pro cliente em áudio. Valeu!", 0); } catch { /* ok */ } }
+        return "repassado (áudio)";
+      } catch (e) { console.error("[alfred] repasse em áudio falhou, caindo p/ texto:", e instanceof Error ? e.message : e); }
+    } else {
+      console.error("[alfred] síntese de voz do repasse falhou, enviando texto.");
+    }
+  }
+
+  for (const bruta of partes) {
+    const parte = semBreaks(bruta); // texto nunca leva tag de voz
+    if (!parte) continue;
     await enviarGrupo(instance, grupo.remote_jid, parte, delayDigitacao(parte, cfg));
     await supabase.from("alfred_messages").insert({ user_id: grupo.user_id, group_id: grupo.id, remote_jid: grupo.remote_jid, role: "model", sender_name: "Alfred", body: parte });
   }
