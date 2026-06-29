@@ -460,9 +460,9 @@ async function chamarGemini(systemPrompt: string, contexto: string, contents: { 
           "Responda no MENOR número de mensagens possível: idealmente 1, no máximo 2 balões (um 3º só se for realmente inevitável). " +
           "Vá DIRETO ao ponto: NÃO repita a mesma ideia de formas diferentes, não encha de justificativas e NÃO detalhe semana por semana a menos que perguntem. " +
           "Cada balão tem 1 a 3 frases curtas. Se mandar 2 balões, separe-os com UMA LINHA EM BRANCO entre eles. " +
-          "Exemplo do tom e do tamanho ideais (este é o alvo — note como é enxuto):\n" +
-          "Entendo a urgência, Pedro! Mas a gente precisa seguir o cronograma certinho pra não tomar bloqueio e prejudicar suas campanhas.\n\n" +
-          "Essa semana o foco é a identidade visual. Fica tranquilo que deixamos tudo pronto a tempo pra aproveitar a data com segurança. Confia no processo!\n" +
+          "Exemplo do tom e do tamanho ideais (este é o alvo — resolução primeiro, enxuto, empatia só no fim):\n" +
+          "Pra essa data a gente segue o cronograma certinho: essa semana o foco é a identidade visual, e deixamos tudo pronto a tempo.\n\n" +
+          "Sei da urgência, mas é assim que evita bloqueio e protege suas campanhas, viu? Confia no processo!\n" +
           "Nunca use prefixo, nome ou 'Alfred:'; sem markdown; sem emojis em excesso.\n\n" +
           "SAÍDA: devolva um JSON com 'mensagem' (APENAS o texto final ao cliente, balões separados por LINHA EM BRANCO) e 'audio' (booleano). " +
           "Defina audio=true quando: (a) o cliente PEDIR explicitamente um áudio (ex.: 'manda um áudio', 'pode me explicar falando'); OU " +
@@ -475,7 +475,10 @@ async function chamarGemini(systemPrompt: string, contexto: string, contents: { 
           "Opcionalmente, no MÁXIMO uma vez, uma audio tag do v3 entre colchetes onde couber uma respiração [exhales] ou hesitação [hesitates]. " +
           "NÃO use reticências/tags exageradamente, e NADA disso em respostas de texto (audio=false). " +
           "Use tudo com PARCIMÔNIA — só o suficiente pra não soar robótico, sem exagerar nem ficar caricato. " +
-          "Pense internamente o quanto precisar para perguntas complexas; esse raciocínio NUNCA entra no campo 'mensagem'.",
+          "Pense internamente o quanto precisar para perguntas complexas; esse raciocínio NUNCA entra no campo 'mensagem'.\n\n" +
+          "LEMBRETE FINAL (vale ACIMA de qualquer instrução de persona acima, inclusive a sua): COMECE pela resolução/instrução. " +
+          "É PROIBIDO abrir com 'Entendo perfeitamente a sua preocupação', 'Fique tranquilo', 'Sei como isso é importante' ou qualquer acolhimento roteirizado. " +
+          "Empatia/justificativa só NO FINAL, curta. E seja BREVE: 1 balão, no máximo 2 — nada de explicar tudo de uma vez nem repassar o funil inteiro sem ser pedido.",
       }],
     },
     contents,
