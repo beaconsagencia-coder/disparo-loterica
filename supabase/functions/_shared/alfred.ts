@@ -54,6 +54,14 @@ export function faseEfetiva(createdAt: string | null, override: string | null): 
   return ms / 86_400_000 >= FASE_THRESHOLD_DIAS ? "manutencao" : "onboarding";
 }
 
+/** Semana atual do contrato (1..4) pela idade do grupo. Usada só no onboarding para
+ *  saber até onde o escopo pode avançar (semana 1 não adianta tarefa da semana 2). */
+function semanaAtual(createdAt: string | null): number {
+  if (!createdAt) return 1;
+  const dias = (Date.now() - new Date(createdAt).getTime()) / 86_400_000;
+  return Math.min(4, Math.max(1, Math.floor(dias / 7) + 1));
+}
+
 export interface HistRow { id?: string; role: string; sender_name: string | null; body: string; is_team?: boolean; quoted_body?: string | null }
 
 /** Remove tags que só servem para a síntese de voz (não para texto):
@@ -254,7 +262,7 @@ function montarAtivos(assets: AssetRow[]): string {
   return linhas.join("\n");
 }
 
-function montarChecklist(tasks: TaskRow[], fase: Fase): string {
+function montarChecklist(tasks: TaskRow[], fase: Fase, semana = 1): string {
   if (!tasks?.length) return "";
   const porSemana = new Map<number, TaskRow[]>();
   for (const t of tasks) {
@@ -263,11 +271,29 @@ function montarChecklist(tasks: TaskRow[], fase: Fase): string {
   }
   const titulo = fase === "manutencao"
     ? "HISTÓRICO DE IMPLANTAÇÃO (onboarding já concluído — apenas referência; o foco agora são campanhas e demandas):"
-    : "ANDAMENTO DO CONTRATO (checklist — [x] já feito, [ ] pendente):";
+    : `ANDAMENTO DO CONTRATO — você está na SEMANA ${semana} do onboarding (checklist — [x] já feito, [ ] pendente):`;
   const linhas = ["", titulo];
-  for (const semana of [...porSemana.keys()].sort((a, b) => a - b)) {
-    linhas.push(`Semana ${semana}:`);
-    for (const t of porSemana.get(semana)!) linhas.push(`  [${t.done ? "x" : " "}] ${t.titulo}`);
+  for (const s of [...porSemana.keys()].sort((a, b) => a - b)) {
+    linhas.push(`Semana ${s}:`);
+    for (const t of porSemana.get(s)!) linhas.push(`  [${t.done ? "x" : " "}] ${t.titulo}`);
+  }
+  if (fase !== "manutencao") {
+    linhas.push("", `REGRA DO CRONOGRAMA (semana atual: ${semana}):`);
+    linhas.push(
+      `- O FOCO é o escopo da semana ${semana}. NUNCA adiante tarefas de semanas FUTURAS (> ${semana}): se algo é de uma semana que ainda não chegou, ` +
+      "explique com gentileza que está no cronograma e será feito na semana certa, sem antecipar.",
+    );
+    if (semana > 1) {
+      linhas.push(
+        "- O cronograma NÃO PARA e NÃO TRAVA. Tarefas pendentes de semanas anteriores devem ser EXECUTADAS agora, como parte do trabalho da semana atual. " +
+        "Uma pendência antiga NÃO prende você na semana passada — você já está na semana atual resolvendo o que faltou.",
+      );
+      linhas.push(
+        "- AO COMUNICAR pendências antigas: fale APENAS da execução do que falta ('vamos subir os anúncios agora', 'já estou providenciando isso'). " +
+        "É PROIBIDO usar a palavra 'atrasado'/'atraso' e PROIBIDO amarrar a tarefa ao número da semana passada (não diga 'a tarefa da semana 3'). " +
+        "Trate como o que está sendo feito agora, com naturalidade e tom positivo.",
+      );
+    }
   }
   return linhas.join("\n");
 }
@@ -588,7 +614,7 @@ async function gerarResposta(supabase: SupabaseClient, grupo: Grupo, cfg: Alfred
     + montarMemoria(carga.mem)
     + montarAtivos(carga.assets)
     + montarDemandas(carga.demandas)
-    + montarChecklist(carga.tarefas, fase);
+    + montarChecklist(carga.tarefas, fase, semanaAtual(grupo.created_at));
   const contents = montarContents(carga.hist);
   if (contents.length === 0) return "sem histórico";
 
@@ -872,7 +898,7 @@ export async function acompanhamentoProativo(supabase: SupabaseClient, grupo: Gr
   const fase = faseEfetiva(grupo.created_at, grupo.fase_override);
   const contexto = montarContexto(carga.ctx, grupo.client_name, fase)
     + montarProposta(carga.proposta) + montarMemoria(carga.mem)
-    + montarAtivos(carga.assets) + montarDemandas(carga.demandas) + montarChecklist(carga.tarefas, fase);
+    + montarAtivos(carga.assets) + montarDemandas(carga.demandas) + montarChecklist(carga.tarefas, fase, semanaAtual(grupo.created_at));
   // Se o acompanhamento for a 1ª fala do Alfred no grupo, apresenta-se antes.
   await apresentarSeNecessario(supabase, grupo, cfg, null);
 
