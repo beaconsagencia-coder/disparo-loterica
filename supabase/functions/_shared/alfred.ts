@@ -1451,7 +1451,7 @@ export async function cobrancaProativa(supabase: SupabaseClient, grupo: Grupo, c
 // ---- Bolão Gestor (dados ao vivo via ponte alfred-bridge) -----------
 // Só busca quando o cliente TOCA no assunto (gate por palavras), para não
 // dar latência/custo em toda mensagem.
-const BOLAO_GATE = /\b(venda|vendas|vendid|vendi|cota|cotas|bol[ãa]o|bol[õo]es|pr[êe]mi|premi|ganhador|faturament|arrecad|assinatura|plano|mensalidade do bol|post|posts|postagem|postagens|postar|programa[çc][ãa]o|agenda|agendad|feed|story|stories|sai.*(post|hoje)|quando.*(post|sai)|quanto.*(vend|arrecad)|como.*(t[áa]|est[ãa]).*(venda|bol))/i;
+const BOLAO_GATE = /\b(venda|vendas|vendid|vendi|cota|cotas|bol[ãa]o|bol[õo]es|pr[êe]mi|premi|ganhador|faturament|arrecad|assinatura|plano|mensalidade do bol|modalidad|post|posts|postagem|postagens|postar|postad|programa[çc][ãa]o|agenda|agendad|feed|fid|story|stories|sa[ií][a-z]*\s.*(hoje|post|feed|fid|sorteio)|quando.*(post|sai)|quanto.*(vend|arrecad)|como.*(t[áa]|est[ãa]).*(venda|bol))/i;
 
 const DIAS_SEMANA = ["domingo", "segunda", "terça", "quarta", "quinta", "sexta", "sábado"];
 
@@ -1526,6 +1526,9 @@ async function carregarBolaoContexto(grupo: Grupo, gatilho: string): Promise<str
     linhas.push(hojeSai.length
       ? `  → Modalidades que saem HOJE pela recorrência: ${hojeSai.join(", ")}.`
       : "  → Hoje não há post recorrente previsto (confira os próximos posts agendados abaixo). Posts 'antes do sorteio' dependem da data do concurso.");
+    linhas.push("  (As modalidades dos posts são EXATAMENTE as listadas acima — vêm da programação do feed e NÃO dependem de haver bolões ativos. NÃO diga que são 'genéricas' nem que 'não aparecem em tempo real'.)");
+  } else {
+    linhas.push("- Programação de posts: NÃO há programação de feed configurada para este cliente no momento. NÃO invente '3 posts diários/semanais' nem modalidades; diga que não há programação ativa e que pode verificar/configurar.");
   }
   if (r.proximos_posts?.length) {
     linhas.push("- Posts recentes/agendados (log do feed):");
