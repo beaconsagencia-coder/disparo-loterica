@@ -13,7 +13,7 @@ const ELEVENLABS_KEY = Deno.env.get("ELEVENLABS_API_KEY") ?? "";
 const ELEVENLABS_VOICE = Deno.env.get("ELEVENLABS_VOICE_ID") ?? "";
 const ELEVENLABS_MODEL = Deno.env.get("ELEVENLABS_MODEL_ID") ?? "eleven_v3";
 // Velocidade da fala (ElevenLabs: 0.7 lento … 1.0 normal … 1.2 rápido). Default um pouco acelerado.
-const ELEVENLABS_SPEED = Math.min(1.2, Math.max(0.7, Number(Deno.env.get("ELEVENLABS_SPEED") ?? "1.1") || 1.1));
+const ELEVENLABS_SPEED = Math.min(1.2, Math.max(0.7, Number(Deno.env.get("ELEVENLABS_SPEED") ?? "1.2") || 1.2));
 // Ponte com o Bolão Gestor (outro projeto): só ativa se URL e segredo no env.
 const BOLAO_BRIDGE_URL = (Deno.env.get("BOLAO_BRIDGE_URL") ?? "").replace(/\/+$/, "");
 const BOLAO_BRIDGE_SECRET = Deno.env.get("ALFRED_BRIDGE_SECRET") ?? "";
