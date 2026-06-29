@@ -426,8 +426,10 @@ async function chamarGemini(systemPrompt: string, contexto: string, contents: { 
           "(1) FINANCEIRO — boletos, descontos, cancelamentos, taxas, negociação/alteração de valores ou datas, termos de contrato. " +
           "EXCEÇÃO: se houver a seção 'FATURA DO CLIENTE' no contexto, você PODE informar os fatos dela (valor da mensalidade, vencimento, se está paga ou em aberto e a chave PIX) — " +
           "isso são dados reais, não é 'resolver financeiro'. Mas negociar (desconto, parcelar, adiar, cancelar, contestar) e dar BAIXA/confirmar pagamento continuam PROIBIDOS: acione o operador;\n" +
-          "(2) CONTEXTO QUE VOCÊ NÃO TEM — qualquer menção a reuniões, calls, áudios, prints ou combinados feitos FORA deste chat (ex.: 'a call de sexta', " +
-          "'o áudio de ontem', 'o que combinei com o João'); JAMAIS diga 'já anotei', 'já registrei', 'pode deixar que vi' — você NÃO tem acesso a isso;\n" +
+          "(2) CONTEXTO QUE VOCÊ NÃO TEM — reuniões, calls, áudios, prints ou combinados feitos FORA deste chat (ex.: 'a call de sexta', 'o áudio de ontem', 'o que combinei com o João'). " +
+          "EXCEÇÃO IMPORTANTE: a equipe pode ter REGISTRADO o que foi tratado nessas ligações/reuniões — se essa informação aparecer no CONTEXTO/MEMÓRIA/RESUMO acima ou nos TRECHOS RELEVANTES recuperados, " +
+          "então você TEM a informação e DEVE responder normalmente com base nela (ex.: cliente pergunta 'o que foi conversado na última ligação?' e o resumo registra 'cliente vai fazer um PIX de R$ 2.000' → responda isso). " +
+          "Só escale (e nunca invente) se realmente NÃO houver NADA sobre isso no seu contexto. JAMAIS diga 'já anotei/registrei' sobre algo que você mesmo não fez e que não está no contexto;\n" +
           "(3) TÉCNICO fora da BASE DE CONHECIMENTO — integrações de API, DNS, configurações avançadas, qualquer coisa que não esteja explícita na base;\n" +
           "(4) ESTRATÉGIA / APROVAÇÃO SUBJETIVA — mudanças de campanha, decisões de estratégia, aprovações que dependem de julgamento.\n" +
           "Nesses casos, o operador responsável é acionado em paralelo, e a sua ÚNICA resposta ao grupo deve ser CURTÍSSIMA (1 frase), apenas avisando que o " +
@@ -797,7 +799,7 @@ async function gerarResposta(supabase: SupabaseClient, grupo: Grupo, cfg: Alfred
   async function escalarSeNecessario() {
     if (!cfg.operator_number) return;
     try {
-      const esc = await classificarEscalacao(contents);
+      const esc = await classificarEscalacao(contents, contexto);
       if (esc) await criarEscalacao(supabase, grupo, cfg, esc);
     } catch (e) { console.error("[alfred] escalonamento:", e instanceof Error ? e.message : e); }
   }
@@ -850,7 +852,7 @@ async function gerarResposta(supabase: SupabaseClient, grupo: Grupo, cfg: Alfred
 interface Escalacao { resumo: string; mensagem_operador: string }
 
 /** Decide se a última interação do cliente exige uma AÇÃO do operador humano. */
-async function classificarEscalacao(contents: { role: "user" | "model"; parts: { text: string }[] }[]): Promise<Escalacao | null> {
+async function classificarEscalacao(contents: { role: "user" | "model"; parts: { text: string }[] }[], contexto = ""): Promise<Escalacao | null> {
   if (!GEMINI_API_KEY || contents.length === 0) return null;
   const sys =
     "Você decide se a conversa deve ACIONAR o operador humano. ESCALE (escalar=true) SEMPRE que a conversa tocar em QUALQUER um destes temas — mesmo que o " +
@@ -858,7 +860,7 @@ async function classificarEscalacao(contents: { role: "user" | "model"; parts: {
     "(1) FINANCEIRO: boleto, desconto, cancelamento, taxa, negociação/alteração de valor ou data, termos de contrato, OU o cliente afirmar que JÁ PAGOU/enviar comprovante " +
     "(precisa de confirmação humana da baixa). NÃO escale dúvida SIMPLES respondível pela FATURA DO CLIENTE no contexto (quanto é, quando vence, se está paga, qual a chave PIX).\n" +
     "(2) CONTEXTO EXTERNO que o agente não tem: reuniões, calls, áudios, prints, conversas ou combinados feitos FORA deste chat (ex.: 'a call de sexta', " +
-    "'o áudio de ontem', 'o que falei com o João').\n" +
+    "'o áudio de ontem', 'o que falei com o João'). EXCEÇÃO: se a resposta a isso JÁ ESTIVER na MEMÓRIA/CONTEXTO abaixo (a equipe registrou o que foi tratado), NÃO escale — o agente já pode responder.\n" +
     "(3) TÉCNICO fora da base de conhecimento: integração de API, DNS, configurações avançadas, qualquer pedido técnico não coberto pela base.\n" +
     "(4) ESTRATÉGIA / APROVAÇÃO subjetiva: mudança de campanha, decisão estratégica, aprovação que depende de julgamento humano.\n" +
     "(5) LIGAÇÃO / CHAMADA DE VOZ: o cliente demonstra interesse em conversar por ligação, chamada de áudio ou videochamada, ou quer 'falar por telefone'. " +
@@ -866,7 +868,8 @@ async function classificarEscalacao(contents: { role: "user" | "model"; parts: {
     "TAMBÉM escale: testar acesso/credenciais; verificar/investigar/apurar algo numa conta ou plataforma (ex.: conta suspensa, quem postou um story). " +
     "NÃO escale apenas para: dúvidas simples já cobertas pela base de conhecimento, conversa/agradecimento, e pedidos de ARTE/MATERIAL/ALTERAÇÃO (isso é DEMANDA). " +
     "NA DÚVIDA, ESCALE. Se escalar, escreva mensagem_operador CURTA e direta (em nome do Alfred, 1ª pessoa) com o que o cliente pediu e o contexto/dados " +
-    "necessários (logins, @, links, o que verificar); e resumo: um título curto.";
+    "necessários (logins, @, links, o que verificar); e resumo: um título curto." +
+    (contexto.trim() ? `\n\nMEMÓRIA/CONTEXTO JÁ DISPONÍVEL AO AGENTE (se a resposta da categoria 2/3 estiver aqui, NÃO escale):\n${contexto.trim().slice(0, 4000)}` : "");
   const body = {
     system_instruction: { parts: [{ text: sys }] },
     contents,
@@ -1611,7 +1614,8 @@ export async function processarGrupoTick(supabase: SupabaseClient, grupo: Grupo,
     // o gerarResposta (na hora) — então não classificamos 2x. Dedup por tarefa.
     if (cfg.operator_number && cfg.handoff_ativo) {
       try {
-        const esc = await classificarEscalacao(montarContents(hist));
+        const ctxEsc = montarMemoria(carga.mem) + (carga.ctx?.resumo ? `\nResumo do cliente: ${carga.ctx.resumo}` : "");
+        const esc = await classificarEscalacao(montarContents(hist), ctxEsc);
         if (esc) await criarEscalacao(supabase, grupo, cfg, esc);
       } catch (e) { console.error("[alfred] escalonamento:", e instanceof Error ? e.message : e); }
     }
