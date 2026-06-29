@@ -1014,10 +1014,13 @@ export async function responderOperador(
 function agoraBrasilia(): Date { return new Date(Date.now() - 3 * 3_600_000); }
 
 /** Compõe a mensagem de acompanhamento (Alfred INICIANDO a conversa). */
-async function comporProativo(cfg: AlfredCfg, clientName: string, contexto: string): Promise<string> {
+async function comporProativo(cfg: AlfredCfg, clientName: string, contexto: string, recemApresentado = false): Promise<string> {
   if (!GEMINI_API_KEY) return "";
+  const avisoApres = recemApresentado
+    ? "VOCÊ ACABOU DE SE APRESENTAR agora, na mensagem anterior. NÃO cumprimente de novo (nada de 'Olá', 'Oi', 'Bom dia') — vá DIRETO ao assunto do acompanhamento.\n\n"
+    : "";
   const sys = `${cfg.system_prompt}\n\n` +
-    `CONTEXTO DO CLIENTE (${clientName}):\n${contexto}\n\n` +
+    `CONTEXTO DO CLIENTE (${clientName}):\n${contexto}\n\n` + avisoApres +
     "TAREFA: você vai INICIAR um contato proativo de ACOMPANHAMENTO DIÁRIO com o cliente agora (você está começando a conversa, não respondendo a nada). " +
     "Com base no contexto: (1) se houver itens PENDENTES que dependem do CLIENTE (acessos, senhas, contas, materiais, aprovações, configurações que faltam), " +
     "faça uma cobrança gentil e ESPECÍFICA do que falta e por quê; (2) se estiver tudo em dia, dê um update curto e positivo do andamento e confirme que está " +
@@ -1076,9 +1079,9 @@ export async function acompanhamentoProativo(supabase: SupabaseClient, grupo: Gr
     + montarProposta(carga.proposta) + montarMemoria(carga.mem)
     + montarAtivos(carga.assets) + montarDemandas(carga.demandas) + montarChecklist(carga.tarefas, fase, semanaAtual(baseContrato));
   // Se o acompanhamento for a 1ª fala do Alfred no grupo, apresenta-se antes.
-  await apresentarSeNecessario(supabase, grupo, cfg, null);
+  const apresentou = await apresentarSeNecessario(supabase, grupo, cfg, null);
 
-  const partes = fracionarResposta(await comporProativo(cfg, grupo.client_name, contexto));
+  const partes = fracionarResposta(await comporProativo(cfg, grupo.client_name, contexto, apresentou));
   if (partes.length === 0) return "sem mensagem (marcado p/ hoje)";
 
   try {
