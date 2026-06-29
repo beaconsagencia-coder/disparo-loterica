@@ -12,6 +12,8 @@ const ENV_EVO_KEY = Deno.env.get("EVOLUTION_API_KEY") ?? "";
 const ELEVENLABS_KEY = Deno.env.get("ELEVENLABS_API_KEY") ?? "";
 const ELEVENLABS_VOICE = Deno.env.get("ELEVENLABS_VOICE_ID") ?? "";
 const ELEVENLABS_MODEL = Deno.env.get("ELEVENLABS_MODEL_ID") ?? "eleven_v3";
+// Velocidade da fala (ElevenLabs: 0.7 lento … 1.0 normal … 1.2 rápido). Default um pouco acelerado.
+const ELEVENLABS_SPEED = Math.min(1.2, Math.max(0.7, Number(Deno.env.get("ELEVENLABS_SPEED") ?? "1.1") || 1.1));
 // Ponte com o Bolão Gestor (outro projeto): só ativa se URL e segredo no env.
 const BOLAO_BRIDGE_URL = (Deno.env.get("BOLAO_BRIDGE_URL") ?? "").replace(/\/+$/, "");
 const BOLAO_BRIDGE_SECRET = Deno.env.get("ALFRED_BRIDGE_SECRET") ?? "";
@@ -640,7 +642,7 @@ async function sintetizarVoz(texto: string): Promise<string | null> {
       body: JSON.stringify({
         text: texto.slice(0, 2500), // limita tamanho (custo/duração)
         model_id: ELEVENLABS_MODEL,
-        voice_settings: { stability: 0.5, similarity_boost: 0.8, use_speaker_boost: true }, // v3: stability Natural; "style" não se aplica
+        voice_settings: { stability: 0.5, similarity_boost: 0.8, use_speaker_boost: true, speed: ELEVENLABS_SPEED }, // speed: acelera a fala (mais natural)
       }),
     });
     if (!res.ok) { console.error("[alfred] elevenlabs", res.status, (await res.text()).slice(0, 200)); return null; }
