@@ -1184,7 +1184,9 @@ async function comporProativo(cfg: AlfredCfg, clientName: string, contexto: stri
     "TAREFA: você vai INICIAR um contato proativo de ACOMPANHAMENTO DIÁRIO com o cliente agora (você está começando a conversa, não respondendo a nada). " +
     "Com base no contexto: (1) se houver itens PENDENTES que dependem do CLIENTE (acessos, senhas, contas, materiais, aprovações, configurações que faltam), " +
     "faça uma cobrança gentil e ESPECÍFICA do que falta e por quê; (2) se estiver tudo em dia, dê um update curto e positivo do andamento e confirme que está " +
-    "tudo seguindo o cronograma; (3) na fase de manutenção, comente o que está rodando (campanhas) ou o próximo passo. " +
+    "tudo seguindo o cronograma; (3) na fase de manutenção, comente o que está rodando (campanhas) ou o próximo passo; " +
+    "(4) se houver no contexto 'Modalidades que saem HOJE' (programação de posts do Bolão Gestor), avise de forma natural o que vai sair no feed hoje " +
+    "(ex.: 'hoje sai o post da Mega-Sena no feed de vocês às 9h') — use SÓ as modalidades realmente listadas, sem inventar. " +
     "NÃO invente progresso que não consta no contexto; NÃO cobre o que já foi entregue; não repita demandas já concluídas. Seja caloroso, leve e breve. " +
     "FORMATO: como uma pessoa real da equipe no WhatsApp, no máximo 2 balões separados por LINHA EM BRANCO, sem prefixo, sem markdown, sem rótulos entre colchetes.\n\n" +
     REGRA_NOME_NEGOCIO + "\n\n" + REGRA_ESTILO + "\n\n" + REGRA_ESTRUTURA + "\n\n" + REGRA_SAIDA;
@@ -1237,7 +1239,8 @@ export async function acompanhamentoProativo(supabase: SupabaseClient, grupo: Gr
   const fase = faseEfetiva(baseContrato, grupo.fase_override);
   const contexto = montarContexto(carga.ctx, grupo.client_name, fase)
     + montarProposta(carga.proposta) + montarMemoria(carga.mem)
-    + montarAtivos(carga.assets) + montarDemandas(carga.demandas) + montarChecklist(carga.tarefas, fase, semanaAtual(baseContrato));
+    + montarAtivos(carga.assets) + montarDemandas(carga.demandas) + montarChecklist(carga.tarefas, fase, semanaAtual(baseContrato))
+    + await carregarBolaoContexto(grupo, "", true); // dados do Bolão Gestor (posts do dia, vendas) — sem gate no proativo
   // Se o acompanhamento for a 1ª fala do Alfred no grupo, apresenta-se antes.
   const apresentou = await apresentarSeNecessario(supabase, grupo, cfg, null);
 
@@ -1477,9 +1480,9 @@ async function buscarResumoBolao(accountId: string): Promise<BolaoResumo | null>
 }
 
 /** Bloco de CONTEXTO com os dados ao vivo do Bolão Gestor (só se o cliente tocou no assunto). */
-async function carregarBolaoContexto(grupo: Grupo, gatilho: string): Promise<string> {
+async function carregarBolaoContexto(grupo: Grupo, gatilho: string, forcar = false): Promise<string> {
   if (!grupo.bolao_account_id) return "";
-  if (!BOLAO_GATE.test(gatilho)) return ""; // cliente não falou de bolão/vendas agora
+  if (!forcar && !BOLAO_GATE.test(gatilho)) return ""; // cliente não falou de bolão/vendas agora
   const r = await buscarResumoBolao(grupo.bolao_account_id);
   if (!r) return "";
   const linhas: string[] = ["", "BOLÃO GESTOR — DADOS AO VIVO DO CLIENTE (reais; use para responder; NÃO invente nada além daqui):"];
