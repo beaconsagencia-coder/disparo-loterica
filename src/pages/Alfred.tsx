@@ -9,7 +9,7 @@ import { supabase } from "@/lib/supabase";
 import {
   useAlfred, faseEfetiva, semanaContrato, type AlfredConfig, type AlfredConnection, type AlfredGroup, type AlfredContext, type AlfredTask,
   type AlfredMessage, type AlfredMemory, type AlfredMember, type AlfredDemand, type DemandStatus,
-  type AlfredAsset, type AssetStatus, type AssetTipo, type Fase, type AlfredProposal, type RecentSender,
+  type AlfredAsset, type AssetStatus, type AssetTipo, type Fase, type AlfredProposal, type RecentSender, type ContractOption,
 } from "@/lib/useAlfred";
 
 // =====================================================================
@@ -17,7 +17,7 @@ import {
 // Lógica 100% preservada; visual no design system do app (Bento + Apple-like).
 // =====================================================================
 export default function Alfred() {
-  const { config, connection, groups, contexts, tasks, memory, members, demands, assets, proposals, configError, loading, saveConfig, connectWhatsapp, checkStatus, listarGruposWhatsapp, addGroup, toggleGroup, removeGroup, setFase, setContratoInicio, saveContext, saveProposal, toggleTask, clearHistory, deleteMemory, addMember, removeMember, fetchSenders, addDemand, updateDemand, deleteDemand, addAsset, updateAsset, deleteAsset } = useAlfred();
+  const { config, connection, groups, contexts, tasks, memory, members, demands, assets, proposals, configError, loading, saveConfig, connectWhatsapp, checkStatus, listarGruposWhatsapp, addGroup, toggleGroup, removeGroup, setFase, setContratoInicio, setContractId, saveContext, saveProposal, toggleTask, clearHistory, deleteMemory, addMember, removeMember, fetchSenders, addDemand, updateDemand, deleteDemand, addAsset, updateAsset, deleteAsset, contracts } = useAlfred();
   const [conversa, setConversa] = useState<AlfredGroup | null>(null);
   const [view, setView] = useState<"grupos" | "demandas">("grupos");
 
@@ -86,6 +86,8 @@ export default function Alfred() {
               onRemove={removeGroup}
               onSetFase={setFase}
               onSetContratoInicio={setContratoInicio}
+              onSetContractId={setContractId}
+              contracts={contracts}
               onSaveContext={saveContext}
               onSaveProposal={saveProposal}
               onToggleTask={toggleTask}
@@ -1007,6 +1009,48 @@ function PhaseControl({ group, onSetFase, onSetContratoInicio }: {
   );
 }
 
+// ---- Fatura vinculada (cobrança + dúvidas no grupo) ----------------
+function FaturaVinculo({ group, contracts, onSetContractId }: {
+  group: AlfredGroup;
+  contracts: ContractOption[];
+  onSetContractId: (id: string, contractId: string | null) => Promise<void>;
+}) {
+  const brl = (n: number) => n.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
+  const vinc = contracts.find((c) => c.id === group.contract_id) ?? null;
+  // Mostra os contratos ativos; mantém o vinculado mesmo se ele não estiver ativo.
+  const opcoes = contracts.filter((c) => c.status === "active" || c.id === group.contract_id);
+  async function escolher(v: string) {
+    try { await onSetContractId(group.id, v || null); } catch (e) { alert(e instanceof Error ? e.message : String(e)); }
+  }
+  return (
+    <div className="mb-4 rounded-xl border border-black/5 bg-white p-3 shadow-sm">
+      <div className="mb-2 flex items-center gap-1.5 text-sm font-medium">
+        <Wallet size={15} className="text-accent" /> Fatura vinculada
+        <span className="text-[11px] font-normal text-ink-muted">(cobrança + dúvidas no grupo)</span>
+      </div>
+      <select className="input !py-1.5 text-sm" value={group.contract_id ?? ""} onChange={(e) => escolher(e.target.value)}>
+        <option value="">— Sem cobrança vinculada —</option>
+        {opcoes.map((c) => (
+          <option key={c.id} value={c.id}>
+            {c.client_name} · {brl(c.contract_value)}/mês · vence dia {c.due_date_day}{c.status !== "active" ? " (inativo)" : ""}
+          </option>
+        ))}
+      </select>
+      {vinc ? (
+        <p className="mt-2 text-[11px] text-ink-muted">
+          O Alfred cobra {brl(vinc.contract_value)} todo dia {vinc.due_date_day} aqui no grupo — lembrete antes, no dia e em caso de atraso — e responde dúvidas sobre a fatura.
+          O PIX direto no privado fica desativado para este contrato. Configure PIX, antecedência e horário na aba <strong>Financeiro</strong>.
+        </p>
+      ) : (
+        <p className="mt-2 text-[11px] text-ink-muted">
+          Sem vínculo o Alfred não fala de cobrança. Vincule um contrato para ele cobrar e tirar dúvidas de pagamento aqui no grupo.
+          {contracts.length === 0 && " Cadastre o contrato primeiro na aba Financeiro."}
+        </p>
+      )}
+    </div>
+  );
+}
+
 // ---- Campanhas / ativos do cliente (estado vivo da operação) -------
 const ASSET_STATUS: { key: AssetStatus; label: string; dot: string }[] = [
   { key: "ativa", label: "Ativa", dot: "bg-success" },
@@ -1203,7 +1247,7 @@ function Proposta({ groupId, proposal, onSave }: {
 
 // ---- Card de grupo: status + on/off + equipe + checklist + contexto
 function GroupItem({
-  group, context, tasks, memory, members, assets, proposal, onToggle, onRemove, onSetFase, onSetContratoInicio, onSaveContext, onSaveProposal, onToggleTask, onVerConversa, onDeleteMemory, onAddMember, onRemoveMember, onFetchSenders, onAddAsset, onUpdateAsset, onDeleteAsset,
+  group, context, tasks, memory, members, assets, proposal, contracts, onToggle, onRemove, onSetFase, onSetContratoInicio, onSetContractId, onSaveContext, onSaveProposal, onToggleTask, onVerConversa, onDeleteMemory, onAddMember, onRemoveMember, onFetchSenders, onAddAsset, onUpdateAsset, onDeleteAsset,
 }: {
   group: AlfredGroup;
   context?: AlfredContext;
@@ -1216,6 +1260,8 @@ function GroupItem({
   onRemove: (id: string) => Promise<void>;
   onSetFase: (id: string, fase: Fase | null) => Promise<void>;
   onSetContratoInicio: (id: string, data: string | null) => Promise<void>;
+  onSetContractId: (id: string, contractId: string | null) => Promise<void>;
+  contracts: ContractOption[];
   onSaveContext: (groupId: string, patch: Omit<AlfredContext, "group_id">) => Promise<void>;
   onSaveProposal: (groupId: string, patch: Omit<AlfredProposal, "group_id">) => Promise<void>;
   onToggleTask: (t: AlfredTask) => Promise<void>;
@@ -1358,6 +1404,7 @@ function GroupItem({
       {aberto && (
         <div className="border-t border-black/5 bg-black/[0.015] p-4">
         <PhaseControl group={group} onSetFase={onSetFase} onSetContratoInicio={onSetContratoInicio} />
+        <FaturaVinculo group={group} contracts={contracts} onSetContractId={onSetContractId} />
         <Proposta groupId={group.id} proposal={proposal} onSave={onSaveProposal} />
         <Equipe groupId={group.id} members={members} onAdd={onAddMember} onRemove={onRemoveMember} onFetchSenders={onFetchSenders} />
         {/* Manutenção: campanhas em primeiro plano; Onboarding: cronograma primeiro. */}

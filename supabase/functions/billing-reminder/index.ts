@@ -105,7 +105,14 @@ Deno.serve(async (req) => {
       .select("id, client_name, contract_value, duration_months, due_date_day, start_date, payer_contact")
       .eq("user_id", s.user_id).eq("status", "active");
 
+    // Contratos vinculados a um grupo do Alfred são cobrados PELO ALFRED no grupo
+    // (decisão "só Alfred no grupo") — pulamos aqui para não cobrar em dobro.
+    const { data: vinc } = await supabase
+      .from("alfred_groups").select("contract_id").eq("user_id", s.user_id).not("contract_id", "is", null);
+    const cobradosPeloAlfred = new Set((vinc ?? []).map((v) => v.contract_id as string));
+
     for (const c of contracts ?? []) {
+      if (cobradosPeloAlfred.has(c.id)) continue;
       const [sy, sm] = String(c.start_date).split("-").map(Number);
       const startIdx = sy * 12 + (sm - 1);
       const fimIdx = startIdx + Number(c.duration_months) - 1;

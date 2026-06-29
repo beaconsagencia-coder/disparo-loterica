@@ -337,7 +337,9 @@ async function chamarGemini(systemPrompt: string, contexto: string, contents: { 
           "se ELE pedir, pode informar normalmente; apenas não fique repetindo esses dados sem necessidade quando ninguém pediu.\n\n" +
           "GUARDRAIL ABSOLUTO — O QUE VOCÊ NÃO RESOLVE: nos casos abaixo é TERMINANTEMENTE PROIBIDO tentar resolver, opinar, inventar regras/prazos/valores, " +
           "criar 'setores' inexistentes (ex.: 'setor financeiro'), ou fingir que sabe/anotou/registrou algo. NÃO invente NADA, NUNCA. Os casos:\n" +
-          "(1) FINANCEIRO — boletos, descontos, cancelamentos, taxas, valores/datas/formas de pagamento, termos de contrato;\n" +
+          "(1) FINANCEIRO — boletos, descontos, cancelamentos, taxas, negociação/alteração de valores ou datas, termos de contrato. " +
+          "EXCEÇÃO: se houver a seção 'FATURA DO CLIENTE' no contexto, você PODE informar os fatos dela (valor da mensalidade, vencimento, se está paga ou em aberto e a chave PIX) — " +
+          "isso são dados reais, não é 'resolver financeiro'. Mas negociar (desconto, parcelar, adiar, cancelar, contestar) e dar BAIXA/confirmar pagamento continuam PROIBIDOS: acione o operador;\n" +
           "(2) CONTEXTO QUE VOCÊ NÃO TEM — qualquer menção a reuniões, calls, áudios, prints ou combinados feitos FORA deste chat (ex.: 'a call de sexta', " +
           "'o áudio de ontem', 'o que combinei com o João'); JAMAIS diga 'já anotei', 'já registrei', 'pode deixar que vi' — você NÃO tem acesso a isso;\n" +
           "(3) TÉCNICO fora da BASE DE CONHECIMENTO — integrações de API, DNS, configurações avançadas, qualquer coisa que não esteja explícita na base;\n" +
@@ -578,7 +580,18 @@ export interface Grupo {
   evolution_instance: string | null; last_learned_at: string | null;
   created_at: string | null; fase_override: string | null;
   contrato_inicio?: string | null;
+  contract_id?: string | null;
   last_proactive_at?: string | null;
+}
+
+/** Config de cobrança/PIX (vem de billing_settings, por usuário). */
+export interface BillingCfg {
+  ativo: boolean;
+  pix_key: string | null;
+  pix_nome: string | null;
+  pix_copia_cola: string | null;
+  hora_envio: number; // hora do disparo (0-23, Brasília)
+  dias_antes: number; // lembrete N dias antes do vencimento
 }
 
 /** Data base do contrato para fase/semana: usa a data de início informada
@@ -631,7 +644,8 @@ async function gerarResposta(supabase: SupabaseClient, grupo: Grupo, cfg: Alfred
     + montarMemoria(carga.mem)
     + montarAtivos(carga.assets)
     + montarDemandas(carga.demandas)
-    + montarChecklist(carga.tarefas, fase, semanaAtual(baseContrato));
+    + montarChecklist(carga.tarefas, fase, semanaAtual(baseContrato))
+    + await carregarFaturaContexto(supabase, grupo); // fatura vinculada (dúvidas de cobrança)
   const contents = montarContents(carga.hist);
   if (contents.length === 0) return "sem histórico";
 
@@ -716,7 +730,8 @@ async function classificarEscalacao(contents: { role: "user" | "model"; parts: {
   const sys =
     "Você decide se a conversa deve ACIONAR o operador humano. ESCALE (escalar=true) SEMPRE que a conversa tocar em QUALQUER um destes temas — mesmo que o " +
     "cliente apenas mencione, pergunte ou peça:\n" +
-    "(1) FINANCEIRO: boleto, desconto, cancelamento, taxa, valor/forma/data de pagamento, termos de contrato.\n" +
+    "(1) FINANCEIRO: boleto, desconto, cancelamento, taxa, negociação/alteração de valor ou data, termos de contrato, OU o cliente afirmar que JÁ PAGOU/enviar comprovante " +
+    "(precisa de confirmação humana da baixa). NÃO escale dúvida SIMPLES respondível pela FATURA DO CLIENTE no contexto (quanto é, quando vence, se está paga, qual a chave PIX).\n" +
     "(2) CONTEXTO EXTERNO que o agente não tem: reuniões, calls, áudios, prints, conversas ou combinados feitos FORA deste chat (ex.: 'a call de sexta', " +
     "'o áudio de ontem', 'o que falei com o João').\n" +
     "(3) TÉCNICO fora da base de conhecimento: integração de API, DNS, configurações avançadas, qualquer pedido técnico não coberto pela base.\n" +
@@ -934,6 +949,198 @@ export async function acompanhamentoProativo(supabase: SupabaseClient, grupo: Gr
     console.error("[alfred] proativo envio falhou:", e instanceof Error ? e.message : e);
     return "falha no envio proativo";
   }
+}
+
+// ---- Cobrança / fatura vinculada ------------------------------------
+const padN = (n: number) => String(n).padStart(2, "0");
+const brlV = (n: number) => (Number(n) || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
+const diasNoMes = (y: number, m0: number) => new Date(y, m0 + 1, 0).getDate();
+
+interface ContractRow {
+  id: string; client_name: string; contract_value: number; duration_months: number;
+  due_date_day: number; start_date: string; status: string;
+}
+interface InvoiceRow {
+  id: string; competencia: string; due_date: string; valor: number; status: string;
+  alfred_lembrete_at: string | null; alfred_dia_at: string | null; alfred_atraso_at: string | null;
+}
+
+/** Vencimento (YYYY-MM-DD) do contrato numa competência (dia clampado ao mês). */
+function vencimentoNoMes(dueDay: number, y: number, m0: number): string {
+  const dia = Math.min(dueDay, diasNoMes(y, m0));
+  return `${y}-${padN(m0 + 1)}-${padN(dia)}`;
+}
+
+/** Garante a parcela (invoices) da competência; retorna a linha. */
+async function garantirInvoice(
+  supabase: SupabaseClient, userId: string, c: ContractRow, comp: string, due: string,
+): Promise<InvoiceRow | null> {
+  const { data: ex } = await supabase.from("invoices")
+    .select("id, competencia, due_date, valor, status, alfred_lembrete_at, alfred_dia_at, alfred_atraso_at")
+    .eq("contract_id", c.id).eq("competencia", comp).maybeSingle();
+  if (ex) return ex as InvoiceRow;
+  const { data: novo } = await supabase.from("invoices")
+    .insert({ user_id: userId, contract_id: c.id, competencia: comp, due_date: due, valor: Number(c.contract_value) || 0 })
+    .select("id, competencia, due_date, valor, status, alfred_lembrete_at, alfred_dia_at, alfred_atraso_at").single();
+  return (novo as InvoiceRow) ?? null;
+}
+
+/** Bloco de CONTEXTO com a fatura vinculada (para o Alfred tirar dúvidas). */
+async function carregarFaturaContexto(supabase: SupabaseClient, grupo: Grupo): Promise<string> {
+  if (!grupo.contract_id) return "";
+  const { data: c } = await supabase.from("contracts")
+    .select("id, client_name, contract_value, duration_months, due_date_day, start_date, status")
+    .eq("id", grupo.contract_id).maybeSingle();
+  if (!c) return "";
+  const ct = c as ContractRow;
+  const b = agoraBrasilia();
+  const y = b.getUTCFullYear(), m0 = b.getUTCMonth();
+  const comp = `${y}-${padN(m0 + 1)}-01`;
+  const dueStr = vencimentoNoMes(ct.due_date_day, y, m0);
+  const [{ data: inv }, { data: bs }] = await Promise.all([
+    supabase.from("invoices").select("status, due_date, valor").eq("contract_id", ct.id).eq("competencia", comp).maybeSingle(),
+    supabase.from("billing_settings").select("pix_key, pix_nome, pix_copia_cola").eq("user_id", grupo.user_id).maybeSingle(),
+  ]);
+  const pago = (inv as { status?: string } | null)?.status === "paid";
+  const [vy, vm, vd] = dueStr.split("-");
+  const venc = `${vd}/${vm}/${vy}`;
+  const pix = (bs?.pix_key ?? "").trim();
+  const copia = (bs?.pix_copia_cola ?? "").trim();
+  const fav = (bs?.pix_nome ?? "").trim();
+  const linhas = [
+    "", "FATURA DO CLIENTE (dados REAIS — use para tirar dúvidas de cobrança; nunca invente nada além daqui):",
+    `- Mensalidade: ${brlV(Number(ct.contract_value))}`,
+    `- Vencimento deste mês: ${venc} (todo dia ${ct.due_date_day})`,
+    `- Situação do mês: ${pago ? "PAGA ✅" : "EM ABERTO (ainda não consta como paga)"}`,
+  ];
+  if (pix) linhas.push(`- Chave PIX: ${pix}${fav ? ` (favorecido: ${fav})` : ""}`);
+  if (copia) linhas.push(`- PIX copia e cola: ${copia}`);
+  if (!pix && !copia) linhas.push("- (Sem chave PIX configurada — se pedirem como pagar, acione o operador.)");
+  linhas.push(
+    "REGRA DA FATURA: você PODE informar valor, vencimento, situação (paga/em aberto) e a chave PIX acima. " +
+    "Se o cliente disser que JÁ PAGOU mas consta em aberto, agradeça, diga que vai CONFIRMAR o recebimento e acione o operador — NÃO dê baixa nem confirme pagamento por conta própria. " +
+    "Negociação (desconto, parcelar, adiar/mudar vencimento, cancelar, contestar valor) NÃO é com você: acione o operador.",
+  );
+  return linhas.join("\n");
+}
+
+/** Mensagem de cobrança escrita pelo Alfred (natural), por tipo de momento. */
+async function comporCobranca(
+  cfg: AlfredCfg, tipo: "lembrete" | "dia" | "atraso",
+  dados: { valor: string; venc: string; pix: string; copia: string; favorecido: string },
+): Promise<string> {
+  const objetivo = tipo === "lembrete"
+    ? `LEMBRAR, com antecedência e gentileza, que a mensalidade vence em ${dados.venc}.`
+    : tipo === "dia"
+    ? `avisar que a mensalidade VENCE HOJE (${dados.venc}).`
+    : `cobrar com educação a mensalidade que VENCEU em ${dados.venc} e ainda consta em aberto (sem soar ríspido nem ameaçador).`;
+  const pixTxt = dados.pix
+    ? `Para o pagamento, informe a chave PIX: ${dados.pix}${dados.favorecido ? ` (favorecido: ${dados.favorecido})` : ""}.${dados.copia ? ` Você também pode oferecer o PIX copia e cola: ${dados.copia}` : ""}`
+    : "Não há chave PIX para informar; apenas lembre do vencimento e diga que já manda os dados de pagamento na sequência.";
+  const sys = `${cfg.system_prompt}\n\n` +
+    "TAREFA: você vai INICIAR uma mensagem de COBRANÇA da mensalidade no grupo do cliente (você está começando a conversa). " +
+    `Objetivo: ${objetivo} Valor: ${dados.valor}. ${pixTxt} ` +
+    "Peça gentilmente que envie o comprovante após o pagamento. Seja caloroso, leve e BREVE (no máximo 2 balões separados por LINHA EM BRANCO), " +
+    "como uma pessoa real da equipe no WhatsApp — sem markdown, sem listas, sem rótulos. NÃO invente valores, datas ou taxas além dos informados.\n\n" +
+    REGRA_NOME_NEGOCIO + "\n\n" + REGRA_ESTILO + "\n\n" + REGRA_SAIDA;
+  const body = {
+    system_instruction: { parts: [{ text: sys }] },
+    contents: [{ role: "user", parts: [{ text: "Escreva agora a mensagem de cobrança." }] }],
+    generationConfig: { temperature: 0.6, maxOutputTokens: 1200, thinkingConfig: { thinkingBudget: -1 } },
+  };
+  try {
+    const res = await fetch(`${GEMINI_URL}?key=${encodeURIComponent(GEMINI_API_KEY)}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    if (!res.ok) { console.error("[alfred] comporCobranca", res.status); return ""; }
+    const data = await res.json();
+    // deno-lint-ignore no-explicit-any
+    return ((data?.candidates?.[0]?.content?.parts as any[] | undefined)?.map((p) => p?.text ?? "").join("") ?? "").trim();
+  } catch (e) { console.error("[alfred] comporCobranca erro:", e instanceof Error ? e.message : e); return ""; }
+}
+
+const ATRASO_MAX_DIAS = 7; // janela em que a cobrança de atraso ainda dispara (1x)
+
+/**
+ * Cobrança proativa no grupo (substitui o PIX direto p/ contratos vinculados).
+ * Decide o momento (lembrete antes / no dia / atraso), de forma idempotente por
+ * parcela e por tipo. Roda no tick, na hora_envio configurada.
+ */
+export async function cobrancaProativa(supabase: SupabaseClient, grupo: Grupo, cfg: AlfredCfg, billing: BillingCfg): Promise<string> {
+  if (!grupo.contract_id) return "sem contrato";
+  if (!billing.ativo) return "cobrança off";
+  const instance = cfg.evolution_instance || grupo.evolution_instance || "";
+  if (!ENV_EVO_URL || !ENV_EVO_KEY || !instance) return "evolution não configurada";
+
+  const b = agoraBrasilia();
+  if (b.getUTCHours() !== Number(billing.hora_envio)) return "fora da hora";
+  const hoje = b.toISOString().slice(0, 10);
+
+  const { data: c } = await supabase.from("contracts")
+    .select("id, client_name, contract_value, duration_months, due_date_day, start_date, status")
+    .eq("id", grupo.contract_id).maybeSingle();
+  if (!c) return "contrato não encontrado";
+  const ct = c as ContractRow;
+  if (ct.status !== "active") return "contrato inativo";
+
+  const [sy, sm] = String(ct.start_date).split("-").map(Number);
+  const startIdx = sy * 12 + (sm - 1);
+  const fimIdx = startIdx + Number(ct.duration_months) - 1;
+  const diasAntes = Number(billing.dias_antes) || 0;
+
+  // Examina competências vizinhas (anterior/atual/próxima) p/ casar antes/dia/atraso.
+  const curIdx = b.getUTCFullYear() * 12 + b.getUTCMonth();
+  for (const off of [-1, 0, 1]) {
+    const idx = curIdx + off;
+    if (idx < startIdx || idx > fimIdx) continue;
+    const cy = Math.floor(idx / 12), cm0 = ((idx % 12) + 12) % 12;
+    const due = vencimentoNoMes(ct.due_date_day, cy, cm0);
+    const comp = `${cy}-${padN(cm0 + 1)}-01`;
+
+    // Qual o momento de hoje para esta parcela?
+    const lembreteDia = new Date(Date.parse(due + "T00:00:00Z") - diasAntes * 86_400_000).toISOString().slice(0, 10);
+    const diasAposVenc = Math.floor((Date.parse(hoje + "T00:00:00Z") - Date.parse(due + "T00:00:00Z")) / 86_400_000);
+    let tipo: "lembrete" | "dia" | "atraso" | null = null;
+    if (diasAntes > 0 && hoje === lembreteDia && hoje !== due) tipo = "lembrete";
+    else if (hoje === due) tipo = "dia";
+    else if (diasAposVenc >= 1 && diasAposVenc <= ATRASO_MAX_DIAS) tipo = "atraso";
+    if (!tipo) continue;
+
+    const inv = await garantirInvoice(supabase, grupo.user_id, ct, comp, due);
+    if (!inv) continue;
+    if (inv.status === "paid") return "paga (sem cobrança)";
+    // Idempotência por tipo.
+    if (tipo === "lembrete" && inv.alfred_lembrete_at) continue;
+    if (tipo === "dia" && inv.alfred_dia_at) continue;
+    if (tipo === "atraso" && inv.alfred_atraso_at) continue;
+
+    const { data: bs } = await supabase.from("billing_settings")
+      .select("pix_key, pix_nome, pix_copia_cola").eq("user_id", grupo.user_id).maybeSingle();
+    const [vy, vm, vd] = due.split("-");
+    const texto = await comporCobranca(cfg, tipo, {
+      valor: brlV(Number(ct.contract_value)), venc: `${vd}/${vm}/${vy}`,
+      pix: (bs?.pix_key ?? billing.pix_key ?? "").trim(),
+      copia: (bs?.pix_copia_cola ?? billing.pix_copia_cola ?? "").trim(),
+      favorecido: (bs?.pix_nome ?? billing.pix_nome ?? "").trim(),
+    });
+    const partes = fracionarResposta(texto);
+    if (partes.length === 0) return "sem mensagem de cobrança";
+
+    // Marca ANTES de enviar (evita duplicar se o envio repetir no próximo tick).
+    const col = tipo === "lembrete" ? "alfred_lembrete_at" : tipo === "dia" ? "alfred_dia_at" : "alfred_atraso_at";
+    await supabase.from("invoices").update({ [col]: new Date().toISOString() }).eq("id", inv.id);
+    try {
+      for (const bruta of partes) {
+        const parte = semBreaks(bruta);
+        if (!parte) continue;
+        await enviarGrupo(instance, grupo.remote_jid, parte, delayDigitacao(parte, cfg));
+        await supabase.from("alfred_messages").insert({ user_id: grupo.user_id, group_id: grupo.id, remote_jid: grupo.remote_jid, role: "model", sender_name: "Alfred", body: parte });
+      }
+      return `cobrança enviada (${tipo})`;
+    } catch (e) {
+      console.error("[alfred] cobrança envio falhou:", e instanceof Error ? e.message : e);
+      return "falha no envio da cobrança";
+    }
+  }
+  return "fora de janela de cobrança";
 }
 
 /** Resposta IMEDIATA (modo handoff desligado): chamada pelo webhook. */

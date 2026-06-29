@@ -7,7 +7,7 @@
 // =====================================================================
 import { createClient } from "jsr:@supabase/supabase-js@2";
 import { json } from "../_shared/cors.ts";
-import { processarGrupoTick, acompanhamentoProativo, type AlfredCfg } from "../_shared/alfred.ts";
+import { processarGrupoTick, acompanhamentoProativo, cobrancaProativa, type AlfredCfg, type BillingCfg } from "../_shared/alfred.ts";
 
 const supabase = createClient(
   Deno.env.get("SUPABASE_URL")!,
@@ -21,7 +21,7 @@ Deno.serve(async (req) => {
 
   const { data: grupos } = await supabase
     .from("alfred_groups")
-    .select("id, user_id, client_name, remote_jid, evolution_instance, last_learned_at, created_at, contrato_inicio, fase_override, last_proactive_at")
+    .select("id, user_id, client_name, remote_jid, evolution_instance, last_learned_at, created_at, contrato_inicio, contract_id, fase_override, last_proactive_at")
     .eq("active", true);
   if (!grupos?.length) return json({ ok: true, processados: 0 });
 
@@ -50,6 +50,24 @@ Deno.serve(async (req) => {
     return cfg;
   }
 
+  // Config de cobrança/PIX por usuário (para a cobrança no grupo via Alfred).
+  const billingCache = new Map<string, BillingCfg>();
+  async function billingDe(userId: string): Promise<BillingCfg> {
+    if (billingCache.has(userId)) return billingCache.get(userId)!;
+    const { data } = await supabase.from("billing_settings")
+      .select("ativo, pix_key, pix_nome, pix_copia_cola, hora_envio, dias_antes").eq("user_id", userId).maybeSingle();
+    const b: BillingCfg = {
+      ativo: !!data?.ativo,
+      pix_key: data?.pix_key ?? null,
+      pix_nome: data?.pix_nome ?? null,
+      pix_copia_cola: data?.pix_copia_cola ?? null,
+      hora_envio: Number(data?.hora_envio ?? 8),
+      dias_antes: Number(data?.dias_antes ?? 0),
+    };
+    billingCache.set(userId, b);
+    return b;
+  }
+
   const resultados: Record<string, number> = {};
   for (const g of grupos) {
     try {
@@ -58,6 +76,10 @@ Deno.serve(async (req) => {
       resultados[r] = (resultados[r] ?? 0) + 1;
       const rp = await acompanhamentoProativo(supabase, g, cfg);
       if (rp === "proativo enviado") resultados[rp] = (resultados[rp] ?? 0) + 1;
+      if (g.contract_id) {
+        const rc = await cobrancaProativa(supabase, g, cfg, await billingDe(g.user_id));
+        if (rc.startsWith("cobrança enviada")) resultados[rc] = (resultados[rc] ?? 0) + 1;
+      }
     } catch (e) {
       console.error("[alfred-tick] erro no grupo", g.id, e instanceof Error ? e.message : e);
     }

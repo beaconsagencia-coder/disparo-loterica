@@ -45,7 +45,16 @@ export interface AlfredGroup {
   active: boolean;
   created_at: string;
   contrato_inicio: string | null; // data real de início; null = usa created_at
+  contract_id: string | null;     // contrato/fatura vinculado (cobrança + dúvidas)
   fase_override: Fase | null; // null = automático pela idade do grupo
+}
+/** Contrato (resumo) para vincular ao grupo no seletor de fatura. */
+export interface ContractOption {
+  id: string;
+  client_name: string;
+  contract_value: number;
+  due_date_day: number;
+  status: string;
 }
 const FASE_THRESHOLD_DIAS = 30; // >= 30 dias => Manutenção (se sem override)
 /** Data base do contrato: início informado manualmente, ou o cadastro do grupo. */
@@ -152,11 +161,12 @@ export function useAlfred() {
   const [demands, setDemands] = useState<Record<string, AlfredDemand[]>>({});
   const [assets, setAssets] = useState<Record<string, AlfredAsset[]>>({});
   const [proposals, setProposals] = useState<Record<string, AlfredProposal>>({});
+  const [contracts, setContracts] = useState<ContractOption[]>([]);
   const [configError, setConfigError] = useState(false);
   const [loading, setLoading] = useState(true);
 
   const load = useCallback(async () => {
-    const [{ data: cfg, error: cfgErr }, { data: grp }, { data: ctx }, { data: tk }, { data: mem }, { data: mb }, { data: dm }, { data: as }, { data: pr }] = await Promise.all([
+    const [{ data: cfg, error: cfgErr }, { data: grp }, { data: ctx }, { data: tk }, { data: mem }, { data: mb }, { data: dm }, { data: as }, { data: pr }, { data: ct }] = await Promise.all([
       supabase.from("alfred_configs")
         .select("system_prompt, base_conhecimento, operator_number, evolution_instance, connection_status, numero, handoff_ativo, team_cooldown_min, intervene_after_min, proactive_ativo, proactive_hora")
         .maybeSingle(),
@@ -171,6 +181,7 @@ export function useAlfred() {
       supabase.from("alfred_demands").select("id, group_id, titulo, descricao, status, prazo").order("prazo"),
       supabase.from("alfred_assets").select("id, group_id, titulo, tipo, status, descricao, substituida_por").order("updated_at", { ascending: false }),
       supabase.from("alfred_proposals").select("group_id, valor_mensal, valor_setup, vigencia_meses, forma_pagamento, entregaveis, observacoes"),
+      supabase.from("contracts").select("id, client_name, contract_value, due_date_day, status").order("client_name"),
     ]);
     // Se a leitura do config falhou (ex.: migração pendente, coluna inexistente),
     // NÃO sobrescreve o estado com defaults vazios e sinaliza o erro — a tela
@@ -217,6 +228,7 @@ export function useAlfred() {
       pmap[p.group_id] = { ...p, entregaveis: Array.isArray(p.entregaveis) ? (p.entregaveis as string[]) : [] };
     }
     setProposals(pmap);
+    setContracts(((ct as ContractOption[]) ?? []).map((c) => ({ ...c, contract_value: Number(c.contract_value) })));
     setLoading(false);
   }, []);
 
@@ -306,6 +318,14 @@ export function useAlfred() {
     const val = data || null;
     setGroups((prev) => prev.map((g) => (g.id === id ? { ...g, contrato_inicio: val } : g)));
     const { error } = await supabase.from("alfred_groups").update({ contrato_inicio: val }).eq("id", id);
+    if (error) { await load(); throw error; }
+  }, [load]);
+
+  /** Vincula (ou desvincula, com null) o grupo a um contrato/fatura. */
+  const setContractId = useCallback(async (id: string, contractId: string | null) => {
+    const val = contractId || null;
+    setGroups((prev) => prev.map((g) => (g.id === id ? { ...g, contract_id: val } : g)));
+    const { error } = await supabase.from("alfred_groups").update({ contract_id: val }).eq("id", id);
     if (error) { await load(); throw error; }
   }, [load]);
 
@@ -453,9 +473,9 @@ export function useAlfred() {
   }, []);
 
   return {
-    config, connection, groups, contexts, tasks, memory, members, demands, assets, proposals, configError, loading,
+    config, connection, groups, contexts, tasks, memory, members, demands, assets, proposals, contracts, configError, loading,
     saveConfig, connectWhatsapp, checkStatus, listarGruposWhatsapp,
-    addGroup, toggleGroup, removeGroup, setFase, setContratoInicio, saveContext, saveProposal, toggleTask, clearHistory, deleteMemory,
+    addGroup, toggleGroup, removeGroup, setFase, setContratoInicio, setContractId, saveContext, saveProposal, toggleTask, clearHistory, deleteMemory,
     addMember, removeMember, fetchSenders, addDemand, updateDemand, deleteDemand,
     addAsset, updateAsset, deleteAsset, reload: load,
   };
