@@ -7,7 +7,7 @@ import {
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import {
-  useAlfred, faseEfetiva, type AlfredConfig, type AlfredConnection, type AlfredGroup, type AlfredContext, type AlfredTask,
+  useAlfred, faseEfetiva, semanaContrato, type AlfredConfig, type AlfredConnection, type AlfredGroup, type AlfredContext, type AlfredTask,
   type AlfredMessage, type AlfredMemory, type AlfredMember, type AlfredDemand, type DemandStatus,
   type AlfredAsset, type AssetStatus, type AssetTipo, type Fase, type AlfredProposal, type RecentSender,
 } from "@/lib/useAlfred";
@@ -17,7 +17,7 @@ import {
 // Lógica 100% preservada; visual no design system do app (Bento + Apple-like).
 // =====================================================================
 export default function Alfred() {
-  const { config, connection, groups, contexts, tasks, memory, members, demands, assets, proposals, configError, loading, saveConfig, connectWhatsapp, checkStatus, listarGruposWhatsapp, addGroup, toggleGroup, removeGroup, setFase, saveContext, saveProposal, toggleTask, clearHistory, deleteMemory, addMember, removeMember, fetchSenders, addDemand, updateDemand, deleteDemand, addAsset, updateAsset, deleteAsset } = useAlfred();
+  const { config, connection, groups, contexts, tasks, memory, members, demands, assets, proposals, configError, loading, saveConfig, connectWhatsapp, checkStatus, listarGruposWhatsapp, addGroup, toggleGroup, removeGroup, setFase, setContratoInicio, saveContext, saveProposal, toggleTask, clearHistory, deleteMemory, addMember, removeMember, fetchSenders, addDemand, updateDemand, deleteDemand, addAsset, updateAsset, deleteAsset } = useAlfred();
   const [conversa, setConversa] = useState<AlfredGroup | null>(null);
   const [view, setView] = useState<"grupos" | "demandas">("grupos");
 
@@ -85,6 +85,7 @@ export default function Alfred() {
               onToggle={toggleGroup}
               onRemove={removeGroup}
               onSetFase={setFase}
+              onSetContratoInicio={setContratoInicio}
               onSaveContext={saveContext}
               onSaveProposal={saveProposal}
               onToggleTask={toggleTask}
@@ -945,9 +946,14 @@ const FASE_INFO: Record<Fase, { label: string; chip: string }> = {
   manutencao: { label: "Manutenção", chip: "bg-[#5b53c6]/12 text-[#5b53c6]" },
 };
 
-function PhaseControl({ group, onSetFase }: { group: AlfredGroup; onSetFase: (id: string, fase: Fase | null) => Promise<void> }) {
+function PhaseControl({ group, onSetFase, onSetContratoInicio }: {
+  group: AlfredGroup;
+  onSetFase: (id: string, fase: Fase | null) => Promise<void>;
+  onSetContratoInicio: (id: string, data: string | null) => Promise<void>;
+}) {
   const efetiva = faseEfetiva(group);
   const atual: Fase | "auto" = group.fase_override ?? "auto";
+  const semana = semanaContrato(group);
   const opcoes: { key: Fase | "auto"; label: string }[] = [
     { key: "auto", label: "Automático" },
     { key: "onboarding", label: "Onboarding" },
@@ -955,6 +961,9 @@ function PhaseControl({ group, onSetFase }: { group: AlfredGroup; onSetFase: (id
   ];
   async function escolher(k: Fase | "auto") {
     try { await onSetFase(group.id, k === "auto" ? null : k); } catch (e) { alert(e instanceof Error ? e.message : String(e)); }
+  }
+  async function mudarInicio(v: string) {
+    try { await onSetContratoInicio(group.id, v || null); } catch (e) { alert(e instanceof Error ? e.message : String(e)); }
   }
   return (
     <div className="mb-4 rounded-xl border border-black/5 bg-white p-3 shadow-sm">
@@ -970,9 +979,27 @@ function PhaseControl({ group, onSetFase }: { group: AlfredGroup; onSetFase: (id
           </button>
         ))}
       </div>
+
+      {/* Início do contrato — base do cálculo de fase e da semana do cronograma. */}
+      <div className="mt-3 flex flex-wrap items-center gap-2">
+        <label className="text-[11px] font-medium text-ink-soft">Início do contrato</label>
+        <input type="date" className="input !py-1 !w-auto text-sm"
+          value={group.contrato_inicio ?? ""} onChange={(e) => mudarInicio(e.target.value)} />
+        {group.contrato_inicio && (
+          <button type="button" onClick={() => mudarInicio("")} title="Usar a data de cadastro do grupo"
+            className="text-[11px] text-ink-muted underline hover:text-ink-soft">limpar</button>
+        )}
+        {efetiva === "onboarding" && (
+          <span className="ml-auto chip bg-accent/10 text-accent !px-2">Semana {semana}/4</span>
+        )}
+      </div>
+
       <p className="mt-2 text-[11px] text-ink-muted">
+        {group.contrato_inicio
+          ? "Fase e semana contadas a partir da data de início informada."
+          : "Sem data informada: conta a partir do cadastro do grupo. Informe a data real se o grupo foi criado depois do contrato começar."}{" "}
         {atual === "auto"
-          ? `Automático: vira Manutenção após 30 dias de grupo (hoje: ${FASE_INFO[efetiva].label}).`
+          ? `Vira Manutenção após 30 dias (hoje: ${FASE_INFO[efetiva].label}).`
           : "Fase travada manualmente."}{" "}
         Na Manutenção o Alfred prioriza campanhas e demandas; o cronograma vira histórico.
       </p>
@@ -1176,7 +1203,7 @@ function Proposta({ groupId, proposal, onSave }: {
 
 // ---- Card de grupo: status + on/off + equipe + checklist + contexto
 function GroupItem({
-  group, context, tasks, memory, members, assets, proposal, onToggle, onRemove, onSetFase, onSaveContext, onSaveProposal, onToggleTask, onVerConversa, onDeleteMemory, onAddMember, onRemoveMember, onFetchSenders, onAddAsset, onUpdateAsset, onDeleteAsset,
+  group, context, tasks, memory, members, assets, proposal, onToggle, onRemove, onSetFase, onSetContratoInicio, onSaveContext, onSaveProposal, onToggleTask, onVerConversa, onDeleteMemory, onAddMember, onRemoveMember, onFetchSenders, onAddAsset, onUpdateAsset, onDeleteAsset,
 }: {
   group: AlfredGroup;
   context?: AlfredContext;
@@ -1188,6 +1215,7 @@ function GroupItem({
   onToggle: (id: string, active: boolean) => Promise<void>;
   onRemove: (id: string) => Promise<void>;
   onSetFase: (id: string, fase: Fase | null) => Promise<void>;
+  onSetContratoInicio: (id: string, data: string | null) => Promise<void>;
   onSaveContext: (groupId: string, patch: Omit<AlfredContext, "group_id">) => Promise<void>;
   onSaveProposal: (groupId: string, patch: Omit<AlfredProposal, "group_id">) => Promise<void>;
   onToggleTask: (t: AlfredTask) => Promise<void>;
@@ -1329,7 +1357,7 @@ function GroupItem({
       {/* Área dedicada: checklist do cronograma + contexto da empresa */}
       {aberto && (
         <div className="border-t border-black/5 bg-black/[0.015] p-4">
-        <PhaseControl group={group} onSetFase={onSetFase} />
+        <PhaseControl group={group} onSetFase={onSetFase} onSetContratoInicio={onSetContratoInicio} />
         <Proposta groupId={group.id} proposal={proposal} onSave={onSaveProposal} />
         <Equipe groupId={group.id} members={members} onAdd={onAddMember} onRemove={onRemoveMember} onFetchSenders={onFetchSenders} />
         {/* Manutenção: campanhas em primeiro plano; Onboarding: cronograma primeiro. */}

@@ -44,14 +44,24 @@ export interface AlfredGroup {
   evolution_instance: string | null;
   active: boolean;
   created_at: string;
+  contrato_inicio: string | null; // data real de início; null = usa created_at
   fase_override: Fase | null; // null = automático pela idade do grupo
 }
 const FASE_THRESHOLD_DIAS = 30; // >= 30 dias => Manutenção (se sem override)
+/** Data base do contrato: início informado manualmente, ou o cadastro do grupo. */
+function baseContrato(g: Pick<AlfredGroup, "created_at" | "contrato_inicio">): string {
+  return g.contrato_inicio || g.created_at;
+}
 /** Fase efetiva do grupo: override manual, ou automática pela idade. */
-export function faseEfetiva(g: Pick<AlfredGroup, "created_at" | "fase_override">): Fase {
+export function faseEfetiva(g: Pick<AlfredGroup, "created_at" | "contrato_inicio" | "fase_override">): Fase {
   if (g.fase_override === "onboarding" || g.fase_override === "manutencao") return g.fase_override;
-  const dias = (Date.now() - new Date(g.created_at).getTime()) / 86_400_000;
+  const dias = (Date.now() - new Date(baseContrato(g)).getTime()) / 86_400_000;
   return dias >= FASE_THRESHOLD_DIAS ? "manutencao" : "onboarding";
+}
+/** Semana atual do contrato (1..4) para exibição — espelha o cálculo do backend. */
+export function semanaContrato(g: Pick<AlfredGroup, "created_at" | "contrato_inicio">): number {
+  const dias = (Date.now() - new Date(baseContrato(g)).getTime()) / 86_400_000;
+  return Math.min(4, Math.max(1, Math.floor(dias / 7) + 1));
 }
 
 export interface AlfredProposal {
@@ -291,6 +301,14 @@ export function useAlfred() {
     if (error) { await load(); throw error; }
   }, [load]);
 
+  /** Define a data de início do contrato (YYYY-MM-DD) ou null para usar o cadastro. */
+  const setContratoInicio = useCallback(async (id: string, data: string | null) => {
+    const val = data || null;
+    setGroups((prev) => prev.map((g) => (g.id === id ? { ...g, contrato_inicio: val } : g)));
+    const { error } = await supabase.from("alfred_groups").update({ contrato_inicio: val }).eq("id", id);
+    if (error) { await load(); throw error; }
+  }, [load]);
+
   // ---- ativos/campanhas do cliente (estado vivo da operação) ----
   const addAsset = useCallback(async (groupId: string, titulo: string, tipo: AssetTipo, descricao?: string) => {
     const user_id = await uid();
@@ -437,7 +455,7 @@ export function useAlfred() {
   return {
     config, connection, groups, contexts, tasks, memory, members, demands, assets, proposals, configError, loading,
     saveConfig, connectWhatsapp, checkStatus, listarGruposWhatsapp,
-    addGroup, toggleGroup, removeGroup, setFase, saveContext, saveProposal, toggleTask, clearHistory, deleteMemory,
+    addGroup, toggleGroup, removeGroup, setFase, setContratoInicio, saveContext, saveProposal, toggleTask, clearHistory, deleteMemory,
     addMember, removeMember, fetchSenders, addDemand, updateDemand, deleteDemand,
     addAsset, updateAsset, deleteAsset, reload: load,
   };

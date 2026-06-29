@@ -568,7 +568,14 @@ export interface Grupo {
   id: string; user_id: string; client_name: string; remote_jid: string;
   evolution_instance: string | null; last_learned_at: string | null;
   created_at: string | null; fase_override: string | null;
+  contrato_inicio?: string | null;
   last_proactive_at?: string | null;
+}
+
+/** Data base do contrato para fase/semana: usa a data de início informada
+ *  manualmente; se não houver, cai na data de cadastro do grupo. */
+function inicioContrato(g: { contrato_inicio?: string | null; created_at: string | null }): string | null {
+  return g.contrato_inicio || g.created_at;
 }
 type HistMsg = HistRow & { created_at: string };
 interface DemandaRow { titulo: string; status: string; prazo: string | null }
@@ -608,13 +615,14 @@ async function gerarResposta(supabase: SupabaseClient, grupo: Grupo, cfg: Alfred
   const instance = cfg.evolution_instance || grupo.evolution_instance || "";
   if (!ENV_EVO_URL || !ENV_EVO_KEY || !instance) return "evolution não configurada";
 
-  const fase = faseEfetiva(grupo.created_at, grupo.fase_override);
+  const baseContrato = inicioContrato(grupo);
+  const fase = faseEfetiva(baseContrato, grupo.fase_override);
   const contexto = montarContexto(carga.ctx, grupo.client_name, fase)
     + montarProposta(carga.proposta)
     + montarMemoria(carga.mem)
     + montarAtivos(carga.assets)
     + montarDemandas(carga.demandas)
-    + montarChecklist(carga.tarefas, fase, semanaAtual(grupo.created_at));
+    + montarChecklist(carga.tarefas, fase, semanaAtual(baseContrato));
   const contents = montarContents(carga.hist);
   if (contents.length === 0) return "sem histórico";
 
@@ -895,10 +903,11 @@ export async function acompanhamentoProativo(supabase: SupabaseClient, grupo: Gr
     .select("id");
   if (!claim || claim.length === 0) return "já feito hoje (corrida)";
 
-  const fase = faseEfetiva(grupo.created_at, grupo.fase_override);
+  const baseContrato = inicioContrato(grupo);
+  const fase = faseEfetiva(baseContrato, grupo.fase_override);
   const contexto = montarContexto(carga.ctx, grupo.client_name, fase)
     + montarProposta(carga.proposta) + montarMemoria(carga.mem)
-    + montarAtivos(carga.assets) + montarDemandas(carga.demandas) + montarChecklist(carga.tarefas, fase, semanaAtual(grupo.created_at));
+    + montarAtivos(carga.assets) + montarDemandas(carga.demandas) + montarChecklist(carga.tarefas, fase, semanaAtual(baseContrato));
   // Se o acompanhamento for a 1ª fala do Alfred no grupo, apresenta-se antes.
   await apresentarSeNecessario(supabase, grupo, cfg, null);
 
