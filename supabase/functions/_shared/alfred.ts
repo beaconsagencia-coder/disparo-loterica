@@ -1510,19 +1510,28 @@ async function carregarBolaoContexto(grupo: Grupo, gatilho: string): Promise<str
     linhas.push(`- Assinatura no Bolão Gestor: plano ${a.plano}, situação ${a.status}${ate ? `, vigente até ${ate}` : ""}.`);
   }
   if (r.programacao_posts?.length) {
-    linhas.push("- Programação de posts (feed) ativa:");
+    const hb = agoraBrasilia();
+    const diaIdx = hb.getUTCDay();
+    const hojeBR = `${padN(hb.getUTCDate())}/${padN(hb.getUTCMonth() + 1)}`;
+    linhas.push(`- Programação de posts (feed) — HOJE é ${DIAS_SEMANA[diaIdx]} (${hojeBR}):`);
+    const hojeSai: string[] = [];
     for (const p of r.programacao_posts) {
+      const semanal = p.frequencia === "semanal";
       const freq = p.frequencia === "diaria" ? "todo dia"
-        : p.frequencia === "semanal" ? `toda ${p.dia_semana != null ? DIAS_SEMANA[p.dia_semana] : "semana"}`
+        : semanal ? `toda ${p.dia_semana != null ? DIAS_SEMANA[p.dia_semana] : "semana"}`
         : p.frequencia === "antes_sorteio" ? "antes do sorteio" : (p.frequencia ?? "");
       linhas.push(`  • ${p.modalidade}: ${freq}${p.hora ? ` às ${p.hora}` : ""}.`);
+      if (p.frequencia === "diaria" || (semanal && p.dia_semana === diaIdx)) hojeSai.push(`${p.modalidade}${p.hora ? ` (${p.hora})` : ""}`);
     }
+    linhas.push(hojeSai.length
+      ? `  → Modalidades que saem HOJE pela recorrência: ${hojeSai.join(", ")}.`
+      : "  → Hoje não há post recorrente previsto (confira os próximos posts agendados abaixo). Posts 'antes do sorteio' dependem da data do concurso.");
   }
   if (r.proximos_posts?.length) {
-    linhas.push("- Próximos posts agendados:");
+    linhas.push("- Posts recentes/agendados (log do feed):");
     for (const p of r.proximos_posts) {
       const dia = (p.dia ?? "").slice(0, 10).split("-").reverse().join("/");
-      const st = p.status === "posted" ? "publicado" : p.status === "failed" ? "falhou" : "agendado";
+      const st = p.status === "posted" ? "já publicado" : p.status === "failed" ? "falhou" : "agendado";
       linhas.push(`  • ${p.modalidade} em ${dia} (${st}).`);
     }
   }
