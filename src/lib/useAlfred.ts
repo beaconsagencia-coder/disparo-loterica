@@ -113,6 +113,7 @@ export interface AlfredMemory {
   group_id: string;
   chave: string;
   valor: string;
+  categoria: string | null;
 }
 export interface AlfredConnection {
   evolution_instance: string | null;
@@ -180,7 +181,7 @@ export function useAlfred() {
       supabase.from("alfred_tasks")
         .select("id, group_id, semana, ordem, task_key, titulo, done")
         .order("semana").order("ordem"),
-      supabase.from("alfred_memory").select("id, group_id, chave, valor").order("chave"),
+      supabase.from("alfred_memory").select("id, group_id, chave, valor, categoria").order("chave"),
       supabase.from("alfred_group_members").select("id, group_id, numero, nome").order("created_at"),
       supabase.from("alfred_demands").select("id, group_id, titulo, descricao, status, prazo").order("prazo"),
       supabase.from("alfred_assets").select("id, group_id, titulo, tipo, status, descricao, substituida_por").order("updated_at", { ascending: false }),

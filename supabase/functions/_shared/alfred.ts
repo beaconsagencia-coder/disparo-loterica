@@ -17,7 +17,7 @@ const BOLAO_BRIDGE_URL = (Deno.env.get("BOLAO_BRIDGE_URL") ?? "").replace(/\/+$/
 const BOLAO_BRIDGE_SECRET = Deno.env.get("ALFRED_BRIDGE_SECRET") ?? "";
 const GEMINI_MODEL = "gemini-2.5-flash";
 const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
-const HISTORICO = 50;
+const HISTORICO = 80;
 const FASE_THRESHOLD_DIAS = 30; // >= 30 dias de grupo => Manutenção (se sem override)
 const PROATIVO_DIAS = new Set([1, 2, 3, 4, 5]); // acompanhamento proativo: seg a sex (0=dom..6=sáb)
 const BOT_NOME = "Alfred"; // como o bot se apresenta no grupo
@@ -204,10 +204,18 @@ function montarContexto(ctx: any, clientName: string, fase: Fase): string {
   return linhas.join("\n");
 }
 
-function montarMemoria(mem: { chave: string; valor: string }[]): string {
+function montarMemoria(mem: { chave: string; valor: string; categoria?: string | null }[]): string {
   if (!mem?.length) return "";
   const linhas = ["", "INFORMAÇÕES SALVAS (memória do cliente — use quando perguntarem):"];
-  for (const m of mem) linhas.push(`- ${m.chave}: ${m.valor}`);
+  const porCat = new Map<string, { chave: string; valor: string }[]>();
+  for (const m of mem) {
+    const cat = (m.categoria ?? "").trim() || "geral";
+    (porCat.get(cat) ?? porCat.set(cat, []).get(cat)!).push({ chave: m.chave, valor: m.valor });
+  }
+  for (const [cat, itens] of porCat) {
+    linhas.push(`[${cat}]`);
+    for (const m of itens) linhas.push(`- ${m.chave}: ${m.valor}`);
+  }
   return linhas.join("\n");
 }
 
@@ -323,6 +331,60 @@ function ultimaFalaCliente(hist: HistRow[]): string {
     if (m.role === "user" && !m.is_team) return m.body ?? "";
   }
   return "";
+}
+
+// ---- Memória semântica (embeddings + recuperação) -------------------
+const EMBED_URL = "https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:embedContent";
+
+/** Gera o embedding (768 dims) de um texto via Gemini. Null em falha. */
+async function gerarEmbedding(texto: string): Promise<number[] | null> {
+  const t = (texto ?? "").trim();
+  if (!GEMINI_API_KEY || !t) return null;
+  try {
+    const res = await fetch(`${EMBED_URL}?key=${encodeURIComponent(GEMINI_API_KEY)}`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "models/text-embedding-004", content: { parts: [{ text: t.slice(0, 8000) }] } }),
+    });
+    if (!res.ok) { console.error("[alfred] embedding", res.status); return null; }
+    const data = await res.json();
+    const v = data?.embedding?.values;
+    return Array.isArray(v) ? v : null;
+  } catch (e) { console.error("[alfred] embedding erro:", e instanceof Error ? e.message : e); return null; }
+}
+
+/** Recupera trechos passados relevantes (memória semântica) para a fala atual do cliente. */
+async function recuperarMemoria(supabase: SupabaseClient, groupId: string, gatilho: string): Promise<string> {
+  const g = (gatilho ?? "").trim();
+  if (g.length < 15) return ""; // não vale a pena p/ 'ok', 'obrigado', etc.
+  const emb = await gerarEmbedding(g);
+  if (!emb) return "";
+  const { data, error } = await supabase.rpc("alfred_match_vectors", { p_group_id: groupId, p_query: JSON.stringify(emb), p_count: 5 });
+  if (error || !data) return "";
+  const bons = (data as { content: string; similarity: number }[]).filter((d) => d.similarity >= 0.65);
+  if (!bons.length) return "";
+  return "\nTRECHOS RELEVANTES DE CONVERSAS ANTERIORES (memória recuperada — pode estar fora da janela recente; use só se ajudar a responder, sem repetir literalmente):\n"
+    + bons.map((d) => `- ${d.content}`).join("\n");
+}
+
+/** Indexa (embedda) os trechos NOVOS da conversa para recuperação futura. */
+async function indexarConversa(supabase: SupabaseClient, grupo: Grupo, novas: HistMsg[]): Promise<void> {
+  if (!novas.length) return;
+  const blocos: string[] = [];
+  let buf = "";
+  for (const m of novas) {
+    const quem = m.role === "model" ? "Alfred" : (m.is_team ? `[Equipe ${m.sender_name || ""}]` : (nomeExibivel(m.sender_name) || "Cliente"));
+    const linha = `${quem}: ${m.body}`;
+    if ((buf + "\n" + linha).length > 1500 && buf) { blocos.push(buf); buf = linha; }
+    else buf = buf ? buf + "\n" + linha : linha;
+  }
+  if (buf) blocos.push(buf);
+  for (const b of blocos) {
+    const emb = await gerarEmbedding(b);
+    if (!emb) continue;
+    await supabase.from("alfred_memory_vectors").insert({
+      user_id: grupo.user_id, group_id: grupo.id, kind: "conversa", content: b.slice(0, 4000), embedding: JSON.stringify(emb),
+    });
+  }
 }
 
 async function chamarGemini(systemPrompt: string, contexto: string, contents: { role: "user" | "model"; parts: { text: string }[] }[], baseConhecimento: string, recemApresentado = false): Promise<{ mensagem: string; audio: boolean }> {
@@ -474,7 +536,7 @@ function delayDigitacao(texto: string, cfg: AlfredCfg): number {
 
 interface NovaDemanda { titulo: string; descricao: string; prazo_dias: number }
 interface AtivoAprendido { titulo: string; tipo: string; status: string; substitui_titulo: string; descricao: string }
-interface Aprendizado { tarefas_concluidas: string[]; memorias: { chave: string; valor: string }[]; resumo: string; demandas: NovaDemanda[]; ativos: AtivoAprendido[] }
+interface Aprendizado { tarefas_concluidas: string[]; memorias: { chave: string; valor: string; categoria?: string }[]; remover: string[]; resumo: string; demandas: NovaDemanda[]; ativos: AtivoAprendido[] }
 
 async function aprenderDaConversa(
   hist: HistRow[], tarefas: TaskRow[], memoriaAtual: { chave: string; valor: string }[], resumoAtual: string,
@@ -493,28 +555,35 @@ async function aprenderDaConversa(
     "Você analisa a conversa de um grupo de WhatsApp de um cliente da agência e APRENDE com ela. Identifique de forma autônoma: " +
     "(1) tarefas do checklist concluídas AGORA — use EXATAMENTE as task_key da lista; só marque o que ficou claramente pronto " +
     "(ex.: alguém diz 'segue a identidade visual' => identidade_visual). " +
-    "(2) dados operacionais/sensíveis para guardar (senhas, logins, @ do Instagram, links, orçamento, decisões, datas). Chaves curtas em snake_case. Atualize valores. " +
-    "(3) um RESUMO consolidado e enxuto (~5 linhas) com a ESSÊNCIA do cliente, evoluindo o anterior. " +
+    "(2) FATOS duráveis para guardar — chave curta em snake_case + valor + categoria. Guarde tanto dados operacionais/sensíveis (senhas, logins, @ do Instagram, " +
+    "links, orçamento, decisões, datas) QUANTO conhecimento sobre o cliente que ajuda no atendimento (nomes e funções de pessoas da equipe do cliente, preferências de tom/horário " +
+    "de contato, reclamações ou pedidos RECORRENTES, restrições, contexto do negócio). categoria ∈ {acesso, contato, decisao, financeiro, preferencia, pessoa, perfil, outro}. " +
+    "Atualize valores já existentes (mesma chave). Se algum fato da MEMÓRIA ATUAL ficou OBSOLETO ou foi CONTRADITO na conversa, liste a chave dele em 'remover'. " +
+    "(3) um RESUMO consolidado por SEÇÕES (evoluindo o anterior, sem perder o que ainda vale), com estas linhas rotuladas quando houver conteúdo: " +
+    "'Perfil:' (quem é o cliente/negócio), 'Pessoas:' (quem fala pela equipe do cliente), 'Preferências:' (tom, horários, jeito de tratar), " +
+    "'Decisões:' (combinados importantes), 'Pendências históricas:' (o que ficou em aberto ao longo do tempo), 'Sensível:' (senhas/contas/@ — só referência, sem expor à toa). " +
+    "Seja enxuto em cada seção, mas NÃO descarte informação antiga que ainda é verdadeira. " +
     "(4) NOVAS demandas avulsas pedidas pelo CLIENTE no chat (arte específica, alteração, pedido pontual) que NÃO estejam na lista de demandas abertas e ainda não tenham sido registradas. " +
     "Para cada nova demanda: titulo curto, descricao objetiva e prazo_dias (prazo de entrega em DIAS a partir de hoje — OBRIGATÓRIO, realista, normalmente entre 1 e 7). Não invente demandas; só registre pedidos reais e novos. " +
     "(5) MUDANÇAS em CAMPANHAS/ATIVOS narradas na conversa (subiu/ativou uma campanha, pausou, encerrou, ou substituiu uma campanha por outra). " +
     "Para cada mudança: titulo (nome da campanha/criativo), tipo (campanha|criativo|anuncio|outro), status FINAL (ativa|pausada|encerrada|substituida), " +
     "substitui_titulo (se esta campanha substitui uma já existente, escreva o nome dela; senão deixe vazio) e descricao curta. " +
     "Compare com a lista de ativos atuais e só reporte o que MUDOU ou é novo — não repita itens que já estão iguais. " +
-    "Sem novidade: listas vazias e repita o resumo.";
+    "Sem novidade: listas vazias e repita o resumo seccionado anterior.";
 
   const body = {
     system_instruction: { parts: [{ text: sys }] },
     contents: [{ role: "user", parts: [{ text:
       `CHECKLIST (task_key — título — estado):\n${tasksTxt}\n\nMEMÓRIA ATUAL:\n${memTxt}\n\nDEMANDAS AVULSAS JÁ ABERTAS (não repita):\n${demTxt}\n\nCAMPANHAS/ATIVOS ATUAIS (titulo [status] — só reporte mudanças):\n${ativTxt}\n\nRESUMO ATUAL:\n${resumoAtual || "(vazio)"}\n\nCONVERSA RECENTE:\n${histTxt}` }] }],
     generationConfig: {
-      temperature: 0, maxOutputTokens: 1100, thinkingConfig: { thinkingBudget: 0 },
+      temperature: 0, maxOutputTokens: 2000, thinkingConfig: { thinkingBudget: -1 },
       responseMimeType: "application/json",
       responseSchema: {
         type: "OBJECT",
         properties: {
           tarefas_concluidas: { type: "ARRAY", items: { type: "STRING" } },
-          memorias: { type: "ARRAY", items: { type: "OBJECT", properties: { chave: { type: "STRING" }, valor: { type: "STRING" } }, required: ["chave", "valor"] } },
+          memorias: { type: "ARRAY", items: { type: "OBJECT", properties: { chave: { type: "STRING" }, valor: { type: "STRING" }, categoria: { type: "STRING" } }, required: ["chave", "valor"] } },
+          remover: { type: "ARRAY", items: { type: "STRING" } },
           resumo: { type: "STRING" },
           demandas: { type: "ARRAY", items: { type: "OBJECT", properties: { titulo: { type: "STRING" }, descricao: { type: "STRING" }, prazo_dias: { type: "INTEGER" } }, required: ["titulo", "prazo_dias"] } },
           ativos: { type: "ARRAY", items: { type: "OBJECT", properties: { titulo: { type: "STRING" }, tipo: { type: "STRING" }, status: { type: "STRING" }, substitui_titulo: { type: "STRING" }, descricao: { type: "STRING" } }, required: ["titulo", "status"] } },
@@ -532,6 +601,7 @@ async function aprenderDaConversa(
     return {
       tarefas_concluidas: Array.isArray(parsed?.tarefas_concluidas) ? parsed.tarefas_concluidas : [],
       memorias: Array.isArray(parsed?.memorias) ? parsed.memorias : [],
+      remover: Array.isArray(parsed?.remover) ? parsed.remover : [],
       resumo: typeof parsed?.resumo === "string" ? parsed.resumo : "",
       demandas: Array.isArray(parsed?.demandas) ? parsed.demandas : [],
       ativos: Array.isArray(parsed?.ativos) ? parsed.ativos : [],
@@ -615,7 +685,7 @@ function inicioContrato(g: { contrato_inicio?: string | null; created_at: string
 type HistMsg = HistRow & { created_at: string };
 interface DemandaRow { titulo: string; status: string; prazo: string | null }
 // deno-lint-ignore no-explicit-any
-interface Carga { hist: HistMsg[]; ctx: any; tarefas: TaskRow[]; mem: { chave: string; valor: string }[]; demandas: DemandaRow[]; assets: AssetRow[]; proposta: PropostaRow | null }
+interface Carga { hist: HistMsg[]; ctx: any; tarefas: TaskRow[]; mem: { chave: string; valor: string; categoria?: string | null }[]; demandas: DemandaRow[]; assets: AssetRow[]; proposta: PropostaRow | null }
 
 /** Carrega histórico + contexto + checklist + memória + demandas + ativos + proposta. */
 async function carregar(supabase: SupabaseClient, groupId: string): Promise<Carga> {
@@ -629,7 +699,7 @@ async function carregar(supabase: SupabaseClient, groupId: string): Promise<Carg
   const [{ data: ctx }, { data: tasks }, { data: memorias }, { data: dem }, { data: ats }, { data: prop }] = await Promise.all([
     supabase.from("alfred_context").select("empresa_dados, regras_atendimento, drive_link, cronograma, financeiro, observacoes, resumo").eq("group_id", groupId).maybeSingle(),
     supabase.from("alfred_tasks").select("semana, task_key, titulo, done").eq("group_id", groupId).order("semana").order("ordem"),
-    supabase.from("alfred_memory").select("chave, valor").eq("group_id", groupId),
+    supabase.from("alfred_memory").select("chave, valor, categoria").eq("group_id", groupId),
     supabase.from("alfred_demands").select("titulo, status, prazo").eq("group_id", groupId).neq("status", "concluida"),
     supabase.from("alfred_assets").select("id, titulo, tipo, status, descricao, substituida_por").eq("group_id", groupId).neq("status", "encerrada").order("updated_at", { ascending: false }).limit(40),
     supabase.from("alfred_proposals").select("valor_mensal, valor_setup, vigencia_meses, forma_pagamento, entregaveis, observacoes").eq("group_id", groupId).maybeSingle(),
@@ -637,7 +707,7 @@ async function carregar(supabase: SupabaseClient, groupId: string): Promise<Carg
   return {
     hist, ctx: ctx ?? null,
     tarefas: (tasks as TaskRow[]) ?? [],
-    mem: (memorias as { chave: string; valor: string }[]) ?? [],
+    mem: (memorias as { chave: string; valor: string; categoria?: string | null }[]) ?? [],
     demandas: (dem as DemandaRow[]) ?? [],
     assets: (ats as AssetRow[]) ?? [],
     proposta: (prop as PropostaRow | null) ?? null,
@@ -659,7 +729,8 @@ async function gerarResposta(supabase: SupabaseClient, grupo: Grupo, cfg: Alfred
     + montarDemandas(carga.demandas)
     + montarChecklist(carga.tarefas, fase, semanaAtual(baseContrato))
     + await carregarFaturaContexto(supabase, grupo) // fatura vinculada (dúvidas de cobrança)
-    + await carregarBolaoContexto(grupo, ultimaFalaCliente(carga.hist)); // dados ao vivo do Bolão Gestor
+    + await carregarBolaoContexto(grupo, ultimaFalaCliente(carga.hist)) // dados ao vivo do Bolão Gestor
+    + await recuperarMemoria(supabase, grupo.id, ultimaFalaCliente(carga.hist)); // memória semântica (trechos antigos relevantes)
   const contents = montarContents(carga.hist);
   if (contents.length === 0) return "sem histórico";
 
@@ -1278,7 +1349,12 @@ export async function processarGrupoTick(supabase: SupabaseClient, grupo: Grupo,
       }
       for (const m of aprend.memorias) {
         if (!m?.chave || !m?.valor) continue;
-        await supabase.from("alfred_memory").upsert({ user_id: grupo.user_id, group_id: grupo.id, chave: String(m.chave).slice(0, 80), valor: String(m.valor).slice(0, 2000), updated_at: agora }, { onConflict: "group_id,chave" });
+        await supabase.from("alfred_memory").upsert({ user_id: grupo.user_id, group_id: grupo.id, chave: String(m.chave).slice(0, 80), valor: String(m.valor).slice(0, 2000), categoria: m.categoria ? String(m.categoria).slice(0, 40) : null, updated_at: agora }, { onConflict: "group_id,chave" });
+      }
+      // Higiene: remove fatos que a conversa tornou obsoletos/contraditórios.
+      for (const chave of aprend.remover) {
+        const k = String(chave ?? "").trim().slice(0, 80);
+        if (k) await supabase.from("alfred_memory").delete().eq("group_id", grupo.id).eq("chave", k);
       }
       if (aprend.resumo?.trim()) await supabase.from("alfred_context").upsert({ user_id: grupo.user_id, group_id: grupo.id, resumo: aprend.resumo.trim() }, { onConflict: "group_id" });
 
@@ -1346,6 +1422,12 @@ export async function processarGrupoTick(supabase: SupabaseClient, grupo: Grupo,
         if (esc) await criarEscalacao(supabase, grupo, cfg, esc);
       } catch (e) { console.error("[alfred] escalonamento:", e instanceof Error ? e.message : e); }
     }
+    // Memória semântica: indexa os trechos NOVOS (mais recentes que o último aprendizado).
+    try {
+      const novas = hist.filter((m) => new Date(m.created_at).getTime() > learnedMs);
+      await indexarConversa(supabase, grupo, novas);
+    } catch (e) { console.error("[alfred] indexar conversa:", e instanceof Error ? e.message : e); }
+
     await supabase.from("alfred_groups").update({ last_learned_at: new Date(lastMsgMs).toISOString() }).eq("id", grupo.id);
   }
 

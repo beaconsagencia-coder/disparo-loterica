@@ -808,6 +808,7 @@ function Conhecimento({ resumo, memory, onDelete }: { resumo?: string | null; me
           <div className="space-y-1">
             {memory.map((m) => (
               <div key={m.id} className="flex items-start gap-2 rounded-lg px-1.5 py-1 text-sm hover:bg-black/[0.02]">
+                {m.categoria && <span className="mt-0.5 shrink-0 chip bg-black/5 text-ink-muted !px-1.5 !py-0 text-[10px]">{m.categoria}</span>}
                 <span className="shrink-0 font-medium text-ink-soft">{m.chave}:</span>
                 <span className="min-w-0 flex-1 break-words text-ink-soft">{m.valor}</span>
                 <button onClick={() => remover(m.id)} title="Remover dado" className="shrink-0 rounded p-0.5 text-ink-muted transition-colors hover:bg-danger/10 hover:text-danger">
