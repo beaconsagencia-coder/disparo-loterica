@@ -650,6 +650,13 @@ async function enviarGrupo(instance: string, remoteJid: string, texto: string, d
   if (!res.ok) throw new Error(`Evolution sendText ${res.status}: ${(await res.text()).slice(0, 200)}`);
 }
 
+// Mensagens ao OPERADOR (DM privada) vão com um atraso mínimo (digitando) para
+// não disparar bloqueio anti-spam da Meta em envios 1:1 automatizados.
+const DELAY_OPERADOR_MS = Math.max(15000, Number(Deno.env.get("ALFRED_DELAY_OPERADOR_MS") ?? "15000") || 15000);
+async function enviarOperador(instance: string, numero: string, texto: string): Promise<void> {
+  await enviarGrupo(instance, numero, texto, DELAY_OPERADOR_MS + Math.floor(Math.random() * 4000)); // 15s + jitter
+}
+
 /** Sintetiza o texto em voz natural (ElevenLabs) e devolve o MP3 em base64. */
 async function sintetizarVoz(texto: string): Promise<string | null> {
   if (!ELEVENLABS_KEY || !ELEVENLABS_VOICE || !texto.trim()) return null;
@@ -899,7 +906,7 @@ async function criarEscalacao(supabase: SupabaseClient, grupo: Grupo, cfg: Alfre
     user_id: grupo.user_id, group_id: grupo.id, resumo: esc.resumo, mensagem_operador: dm, status: "aberta",
   }).select("id").single();
   if (!ins) return;
-  try { await enviarGrupo(instance, op, dm, 0); }
+  try { await enviarOperador(instance, op, dm); }
   catch (e) { console.error("[alfred] DM operador falhou:", e instanceof Error ? e.message : e); }
 }
 
@@ -1071,7 +1078,7 @@ export async function atenderOperador(
 
   if (decisao.acao === "perguntar") {
     if (cfg.operator_number && instance) {
-      try { await enviarGrupo(instance, cfg.operator_number, "Recebi o contexto, mas não consegui identificar de qual cliente é. Me diz o nome do cliente que eu já registro aqui (sem mandar nada no grupo).", 0); } catch { /* ok */ }
+      try { await enviarOperador(instance, cfg.operator_number, "Recebi o contexto, mas não consegui identificar de qual cliente é. Me diz o nome do cliente que eu já registro aqui (sem mandar nada no grupo)."); } catch { /* ok */ }
     }
     return "operador: contexto sem cliente identificado";
   }
@@ -1081,7 +1088,7 @@ export async function atenderOperador(
     if (grupo) {
       const r = await memorizarContextoOperador(supabase, cfg, grupo, args.replyText);
       if (cfg.operator_number && instance) {
-        try { await enviarGrupo(instance, cfg.operator_number, `Anotado! Atualizei o andamento do ${grupo.client_name} aqui na memória. Não enviei nada no grupo.`, 0); } catch { /* ok */ }
+        try { await enviarOperador(instance, cfg.operator_number, `Anotado! Atualizei o andamento do ${grupo.client_name} aqui na memória. Não enviei nada no grupo.`); } catch { /* ok */ }
       }
       return `operador: ${r}`;
     }
@@ -1125,7 +1132,7 @@ export async function responderOperador(
   // Operador pode pedir para NÃO mandar nada no grupo — então não posta.
   if (!relay.enviar || !relay.mensagem) {
     if (cfg.operator_number) {
-      try { await enviarGrupo(instance, cfg.operator_number, "Beleza, não vou enviar nada no grupo então.", 0); } catch { /* ok */ }
+      try { await enviarOperador(instance, cfg.operator_number, "Beleza, não vou enviar nada no grupo então."); } catch { /* ok */ }
     }
     return "sem repasse (operador pediu)";
   }
@@ -1139,7 +1146,7 @@ export async function responderOperador(
       try {
         await enviarAudioGrupo(instance, grupo.remote_jid, b64);
         await supabase.from("alfred_messages").insert({ user_id: grupo.user_id, group_id: grupo.id, remote_jid: grupo.remote_jid, role: "model", sender_name: "Alfred", body: `🎤 ${semBreaks(textoAudio)}` });
-        if (cfg.operator_number) { try { await enviarGrupo(instance, cfg.operator_number, "Show, repassei pro cliente em áudio. Valeu!", 0); } catch { /* ok */ } }
+        if (cfg.operator_number) { try { await enviarOperador(instance, cfg.operator_number, "Show, repassei pro cliente em áudio. Valeu!"); } catch { /* ok */ } }
         return "repassado (áudio)";
       } catch (e) { console.error("[alfred] repasse em áudio falhou, caindo p/ texto:", e instanceof Error ? e.message : e); }
     } else {
@@ -1154,7 +1161,7 @@ export async function responderOperador(
     await supabase.from("alfred_messages").insert({ user_id: grupo.user_id, group_id: grupo.id, remote_jid: grupo.remote_jid, role: "model", sender_name: "Alfred", body: parte });
   }
   if (cfg.operator_number) {
-    try { await enviarGrupo(instance, cfg.operator_number, "Show, repassei pro cliente. Valeu!", 0); } catch { /* ok */ }
+    try { await enviarOperador(instance, cfg.operator_number, "Show, repassei pro cliente. Valeu!"); } catch { /* ok */ }
   }
   return "repassado";
 }
