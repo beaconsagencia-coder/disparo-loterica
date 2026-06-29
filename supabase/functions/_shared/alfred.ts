@@ -533,14 +533,32 @@ function fracionarResposta(raw: string): string[] {
     .replace(/^(?:\s*\[\s*(?:equipe|cliente|usu[aá]rio|imagem|[aá]udio|nota|an[aá]lise|sistema)[^\]]*\]\s*:?\s*)+/gi, "")
     .replace(/^["“”'\s]+|["“”'\s]+$/g, "")
     .trim();
-  const partes = txt
+  const brutas = txt
     .split(/(?:\[\s*(?:mensagem|msg)\s*\]|-{3,}|\n[ \t]*\n)+/i)
     .map(limpar)
     .filter(Boolean);
+  // Junta balões muito curtos ao vizinho — evita fragmentos soltos tipo
+  // "Olá, Cintia!" ou "A chave..." virarem mensagens isoladas e cortadas.
+  const partes = coalescerCurtos(brutas);
   if (partes.length <= MAX_MSGS) return partes;
   const head = partes.slice(0, MAX_MSGS - 1);
   const tail = partes.slice(MAX_MSGS - 1).join("\n\n"); // preserva tudo
   return [...head, tail];
+}
+
+const MIN_BALAO = 25; // abaixo disso, o balão é colado ao vizinho (não vai solto)
+function coalescerCurtos(partes: string[]): string[] {
+  if (partes.length <= 1) return partes;
+  const out: string[] = [];
+  for (const p of partes) {
+    // Junta se o balão atual é curto OU o anterior ficou curto (saudações, retalhos).
+    if (out.length > 0 && (p.length < MIN_BALAO || out[out.length - 1].length < MIN_BALAO)) {
+      out[out.length - 1] = `${out[out.length - 1]}\n${p}`.trim();
+    } else {
+      out.push(p);
+    }
+  }
+  return out;
 }
 
 /** Atraso de digitação por mensagem (estilo SDR): proporcional ao tamanho. */
@@ -1170,7 +1188,7 @@ async function comporCobranca(
   const body = {
     system_instruction: { parts: [{ text: sys }] },
     contents: [{ role: "user", parts: [{ text: "Escreva agora a mensagem de cobrança." }] }],
-    generationConfig: { temperature: 0.6, maxOutputTokens: 1200, thinkingConfig: { thinkingBudget: -1 } },
+    generationConfig: { temperature: 0.6, maxOutputTokens: 1800, thinkingConfig: { thinkingBudget: -1 } },
   };
   try {
     const res = await fetch(`${GEMINI_URL}?key=${encodeURIComponent(GEMINI_API_KEY)}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
