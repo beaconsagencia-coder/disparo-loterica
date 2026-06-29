@@ -1451,13 +1451,17 @@ export async function cobrancaProativa(supabase: SupabaseClient, grupo: Grupo, c
 // ---- Bolão Gestor (dados ao vivo via ponte alfred-bridge) -----------
 // Só busca quando o cliente TOCA no assunto (gate por palavras), para não
 // dar latência/custo em toda mensagem.
-const BOLAO_GATE = /\b(venda|vendas|vendid|vendi|cota|cotas|bol[ãa]o|bol[õo]es|pr[êe]mi|premi|ganhador|faturament|arrecad|assinatura|plano|mensalidade do bol|quanto.*(vend|arrecad)|como.*(t[áa]|est[ãa]).*(venda|bol))/i;
+const BOLAO_GATE = /\b(venda|vendas|vendid|vendi|cota|cotas|bol[ãa]o|bol[õo]es|pr[êe]mi|premi|ganhador|faturament|arrecad|assinatura|plano|mensalidade do bol|post|posts|postagem|postagens|postar|programa[çc][ãa]o|agenda|agendad|feed|story|stories|sai.*(post|hoje)|quando.*(post|sai)|quanto.*(vend|arrecad)|como.*(t[áa]|est[ãa]).*(venda|bol))/i;
+
+const DIAS_SEMANA = ["domingo", "segunda", "terça", "quarta", "quinta", "sexta", "sábado"];
 
 interface BolaoResumo {
   vendas_hoje: { data: string; cotas_vendidas: number; cotas_reservadas: number; valor_total: number } | null;
   boloes_ativos: { modalidade: string; valor_total: number; total_cotas: number; disponiveis: number; vendidas: number }[];
   premiacoes: { modalidade: string | null; concurso: number | null; numero_cota: number | null; premio: number; quando: string }[];
   assinatura: { plano: string; status: string; vigente_ate: string | null; trial_ate: string | null } | null;
+  programacao_posts?: { modalidade: string; frequencia: string; hora: string | null; dia_semana: number | null }[];
+  proximos_posts?: { modalidade: string; dia: string; status: string }[];
 }
 
 /** Chama a ponte do Bolão Gestor para o retrato ao vivo da conta. */
@@ -1505,8 +1509,25 @@ async function carregarBolaoContexto(grupo: Grupo, gatilho: string): Promise<str
     const ate = (a.vigente_ate ?? a.trial_ate ?? "").slice(0, 10).split("-").reverse().join("/");
     linhas.push(`- Assinatura no Bolão Gestor: plano ${a.plano}, situação ${a.status}${ate ? `, vigente até ${ate}` : ""}.`);
   }
+  if (r.programacao_posts?.length) {
+    linhas.push("- Programação de posts (feed) ativa:");
+    for (const p of r.programacao_posts) {
+      const freq = p.frequencia === "diaria" ? "todo dia"
+        : p.frequencia === "semanal" ? `toda ${p.dia_semana != null ? DIAS_SEMANA[p.dia_semana] : "semana"}`
+        : p.frequencia === "antes_sorteio" ? "antes do sorteio" : (p.frequencia ?? "");
+      linhas.push(`  • ${p.modalidade}: ${freq}${p.hora ? ` às ${p.hora}` : ""}.`);
+    }
+  }
+  if (r.proximos_posts?.length) {
+    linhas.push("- Próximos posts agendados:");
+    for (const p of r.proximos_posts) {
+      const dia = (p.dia ?? "").slice(0, 10).split("-").reverse().join("/");
+      const st = p.status === "posted" ? "publicado" : p.status === "failed" ? "falhou" : "agendado";
+      linhas.push(`  • ${p.modalidade} em ${dia} (${st}).`);
+    }
+  }
   linhas.push(
-    "REGRA BOLÃO GESTOR: você PODE informar esses números reais ao cliente. Mas você NÃO executa ações no sistema (criar/editar bolão, dar baixa, mexer em cota): " +
+    "REGRA BOLÃO GESTOR: você PODE informar esses números reais e a PROGRAMAÇÃO de posts ao cliente. Mas você NÃO executa ações no sistema (criar/editar bolão, agendar/cancelar post, dar baixa, mexer em cota): " +
     "se o cliente pedir uma AÇÃO, confirme com gentileza e acione o operador. Se algum dado não estiver acima, não invente — diga que vai verificar.",
   );
   return linhas.join("\n");
