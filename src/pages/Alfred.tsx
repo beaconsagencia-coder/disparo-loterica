@@ -9,7 +9,7 @@ import { supabase } from "@/lib/supabase";
 import {
   useAlfred, faseEfetiva, semanaContrato, type AlfredConfig, type AlfredConnection, type AlfredGroup, type AlfredContext, type AlfredTask,
   type AlfredMessage, type AlfredMemory, type AlfredMember, type AlfredDemand, type DemandStatus,
-  type AlfredAsset, type AssetStatus, type AssetTipo, type Fase, type AlfredProposal, type RecentSender, type ContractOption,
+  type AlfredAsset, type AssetStatus, type AssetTipo, type Fase, type AlfredProposal, type RecentSender, type ContractOption, type BolaoAccount,
 } from "@/lib/useAlfred";
 
 // =====================================================================
@@ -17,7 +17,7 @@ import {
 // Lógica 100% preservada; visual no design system do app (Bento + Apple-like).
 // =====================================================================
 export default function Alfred() {
-  const { config, connection, groups, contexts, tasks, memory, members, demands, assets, proposals, configError, loading, saveConfig, connectWhatsapp, checkStatus, listarGruposWhatsapp, addGroup, toggleGroup, removeGroup, setFase, setContratoInicio, setContractId, saveContext, saveProposal, toggleTask, clearHistory, deleteMemory, addMember, removeMember, fetchSenders, addDemand, updateDemand, deleteDemand, addAsset, updateAsset, deleteAsset, contracts } = useAlfred();
+  const { config, connection, groups, contexts, tasks, memory, members, demands, assets, proposals, configError, loading, saveConfig, connectWhatsapp, checkStatus, listarGruposWhatsapp, addGroup, toggleGroup, removeGroup, setFase, setContratoInicio, setContractId, setBolaoAccount, fetchBolaoAccounts, saveContext, saveProposal, toggleTask, clearHistory, deleteMemory, addMember, removeMember, fetchSenders, addDemand, updateDemand, deleteDemand, addAsset, updateAsset, deleteAsset, contracts } = useAlfred();
   const [conversa, setConversa] = useState<AlfredGroup | null>(null);
   const [view, setView] = useState<"grupos" | "demandas">("grupos");
 
@@ -88,6 +88,8 @@ export default function Alfred() {
               onSetContratoInicio={setContratoInicio}
               onSetContractId={setContractId}
               contracts={contracts}
+              onSetBolaoAccount={setBolaoAccount}
+              onFetchBolaoAccounts={fetchBolaoAccounts}
               onSaveContext={saveContext}
               onSaveProposal={saveProposal}
               onToggleTask={toggleTask}
@@ -1051,6 +1053,68 @@ function FaturaVinculo({ group, contracts, onSetContractId }: {
   );
 }
 
+// ---- Bolão Gestor (dados ao vivo via ponte) ------------------------
+function BolaoVinculo({ group, onSetBolaoAccount, onFetchAccounts }: {
+  group: AlfredGroup;
+  onSetBolaoAccount: (id: string, accountId: string | null, nome: string | null) => Promise<void>;
+  onFetchAccounts: () => Promise<BolaoAccount[]>;
+}) {
+  const [accounts, setAccounts] = useState<BolaoAccount[] | null>(null);
+  const [carregando, setCarregando] = useState(false);
+  const [erro, setErro] = useState<string | null>(null);
+
+  async function carregar() {
+    setErro(null); setCarregando(true);
+    try { setAccounts(await onFetchAccounts()); }
+    catch (e) { setErro(e instanceof Error ? e.message : String(e)); }
+    finally { setCarregando(false); }
+  }
+  async function escolher(accountId: string) {
+    const nome = accounts?.find((a) => a.id === accountId)?.nome ?? null;
+    try { await onSetBolaoAccount(group.id, accountId || null, nome); }
+    catch (e) { setErro(e instanceof Error ? e.message : String(e)); }
+  }
+
+  return (
+    <div className="mb-4 rounded-xl border border-black/5 bg-white p-3 shadow-sm">
+      <div className="mb-2 flex items-center gap-1.5 text-sm font-medium">
+        <Sparkles size={15} className="text-accent" /> Bolão Gestor
+        <span className="text-[11px] font-normal text-ink-muted">(dados ao vivo nas respostas)</span>
+      </div>
+
+      {group.bolao_account_id ? (
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="chip bg-success/12 text-[#1b7a35]">Vinculado: {group.bolao_account_nome || group.bolao_account_id}</span>
+          <button type="button" onClick={() => onSetBolaoAccount(group.id, null, null)}
+            className="text-[11px] text-ink-muted underline hover:text-danger">desvincular</button>
+          <button type="button" onClick={carregar} disabled={carregando}
+            className="text-[11px] text-ink-muted underline hover:text-ink-soft">trocar conta</button>
+        </div>
+      ) : accounts === null ? (
+        <button type="button" onClick={carregar} disabled={carregando}
+          className="btn-ghost !py-1.5 w-full justify-center text-sm disabled:opacity-60">
+          {carregando ? <Loader2 size={15} className="animate-spin" /> : <Search size={15} />}
+          Carregar contas do Bolão Gestor
+        </button>
+      ) : null}
+
+      {accounts !== null && (
+        <select className="input !py-1.5 mt-2 text-sm" value={group.bolao_account_id ?? ""} onChange={(e) => escolher(e.target.value)}>
+          <option value="">— Sem vínculo —</option>
+          {accounts.map((a) => (<option key={a.id} value={a.id}>{a.nome}</option>))}
+        </select>
+      )}
+
+      {erro && <p className="mt-1.5 text-[11px] text-danger">{erro}</p>}
+      <p className="mt-2 text-[11px] text-ink-muted">
+        {group.bolao_account_id
+          ? "Quando o cliente perguntar sobre vendas, bolões, premiações ou plano, o Alfred responde com os dados reais desta conta. Ele só informa — não executa ações no Bolão Gestor."
+          : "Vincule a conta do cliente no Bolão Gestor para o Alfred responder dúvidas com dados ao vivo (vendas, bolões, premiações, assinatura)."}
+      </p>
+    </div>
+  );
+}
+
 // ---- Campanhas / ativos do cliente (estado vivo da operação) -------
 const ASSET_STATUS: { key: AssetStatus; label: string; dot: string }[] = [
   { key: "ativa", label: "Ativa", dot: "bg-success" },
@@ -1247,7 +1311,7 @@ function Proposta({ groupId, proposal, onSave }: {
 
 // ---- Card de grupo: status + on/off + equipe + checklist + contexto
 function GroupItem({
-  group, context, tasks, memory, members, assets, proposal, contracts, onToggle, onRemove, onSetFase, onSetContratoInicio, onSetContractId, onSaveContext, onSaveProposal, onToggleTask, onVerConversa, onDeleteMemory, onAddMember, onRemoveMember, onFetchSenders, onAddAsset, onUpdateAsset, onDeleteAsset,
+  group, context, tasks, memory, members, assets, proposal, contracts, onToggle, onRemove, onSetFase, onSetContratoInicio, onSetContractId, onSetBolaoAccount, onFetchBolaoAccounts, onSaveContext, onSaveProposal, onToggleTask, onVerConversa, onDeleteMemory, onAddMember, onRemoveMember, onFetchSenders, onAddAsset, onUpdateAsset, onDeleteAsset,
 }: {
   group: AlfredGroup;
   context?: AlfredContext;
@@ -1262,6 +1326,8 @@ function GroupItem({
   onSetContratoInicio: (id: string, data: string | null) => Promise<void>;
   onSetContractId: (id: string, contractId: string | null) => Promise<void>;
   contracts: ContractOption[];
+  onSetBolaoAccount: (id: string, accountId: string | null, nome: string | null) => Promise<void>;
+  onFetchBolaoAccounts: () => Promise<BolaoAccount[]>;
   onSaveContext: (groupId: string, patch: Omit<AlfredContext, "group_id">) => Promise<void>;
   onSaveProposal: (groupId: string, patch: Omit<AlfredProposal, "group_id">) => Promise<void>;
   onToggleTask: (t: AlfredTask) => Promise<void>;
@@ -1405,6 +1471,7 @@ function GroupItem({
         <div className="border-t border-black/5 bg-black/[0.015] p-4">
         <PhaseControl group={group} onSetFase={onSetFase} onSetContratoInicio={onSetContratoInicio} />
         <FaturaVinculo group={group} contracts={contracts} onSetContractId={onSetContractId} />
+        <BolaoVinculo group={group} onSetBolaoAccount={onSetBolaoAccount} onFetchAccounts={onFetchBolaoAccounts} />
         <Proposta groupId={group.id} proposal={proposal} onSave={onSaveProposal} />
         <Equipe groupId={group.id} members={members} onAdd={onAddMember} onRemove={onRemoveMember} onFetchSenders={onFetchSenders} />
         {/* Manutenção: campanhas em primeiro plano; Onboarding: cronograma primeiro. */}

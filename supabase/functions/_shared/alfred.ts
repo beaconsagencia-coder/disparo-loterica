@@ -12,6 +12,9 @@ const ENV_EVO_KEY = Deno.env.get("EVOLUTION_API_KEY") ?? "";
 const ELEVENLABS_KEY = Deno.env.get("ELEVENLABS_API_KEY") ?? "";
 const ELEVENLABS_VOICE = Deno.env.get("ELEVENLABS_VOICE_ID") ?? "";
 const ELEVENLABS_MODEL = Deno.env.get("ELEVENLABS_MODEL_ID") ?? "eleven_v3";
+// Ponte com o Bolão Gestor (outro projeto): só ativa se URL e segredo no env.
+const BOLAO_BRIDGE_URL = (Deno.env.get("BOLAO_BRIDGE_URL") ?? "").replace(/\/+$/, "");
+const BOLAO_BRIDGE_SECRET = Deno.env.get("ALFRED_BRIDGE_SECRET") ?? "";
 const GEMINI_MODEL = "gemini-2.5-flash";
 const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
 const HISTORICO = 50;
@@ -313,6 +316,15 @@ function montarContents(hist: HistRow[]) {
   return out;
 }
 
+/** Texto da última fala do CLIENTE (ignora equipe e o próprio Alfred). Para gates. */
+function ultimaFalaCliente(hist: HistRow[]): string {
+  for (let i = hist.length - 1; i >= 0; i--) {
+    const m = hist[i];
+    if (m.role === "user" && !m.is_team) return m.body ?? "";
+  }
+  return "";
+}
+
 async function chamarGemini(systemPrompt: string, contexto: string, contents: { role: "user" | "model"; parts: { text: string }[] }[], baseConhecimento: string, recemApresentado = false): Promise<{ mensagem: string; audio: boolean }> {
   const avisoApresentacao = recemApresentado
     ? "ATENÇÃO: você ACABOU de se apresentar e cumprimentar o cliente AGORA, na mensagem anterior. NÃO cumprimente de novo " +
@@ -581,6 +593,7 @@ export interface Grupo {
   created_at: string | null; fase_override: string | null;
   contrato_inicio?: string | null;
   contract_id?: string | null;
+  bolao_account_id?: string | null;
   last_proactive_at?: string | null;
 }
 
@@ -645,7 +658,8 @@ async function gerarResposta(supabase: SupabaseClient, grupo: Grupo, cfg: Alfred
     + montarAtivos(carga.assets)
     + montarDemandas(carga.demandas)
     + montarChecklist(carga.tarefas, fase, semanaAtual(baseContrato))
-    + await carregarFaturaContexto(supabase, grupo); // fatura vinculada (dúvidas de cobrança)
+    + await carregarFaturaContexto(supabase, grupo) // fatura vinculada (dúvidas de cobrança)
+    + await carregarBolaoContexto(grupo, ultimaFalaCliente(carga.hist)); // dados ao vivo do Bolão Gestor
   const contents = montarContents(carga.hist);
   if (contents.length === 0) return "sem histórico";
 
@@ -1141,6 +1155,70 @@ export async function cobrancaProativa(supabase: SupabaseClient, grupo: Grupo, c
     }
   }
   return "fora de janela de cobrança";
+}
+
+// ---- Bolão Gestor (dados ao vivo via ponte alfred-bridge) -----------
+// Só busca quando o cliente TOCA no assunto (gate por palavras), para não
+// dar latência/custo em toda mensagem.
+const BOLAO_GATE = /\b(venda|vendas|vendid|vendi|cota|cotas|bol[ãa]o|bol[õo]es|pr[êe]mi|premi|ganhador|faturament|arrecad|assinatura|plano|mensalidade do bol|quanto.*(vend|arrecad)|como.*(t[áa]|est[ãa]).*(venda|bol))/i;
+
+interface BolaoResumo {
+  vendas_hoje: { data: string; cotas_vendidas: number; cotas_reservadas: number; valor_total: number } | null;
+  boloes_ativos: { modalidade: string; valor_total: number; total_cotas: number; disponiveis: number; vendidas: number }[];
+  premiacoes: { modalidade: string | null; concurso: number | null; numero_cota: number | null; premio: number; quando: string }[];
+  assinatura: { plano: string; status: string; vigente_ate: string | null; trial_ate: string | null } | null;
+}
+
+/** Chama a ponte do Bolão Gestor para o retrato ao vivo da conta. */
+async function buscarResumoBolao(accountId: string): Promise<BolaoResumo | null> {
+  if (!BOLAO_BRIDGE_URL || !BOLAO_BRIDGE_SECRET) return null;
+  try {
+    const res = await fetch(`${BOLAO_BRIDGE_URL}?action=resumo&account=${encodeURIComponent(accountId)}`, {
+      headers: { "x-bridge-secret": BOLAO_BRIDGE_SECRET },
+    });
+    if (!res.ok) { console.error("[alfred] bolao-bridge", res.status); return null; }
+    return await res.json() as BolaoResumo;
+  } catch (e) { console.error("[alfred] bolao-bridge erro:", e instanceof Error ? e.message : e); return null; }
+}
+
+/** Bloco de CONTEXTO com os dados ao vivo do Bolão Gestor (só se o cliente tocou no assunto). */
+async function carregarBolaoContexto(grupo: Grupo, gatilho: string): Promise<string> {
+  if (!grupo.bolao_account_id) return "";
+  if (!BOLAO_GATE.test(gatilho)) return ""; // cliente não falou de bolão/vendas agora
+  const r = await buscarResumoBolao(grupo.bolao_account_id);
+  if (!r) return "";
+  const linhas: string[] = ["", "BOLÃO GESTOR — DADOS AO VIVO DO CLIENTE (reais; use para responder; NÃO invente nada além daqui):"];
+  if (r.vendas_hoje) {
+    const v = r.vendas_hoje;
+    linhas.push(`- Vendas de hoje: ${v.cotas_vendidas} cota(s) vendida(s)${v.cotas_reservadas ? `, ${v.cotas_reservadas} reservada(s)` : ""}, total ${brlV(v.valor_total)}.`);
+  } else {
+    linhas.push("- Vendas de hoje: ainda não há registro de vendas hoje.");
+  }
+  if (r.boloes_ativos?.length) {
+    linhas.push("- Bolões ativos:");
+    for (const b of r.boloes_ativos) {
+      linhas.push(`  • ${b.modalidade} — ${brlV(b.valor_total)}: ${b.vendidas}/${b.total_cotas} cotas vendidas (${b.disponiveis} disponíveis).`);
+    }
+  } else {
+    linhas.push("- Bolões ativos: nenhum bolão ativo no momento.");
+  }
+  if (r.premiacoes?.length) {
+    linhas.push("- Premiações recentes:");
+    for (const p of r.premiacoes) {
+      const quando = (p.quando ?? "").slice(0, 10).split("-").reverse().join("/");
+      linhas.push(`  • ${p.modalidade ?? "—"}${p.concurso ? ` (concurso ${p.concurso})` : ""}, cota ${p.numero_cota ?? "—"}: ${brlV(p.premio)}${quando ? ` em ${quando}` : ""}.`);
+    }
+  }
+  if (r.assinatura) {
+    const a = r.assinatura;
+    const ate = (a.vigente_ate ?? a.trial_ate ?? "").slice(0, 10).split("-").reverse().join("/");
+    linhas.push(`- Assinatura no Bolão Gestor: plano ${a.plano}, situação ${a.status}${ate ? `, vigente até ${ate}` : ""}.`);
+  }
+  linhas.push(
+    "REGRA BOLÃO GESTOR: você PODE informar esses números reais ao cliente. Mas você NÃO executa ações no sistema (criar/editar bolão, dar baixa, mexer em cota): " +
+    "se o cliente pedir uma AÇÃO, confirme com gentileza e acione o operador. Se algum dado não estiver acima, não invente — diga que vai verificar.",
+  );
+  return linhas.join("\n");
 }
 
 /** Resposta IMEDIATA (modo handoff desligado): chamada pelo webhook. */

@@ -21,7 +21,7 @@ Deno.serve(async (req) => {
 
   const { data: grupos } = await supabase
     .from("alfred_groups")
-    .select("id, user_id, client_name, remote_jid, evolution_instance, last_learned_at, created_at, contrato_inicio, contract_id, fase_override, last_proactive_at")
+    .select("id, user_id, client_name, remote_jid, evolution_instance, last_learned_at, created_at, contrato_inicio, contract_id, bolao_account_id, fase_override, last_proactive_at")
     .eq("active", true);
   if (!grupos?.length) return json({ ok: true, processados: 0 });
 

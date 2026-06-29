@@ -46,8 +46,12 @@ export interface AlfredGroup {
   created_at: string;
   contrato_inicio: string | null; // data real de início; null = usa created_at
   contract_id: string | null;     // contrato/fatura vinculado (cobrança + dúvidas)
+  bolao_account_id: string | null;   // conta do Bolão Gestor vinculada (dados ao vivo)
+  bolao_account_nome: string | null; // nome da conta (cache p/ exibição)
   fase_override: Fase | null; // null = automático pela idade do grupo
 }
+/** Conta do Bolão Gestor (vinda da ponte) para o seletor de vínculo. */
+export interface BolaoAccount { id: string; nome: string; }
 /** Contrato (resumo) para vincular ao grupo no seletor de fatura. */
 export interface ContractOption {
   id: string;
@@ -329,6 +333,23 @@ export function useAlfred() {
     if (error) { await load(); throw error; }
   }, [load]);
 
+  /** Vincula (ou desvincula, com null) o grupo a uma conta do Bolão Gestor. */
+  const setBolaoAccount = useCallback(async (id: string, accountId: string | null, nome: string | null) => {
+    const idVal = accountId || null;
+    const nomeVal = idVal ? (nome || null) : null;
+    setGroups((prev) => prev.map((g) => (g.id === id ? { ...g, bolao_account_id: idVal, bolao_account_nome: nomeVal } : g)));
+    const { error } = await supabase.from("alfred_groups").update({ bolao_account_id: idVal, bolao_account_nome: nomeVal }).eq("id", id);
+    if (error) { await load(); throw error; }
+  }, [load]);
+
+  /** Lista as contas do Bolão Gestor (via proxy alfred-bolao; segredo fica no servidor). */
+  const fetchBolaoAccounts = useCallback(async (): Promise<BolaoAccount[]> => {
+    const { data, error } = await supabase.functions.invoke("alfred-bolao", { body: { action: "accounts" } });
+    if (error) throw error;
+    if (!data?.ok) throw new Error(data?.reason || data?.error || "Não consegui listar as contas do Bolão Gestor.");
+    return (data.accounts ?? []) as BolaoAccount[];
+  }, []);
+
   // ---- ativos/campanhas do cliente (estado vivo da operação) ----
   const addAsset = useCallback(async (groupId: string, titulo: string, tipo: AssetTipo, descricao?: string) => {
     const user_id = await uid();
@@ -475,7 +496,7 @@ export function useAlfred() {
   return {
     config, connection, groups, contexts, tasks, memory, members, demands, assets, proposals, contracts, configError, loading,
     saveConfig, connectWhatsapp, checkStatus, listarGruposWhatsapp,
-    addGroup, toggleGroup, removeGroup, setFase, setContratoInicio, setContractId, saveContext, saveProposal, toggleTask, clearHistory, deleteMemory,
+    addGroup, toggleGroup, removeGroup, setFase, setContratoInicio, setContractId, setBolaoAccount, fetchBolaoAccounts, saveContext, saveProposal, toggleTask, clearHistory, deleteMemory,
     addMember, removeMember, fetchSenders, addDemand, updateDemand, deleteDemand,
     addAsset, updateAsset, deleteAsset, reload: load,
   };
