@@ -20,7 +20,7 @@ const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/${GE
 const HISTORICO = 80;
 const FASE_THRESHOLD_DIAS = 30; // >= 30 dias de grupo => Manutenção (se sem override)
 const PROATIVO_DIAS = new Set([1, 2, 3, 4, 5]); // acompanhamento proativo: seg a sex (0=dom..6=sáb)
-const BOT_NOME = "Alfred"; // como o bot se apresenta no grupo
+const BOT_NOME = Deno.env.get("ALFRED_BOT_NOME") ?? "Rafaela"; // nome da persona (fallback da apresentação)
 
 // Regra de naturalidade aplicada a TODA mensagem ao cliente (resposta, proativo, repasse).
 const REGRA_NOME_NEGOCIO =
@@ -135,7 +135,7 @@ async function comporApresentacao(cfg: AlfredCfg, nomeCliente: string | null, ga
     "TAREFA: esta é a SUA PRIMEIRA mensagem neste grupo — uma APRESENTAÇÃO sua ao cliente (você ainda NÃO falou aqui). " +
     "Escreva UMA mensagem curta, calorosa e com personalidade que contenha, OBRIGATORIAMENTE, as TRÊS coisas a seguir — nenhuma pode faltar:\n" +
     "(1) um cumprimento de boas-vindas/prazer usando o primeiro nome da pessoa quando houver;\n" +
-    `(2) DIGA SEU NOME claramente: que você se chama ${BOT_NOME} e que vai ser o GERENTE deles;\n` +
+    "(2) DIGA SEU NOME claramente (use o nome da SUA persona, definido acima) e que vai ser quem cuida da gestão/atendimento deles;\n" +
     "(3) que toda a ORGANIZAÇÃO/GESTÃO de demandas fica por sua conta.\n" +
     `${alvo} ${ctx} ` +
     "PROIBIDO: frases de preenchimento como 'vi sua mensagem', 'recebi seu contato'; e PROIBIDO responder/resolver o que a pessoa perguntou (isso vem na próxima mensagem). " +
