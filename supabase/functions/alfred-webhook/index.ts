@@ -9,7 +9,7 @@
 import { createClient } from "jsr:@supabase/supabase-js@2";
 import { json } from "../_shared/cors.ts";
 import { getMediaBase64 } from "../_shared/evolution.ts";
-import { responderAgora, responderOperador, type AlfredCfg } from "../_shared/alfred.ts";
+import { responderAgora, atenderOperador, type AlfredCfg } from "../_shared/alfred.ts";
 
 const DEBOUNCE_MS = 8000; // modo imediato: junta a rajada antes de responder
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -162,7 +162,7 @@ Deno.serve(async (req) => {
       dmin: Number(sdrOp?.delay_min_seg ?? 3), dmax: Number(sdrOp?.delay_max_seg ?? 8),
     };
     const quoted = extrairCitacao(msgObj);
-    const r = await responderOperador(supabase, cfgA, { userId: cfgOp.user_id, replyText, quotedText: quoted });
+    const r = await atenderOperador(supabase, cfgA, { userId: cfgOp.user_id, replyText, quotedText: quoted });
     return json({ ok: true, operador: true, resultado: r });
   }
 

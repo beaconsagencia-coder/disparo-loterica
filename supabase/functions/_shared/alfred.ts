@@ -941,6 +941,156 @@ async function comporRelay(cfg: AlfredCfg, resumo: string, pedido: string, retor
   } catch (e) { console.error("[alfred] comporRelay erro:", e instanceof Error ? e.message : e); return { enviar: false, mensagem: "", audio: false }; }
 }
 
+// ---- Operador no privado: repassar ao cliente OU memorizar contexto ----
+/** Decide o que fazer com a mensagem do operador: repassar ao grupo ou só guardar (memória). */
+async function classificarOperador(
+  cfg: AlfredCfg, texto: string, quoted: string,
+  escalacoes: { resumo: string }[], grupos: { id: string; client_name: string }[],
+): Promise<{ acao: "repassar" | "memorizar" | "perguntar"; group_id: string | null }> {
+  if (!GEMINI_API_KEY || grupos.length === 0) return { acao: "repassar", group_id: null };
+  const escsTxt = escalacoes.length ? escalacoes.map((e) => `- ${e.resumo}`).join("\n") : "(nenhuma escalação aberta)";
+  const gruposTxt = grupos.map((g) => `- id=${g.id} | cliente=${g.client_name}`).join("\n");
+  const sys =
+    "Você roteia uma mensagem que o OPERADOR humano (da agência) mandou NO PRIVADO para o assistente — NÃO é o cliente falando. Decida a AÇÃO:\n" +
+    "- 'repassar': o operador está respondendo a uma tarefa/escalação pendente OU pedindo explicitamente para comunicar algo ao cliente no grupo " +
+    "(ex.: 'fala pro cliente que tá resolvido', 'responde que já subimos').\n" +
+    "- 'memorizar': o operador está te ALIMENTANDO com CONTEXTO EXTERNO para GUARDAR e atualizar o andamento — resumo de uma LIGAÇÃO/REUNIÃO, negociação fechada, " +
+    "combinado feito no privado, status interno, 'anota que...', 'pro seu controle'. NESSE caso NÃO se envia NADA ao cliente.\n" +
+    "- 'perguntar': claramente é para memorizar, mas você NÃO consegue identificar de qual CLIENTE se trata.\n" +
+    "Regra de bom senso: resumo de ligação/reunião e negociação fechada são SEMPRE 'memorizar'. Se não há escalação aberta e a mensagem traz informação/contexto, tende a 'memorizar'. " +
+    "Para 'memorizar' ou 'repassar', informe o group_id do cliente correspondente (case pelo nome citado; se houver só 1 grupo, ou a escalação aberta apontar claramente, use esse). Se não der, group_id vazio.\n\n" +
+    "ESCALAÇÕES ABERTAS (tarefas que o operador pode estar respondendo):\n" + escsTxt + "\n\nGRUPOS/CLIENTES (id | cliente):\n" + gruposTxt;
+  const body = {
+    system_instruction: { parts: [{ text: sys }] },
+    contents: [{ role: "user", parts: [{ text: `Mensagem do operador${quoted ? ` (citando: "${quoted}")` : ""}:\n${texto}` }] }],
+    generationConfig: {
+      temperature: 0, maxOutputTokens: 200, thinkingConfig: { thinkingBudget: 0 },
+      responseMimeType: "application/json",
+      responseSchema: { type: "OBJECT", properties: { acao: { type: "STRING" }, group_id: { type: "STRING" } }, required: ["acao"] },
+    },
+  };
+  try {
+    const res = await fetch(`${GEMINI_URL}?key=${encodeURIComponent(GEMINI_API_KEY)}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    if (!res.ok) { console.error("[alfred] classificarOperador", res.status); return { acao: "repassar", group_id: null }; }
+    const data = await res.json();
+    // deno-lint-ignore no-explicit-any
+    const txt = (data?.candidates?.[0]?.content?.parts as any[] | undefined)?.map((p) => p?.text ?? "").join("") ?? "";
+    const parsed = JSON.parse(txt);
+    const acao = ["repassar", "memorizar", "perguntar"].includes(parsed?.acao) ? parsed.acao : "repassar";
+    const gid = String(parsed?.group_id ?? "").trim();
+    const valido = grupos.some((g) => g.id === gid) ? gid : (grupos.length === 1 ? grupos[0].id : null);
+    return { acao, group_id: valido };
+  } catch (e) { console.error("[alfred] classificarOperador erro:", e instanceof Error ? e.message : e); return { acao: "repassar", group_id: null }; }
+}
+
+/** Extrai do contexto externo do operador: fatos (chave/valor/categoria), remoções e resumo evoluído. */
+async function consolidarContextoExterno(
+  cfg: AlfredCfg, contexto: string, memoriaAtual: { chave: string; valor: string }[], resumoAtual: string,
+): Promise<{ memorias: { chave: string; valor: string; categoria?: string }[]; remover: string[]; resumo: string } | null> {
+  if (!GEMINI_API_KEY) return null;
+  const memTxt = memoriaAtual.length ? memoriaAtual.map((m) => `- ${m.chave}: ${m.valor}`).join("\n") : "(vazio)";
+  const sys =
+    "O OPERADOR da agência te passou no privado um CONTEXTO EXTERNO sobre um cliente (resumo de ligação/reunião, negociação fechada, status interno). " +
+    "Atualize a MEMÓRIA do cliente com base nisso. Extraia: (1) FATOS duráveis (chave snake_case + valor + categoria ∈ {acesso, contato, decisao, financeiro, preferencia, pessoa, perfil, outro}); " +
+    "atualize valores existentes (mesma chave). (2) 'remover': chaves da memória atual que ficaram OBSOLETAS/contraditadas. " +
+    "(3) 'resumo' consolidado e SECCIONADO ('Perfil:', 'Pessoas:', 'Preferências:', 'Decisões:', 'Pendências históricas:', 'Sensível:'), evoluindo o anterior SEM perder o que ainda vale, " +
+    "incorporando o que o operador trouxe (ex.: combinados da ligação, prazos prometidos pelo cliente, negociação fechada). Seja fiel ao que foi dito; não invente.\n\n" +
+    `MEMÓRIA ATUAL:\n${memTxt}\n\nRESUMO ATUAL:\n${resumoAtual || "(vazio)"}`;
+  const body = {
+    system_instruction: { parts: [{ text: sys }] },
+    contents: [{ role: "user", parts: [{ text: `Contexto passado pelo operador:\n${contexto}` }] }],
+    generationConfig: {
+      temperature: 0, maxOutputTokens: 1500, thinkingConfig: { thinkingBudget: -1 },
+      responseMimeType: "application/json",
+      responseSchema: {
+        type: "OBJECT",
+        properties: {
+          memorias: { type: "ARRAY", items: { type: "OBJECT", properties: { chave: { type: "STRING" }, valor: { type: "STRING" }, categoria: { type: "STRING" } }, required: ["chave", "valor"] } },
+          remover: { type: "ARRAY", items: { type: "STRING" } },
+          resumo: { type: "STRING" },
+        },
+      },
+    },
+  };
+  try {
+    const res = await fetch(`${GEMINI_URL}?key=${encodeURIComponent(GEMINI_API_KEY)}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    if (!res.ok) { console.error("[alfred] consolidarContextoExterno", res.status); return null; }
+    const data = await res.json();
+    // deno-lint-ignore no-explicit-any
+    const txt = (data?.candidates?.[0]?.content?.parts as any[] | undefined)?.map((p) => p?.text ?? "").join("") ?? "";
+    const parsed = JSON.parse(txt);
+    return {
+      memorias: Array.isArray(parsed?.memorias) ? parsed.memorias : [],
+      remover: Array.isArray(parsed?.remover) ? parsed.remover : [],
+      resumo: typeof parsed?.resumo === "string" ? parsed.resumo : "",
+    };
+  } catch (e) { console.error("[alfred] consolidarContextoExterno erro:", e instanceof Error ? e.message : e); return null; }
+}
+
+/** Guarda o contexto do operador na memória do cliente — SEM enviar nada no grupo. */
+async function memorizarContextoOperador(
+  supabase: SupabaseClient, cfg: AlfredCfg, grupo: { id: string; user_id: string; client_name: string }, contexto: string,
+): Promise<string> {
+  const [{ data: mem }, { data: ctx }] = await Promise.all([
+    supabase.from("alfred_memory").select("chave, valor").eq("group_id", grupo.id),
+    supabase.from("alfred_context").select("resumo").eq("group_id", grupo.id).maybeSingle(),
+  ]);
+  const cons = await consolidarContextoExterno(cfg, contexto, (mem as { chave: string; valor: string }[]) ?? [], ctx?.resumo ?? "");
+  const agora = new Date().toISOString();
+  if (cons) {
+    for (const m of cons.memorias) {
+      if (!m?.chave || !m?.valor) continue;
+      await supabase.from("alfred_memory").upsert({ user_id: grupo.user_id, group_id: grupo.id, chave: String(m.chave).slice(0, 80), valor: String(m.valor).slice(0, 2000), categoria: m.categoria ? String(m.categoria).slice(0, 40) : null, updated_at: agora }, { onConflict: "group_id,chave" });
+    }
+    for (const chave of cons.remover) {
+      const k = String(chave ?? "").trim().slice(0, 80);
+      if (k) await supabase.from("alfred_memory").delete().eq("group_id", grupo.id).eq("chave", k);
+    }
+    if (cons.resumo?.trim()) await supabase.from("alfred_context").upsert({ user_id: grupo.user_id, group_id: grupo.id, resumo: cons.resumo.trim() }, { onConflict: "group_id" });
+  }
+  // Indexa o contexto bruto para recuperação semântica futura (ex.: "o que foi combinado na ligação?").
+  try {
+    const emb = await gerarEmbedding(contexto);
+    if (emb) await supabase.from("alfred_memory_vectors").insert({ user_id: grupo.user_id, group_id: grupo.id, kind: "operador", content: contexto.slice(0, 4000), embedding: JSON.stringify(emb) });
+  } catch (e) { console.error("[alfred] indexar contexto operador:", e instanceof Error ? e.message : e); }
+  return "memorizado";
+}
+
+/** Ponto de entrada da DM do operador: classifica e roteia (repasse x memória). */
+export async function atenderOperador(
+  supabase: SupabaseClient, cfg: AlfredCfg,
+  args: { userId: string; replyText: string; quotedText: string },
+): Promise<string> {
+  const [{ data: escs }, { data: grupos }] = await Promise.all([
+    supabase.from("alfred_escalations").select("resumo").eq("user_id", args.userId).eq("status", "aberta").order("created_at", { ascending: false }),
+    supabase.from("alfred_groups").select("id, user_id, client_name").eq("user_id", args.userId).eq("active", true),
+  ]);
+  const grupoList = (grupos as { id: string; user_id: string; client_name: string }[]) ?? [];
+  const decisao = await classificarOperador(cfg, args.replyText, args.quotedText, (escs as { resumo: string }[]) ?? [], grupoList);
+  const instance = cfg.evolution_instance || "";
+
+  if (decisao.acao === "perguntar") {
+    if (cfg.operator_number && instance) {
+      try { await enviarGrupo(instance, cfg.operator_number, "Recebi o contexto, mas não consegui identificar de qual cliente é. Me diz o nome do cliente que eu já registro aqui (sem mandar nada no grupo).", 0); } catch { /* ok */ }
+    }
+    return "operador: contexto sem cliente identificado";
+  }
+
+  if (decisao.acao === "memorizar" && decisao.group_id) {
+    const grupo = grupoList.find((g) => g.id === decisao.group_id);
+    if (grupo) {
+      const r = await memorizarContextoOperador(supabase, cfg, grupo, args.replyText);
+      if (cfg.operator_number && instance) {
+        try { await enviarGrupo(instance, cfg.operator_number, `Anotado! Atualizei o andamento do ${grupo.client_name} aqui na memória. Não enviei nada no grupo.`, 0); } catch { /* ok */ }
+      }
+      return `operador: ${r}`;
+    }
+  }
+
+  // Default: repasse ao cliente (fluxo de escalação existente).
+  return await responderOperador(supabase, cfg, args);
+}
+
 /** Operador respondeu (DM): casa com a escalação aberta e repassa ao cliente. */
 export async function responderOperador(
   supabase: SupabaseClient, cfg: AlfredCfg,
