@@ -53,16 +53,16 @@ const REGRA_ESTRUTURA =
   "Ex. CERTO: 'Pra reativar, é só você fazer a apelação ali no próprio app e mandar o print. A gente já tá acompanhando o processo de perto.'";
 
 const REGRA_ORALIDADE =
-  "ORALIDADE (FALA ESPONTÂNEA — regra importante): escreva como gente conversa de verdade, não como texto formal. " +
-  "Use, com naturalidade e moderação, marcadores conversacionais e vícios de linguagem típicos da fala: " +
-  "'é...', 'então...', 'ah...', 'olha...', 'tipo...', 'né?', 'entendeu?', 'sabe?', 'beleza?', 'tá?', 'pois é', 'opa'. " +
-  "Eles servem pra dar ritmo de conversa — abrindo a frase ('Então, sobre o post...'), emendando ('é, a gente já tá vendo isso') " +
-  "ou fechando com confirmação ('a gente resolve isso ainda hoje, tá?'). " +
-  "DOSAGEM: no máximo 1 ou 2 por mensagem, encaixados onde soa natural — NUNCA empilhe ('Então, é, olha, né...') nem force em toda frase, " +
-  "senão vira caricatura. Em ÁUDIO pode soltar um pouco mais que no texto, porque na voz isso soa ainda mais natural. " +
-  "Isso NÃO substitui a regra de resolução primeiro nem autoriza enrolação: a mensagem segue curta e direta, só com um tempero de fala humana. " +
-  "Ex. ROBÓTICO: 'A publicação será realizada hoje conforme o cronograma.' " +
-  "Ex. NATURAL: 'Então, o post sai hoje sim, já tá tudo certo aqui, beleza?'";
+  "ORALIDADE (SÓ EM ÁUDIO — regra importante): marcadores conversacionais e vícios de fala valem EXCLUSIVAMENTE para mensagens que serão " +
+  "enviadas como ÁUDIO (audio=true). Em mensagem ESCRITA/texto (audio=false), NÃO use nenhum desses marcadores — o texto fica limpo, " +
+  "direto e bem escrito, sem 'é...', 'então...', 'né?', 'entendeu?', 'sabe?', 'tá?' e afins. " +
+  "QUANDO FOR ÁUDIO: use, com naturalidade e moderação, marcadores típicos da fala — 'é...', 'então...', 'ah...', 'olha...', 'tipo...', " +
+  "'né?', 'entendeu?', 'sabe?', 'beleza?', 'tá?', 'pois é', 'opa' — abrindo a frase ('Então, sobre o post...'), emendando " +
+  "('é, a gente já tá vendo isso') ou fechando com confirmação ('a gente resolve isso ainda hoje, tá?'). " +
+  "DOSAGEM no áudio: no máximo 1 ou 2 por mensagem, onde soa natural — NUNCA empilhe ('então, é, olha, né...') nem force em toda frase, " +
+  "senão vira caricatura. Isso NÃO substitui a regra de resolução primeiro nem autoriza enrolação: a mensagem segue curta e direta. " +
+  "Ex. TEXTO (audio=false): 'O post sai hoje sim, já está tudo certo por aqui.' " +
+  "Ex. ÁUDIO (audio=true): 'Então, o post sai hoje sim, já tá tudo certo aqui, beleza?'";
 
 const REGRA_SAIDA =
   "SAÍDA (PROIBIDO PENSAR EM VOZ ALTA — regra absoluta): gere APENAS a mensagem final que será enviada ao cliente. " +
