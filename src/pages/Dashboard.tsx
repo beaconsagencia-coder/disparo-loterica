@@ -243,10 +243,10 @@ function DemandCard({ d, onMover }: { d: DemandaView; onMover: (id: string, s: D
 // =====================================================================
 // Dashboard (dark, mobile-first)
 // =====================================================================
-interface Stats { leads: number; pendentes: number; disparos: number; reunioesHoje: number }
+interface Stats { leads: number; pendentes: number; disparos: number; reunioesMes: number }
 
 export default function Dashboard() {
-  const [stats, setStats] = useState<Stats>({ leads: 0, pendentes: 0, disparos: 0, reunioesHoje: 0 });
+  const [stats, setStats] = useState<Stats>({ leads: 0, pendentes: 0, disparos: 0, reunioesMes: 0 });
   const [instances, setInstances] = useState<WhatsappInstance[]>([]);
   const [disparosAtivos, setDisparosAtivos] = useState(true);
   const [demandas, setDemandas] = useState<DemandaView[]>([]);
@@ -266,15 +266,16 @@ export default function Dashboard() {
   const refreshStats = useCallback(async () => {
     const count = (q: any) => q.then((r: any) => r.count ?? 0);
     const hojeInicio = new Date(); hojeInicio.setHours(0, 0, 0, 0);
-    const hojeFim = new Date(hojeInicio); hojeFim.setDate(hojeFim.getDate() + 1);
-    const [leads, pendentes, disparos, reunioesHoje, inst] = await Promise.all([
+    const mesInicio = new Date(hojeInicio.getFullYear(), hojeInicio.getMonth(), 1);
+    const mesFim = new Date(hojeInicio.getFullYear(), hojeInicio.getMonth() + 1, 1);
+    const [leads, pendentes, disparos, reunioesMes, inst] = await Promise.all([
       count(supabase.from("leads").select("id", { count: "exact", head: true })),
       count(supabase.from("message_queue").select("id", { count: "exact", head: true }).eq("status", "pendente")),
       count(supabase.from("message_queue").select("id", { count: "exact", head: true }).eq("status", "enviado").gte("sent_at", hojeInicio.toISOString())),
-      count(supabase.from("meetings").select("id", { count: "exact", head: true }).neq("status", "cancelada").gte("scheduled_for", hojeInicio.toISOString()).lt("scheduled_for", hojeFim.toISOString())),
+      count(supabase.from("meetings").select("id", { count: "exact", head: true }).neq("status", "cancelada").gte("scheduled_for", mesInicio.toISOString()).lt("scheduled_for", mesFim.toISOString())),
       supabase.from("whatsapp_instances").select("*").order("nome"),
     ]);
-    setStats({ leads, pendentes, disparos, reunioesHoje });
+    setStats({ leads, pendentes, disparos, reunioesMes });
     setInstances((inst as any).data ?? []);
   }, []);
 
@@ -338,7 +339,7 @@ export default function Dashboard() {
     { label: "Disparos", value: stats.disparos.toLocaleString("pt-BR"), icon: Send, hint: "hoje" },
     { label: "Leads", value: stats.leads.toLocaleString("pt-BR"), icon: Users, hint: "base total" },
     { label: "Na fila", value: stats.pendentes.toLocaleString("pt-BR"), icon: Clock, hint: "aguardando" },
-    { label: "Reuniões", value: String(stats.reunioesHoje), icon: CalendarDays, hint: "hoje" },
+    { label: "Reuniões", value: String(stats.reunioesMes), icon: CalendarDays, hint: "este mês" },
   ];
 
   return (
