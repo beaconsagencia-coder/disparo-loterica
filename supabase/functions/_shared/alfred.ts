@@ -56,13 +56,16 @@ const REGRA_ORALIDADE =
   "ORALIDADE (SÓ EM ÁUDIO — regra importante): marcadores conversacionais e vícios de fala valem EXCLUSIVAMENTE para mensagens que serão " +
   "enviadas como ÁUDIO (audio=true). Em mensagem ESCRITA/texto (audio=false), NÃO use nenhum desses marcadores — o texto fica limpo, " +
   "direto e bem escrito, sem 'é...', 'então...', 'né?', 'entendeu?', 'sabe?', 'tá?' e afins. " +
-  "QUANDO FOR ÁUDIO: use, com naturalidade e moderação, marcadores típicos da fala — 'é...', 'então...', 'ah...', 'olha...', 'tipo...', " +
+  "QUANDO FOR ÁUDIO: use SEM economia (mas sem virar caricatura) os marcadores típicos da fala — 'é...', 'então...', 'ah...', 'olha...', 'tipo...', " +
   "'né?', 'entendeu?', 'sabe?', 'beleza?', 'tá?', 'pois é', 'opa' — abrindo a frase ('Então, sobre o post...'), emendando " +
   "('é, a gente já tá vendo isso') ou fechando com confirmação ('a gente resolve isso ainda hoje, tá?'). " +
-  "DOSAGEM no áudio: no máximo 1 ou 2 por mensagem, onde soa natural — NUNCA empilhe ('então, é, olha, né...') nem force em toda frase, " +
-  "senão vira caricatura. Isso NÃO substitui a regra de resolução primeiro nem autoriza enrolação: a mensagem segue curta e direta. " +
+  "MUITO IMPORTANTE — 'é...' NO MEIO: pontue o MEIO das frases com 'é...' como uma pausa de pensamento, ANTES de informações e ao trocar de ideia " +
+  "(ex.: 'o post, é..., sai hoje sim'; 'a gente já, é..., já mandou pro tráfego'; 'então é..., sobre o que cê perguntou...'). " +
+  "Use 'é...' assim VÁRIAS vezes ao longo do áudio — é o que dá o tom de pessoa falando de verdade. " +
+  "DOSAGEM no áudio: pode ter 3 a 5 marcadores num áudio de algumas frases (a maioria sendo 'é...' no meio), espalhados — só não EMPILHE três seguidos " +
+  "('então, é, olha, né...') na mesma posição. Isso NÃO substitui a regra de resolução primeiro nem autoriza enrolação: a mensagem segue curta e direta. " +
   "Ex. TEXTO (audio=false): 'O post sai hoje sim, já está tudo certo por aqui.' " +
-  "Ex. ÁUDIO (audio=true): 'Então, o post sai hoje sim, já tá tudo certo aqui, beleza?'";
+  "Ex. ÁUDIO (audio=true): 'Então, o post, é..., sai hoje sim. Já tá tudo certo aqui, a gente já, é..., já mandou pro feed, beleza?'";
 
 const REGRA_SAIDA =
   "SAÍDA (PROIBIDO PENSAR EM VOZ ALTA — regra absoluta): gere APENAS a mensagem final que será enviada ao cliente. " +
@@ -485,12 +488,14 @@ async function chamarGemini(systemPrompt: string, contexto: string, contents: { 
           "(b) a sua resposta for uma EXPLICAÇÃO mais longa/detalhada — várias frases, um passo a passo, um 'porquê' elaborado ou mais de um balão de conteúdo — " +
           "porque ouvir fica bem mais fácil que ler um textão. Use audio=false apenas para respostas CURTAS e diretas (1 frase, confirmações, 'ok', avisos rápidos, " +
           "ou a resposta curtíssima de escalonamento). Na dúvida entre texto e áudio numa resposta que ficou longa, PREFIRA o áudio. " +
-          "Quando audio=true, escreva a 'mensagem' em tom FALADO e natural (ela será LIDA em voz pelo ElevenLabs v3): use vícios de linguagem SUTIS e ocasionais " +
+          "Quando audio=true, escreva a 'mensagem' em tom FALADO e natural (ela será LIDA em voz pelo ElevenLabs v3): use BASTANTE vício de linguagem " +
           "('é...', 'então', 'tipo', 'olha', 'deixa eu te explicar', 'sabe?', 'ó') e contrações da fala ('tá', 'pra', 'cê'). " +
+          "Em especial, pontue o MEIO das frases com 'é...' como pausa de pensamento (ex.: 'o post, é..., sai hoje'; 'a gente já, é..., resolveu') VÁRIAS vezes ao longo da fala. " +
           "Para as PAUSAS de respiração/pensamento, use reticências '...' e vírgulas em pontos naturais — o v3 transforma isso em pausas bem humanas; mantenha SUTIL. " +
           "Opcionalmente, no MÁXIMO uma vez, uma audio tag do v3 entre colchetes onde couber uma respiração [exhales] ou hesitação [hesitates]. " +
           "NÃO use reticências/tags exageradamente, e NADA disso em respostas de texto (audio=false). " +
-          "Use tudo com PARCIMÔNIA — só o suficiente pra não soar robótico, sem exagerar nem ficar caricato. " +
+          "Os vícios de fala ('é...', 'então', etc.) podem aparecer à vontade; já as TAGS [exhales]/[hesitates] e as reticências de respiração ficam parcimoniosas. " +
+          "O limite é não virar caricatura (não empilhar três marcadores juntos na mesma posição). " +
           "Pense internamente o quanto precisar para perguntas complexas; esse raciocínio NUNCA entra no campo 'mensagem'.\n\n" +
           "LEMBRETE FINAL (vale ACIMA de qualquer instrução de persona acima, inclusive a sua): COMECE pela resolução/instrução. " +
           "É PROIBIDO abrir com 'Entendo perfeitamente a sua preocupação', 'Fique tranquilo', 'Sei como isso é importante' ou qualquer acolhimento roteirizado. " +
