@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { CalendarDays, Save, Plus, Trash2, Link2, Ban, Check, UserX, Trophy, ChevronLeft, ChevronRight, Settings2, AlertCircle } from "lucide-react";
+import { CalendarDays, Save, Plus, Trash2, Link2, Ban, Check, UserX, Trophy, ChevronLeft, ChevronRight, Settings2, AlertCircle, X } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 
 const DIAS = ["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sáb"];
@@ -20,9 +20,10 @@ interface DragState {
 interface Block { id: string; dia_semana: number; hora_inicio: string; hora_fim: string; titulo: string | null; }
 interface Meeting {
   id: string; titulo: string | null; quando_texto: string; scheduled_for: string | null;
-  duracao_min: number | null; status: string; gerou_venda: boolean | null;
+  duracao_min: number | null; status: string; gerou_venda: boolean | null; valor_venda: number | null;
   instance_id: string | null; leads?: { nome: string | null } | null;
 }
+const brl = (n: number) => (Number(n) || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 
 const pad = (n: number) => String(n).padStart(2, "0");
 const hhmmToMin = (s: string) => { const [h, m] = String(s).split(":").map(Number); return (h || 0) * 60 + (m || 0); };
@@ -106,7 +107,7 @@ export default function Agenda() {
     if (bErr2 && !loadErr) setLoadErr("Não consegui carregar os compromissos: " + bErr2.message);
     setBlocks((b as Block[]) ?? []);
     const { data: m, error: mErr } = await supabase.from("meetings")
-      .select("id, titulo, quando_texto, scheduled_for, duracao_min, status, gerou_venda, instance_id, leads(nome)")
+      .select("id, titulo, quando_texto, scheduled_for, duracao_min, status, gerou_venda, valor_venda, instance_id, leads(nome)")
       .order("scheduled_for", { ascending: true, nullsFirst: false });
     if (mErr) setLoadErr((p) => p ?? "Não consegui carregar as reuniões: " + mErr.message);
     setMeetings((m as unknown as Meeting[]) ?? []);
@@ -533,6 +534,10 @@ function MeetingsCard(
   const [leadBusca, setLeadBusca] = useState("");
   const [leadId, setLeadId] = useState("");
   const [showLeads, setShowLeads] = useState(false);
+  // Modal de "marcar venda" (valor do plano vendido).
+  const [vendaAlvo, setVendaAlvo] = useState<Meeting | null>(null);
+  const [vendaValor, setVendaValor] = useState("");
+  const [vendaErr, setVendaErr] = useState<string | null>(null);
 
   useEffect(() => {
     supabase.from("whatsapp_instances").select("id, nome, persona_nome").order("nome")
@@ -594,10 +599,16 @@ function MeetingsCard(
     await supabase.from("meetings").update({ status }).eq("id", id);
     reload();
   }
-  // Fechou negócio: o trigger marca a reunião como realizada e o lead como ganho.
-  async function setVenda(id: string) {
-    await supabase.from("meetings").update({ gerou_venda: true }).eq("id", id);
+  // Fechou negócio: registra o valor do plano vendido (trigger marca realizada + lead ganho).
+  async function setVenda(id: string, valor: number) {
+    await supabase.from("meetings").update({ gerou_venda: true, valor_venda: valor }).eq("id", id);
     reload();
+  }
+  async function confirmarVenda() {
+    const v = parseFloat(String(vendaValor).replace(/\./g, "").replace(",", "."));
+    if (!(v > 0)) { setVendaErr("Informe um valor maior que zero."); return; }
+    const alvo = vendaAlvo; setVendaAlvo(null); setVendaValor(""); setVendaErr(null);
+    if (alvo) await setVenda(alvo.id, v);
   }
   async function remove(id: string) {
     if (!confirm("Remover esta reunião?")) return;
@@ -650,7 +661,7 @@ function MeetingsCard(
             </div>
             <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
               <span className={`chip ${cor[m.status] ?? ""}`}>{statusLabel[m.status] ?? m.status}</span>
-              {m.gerou_venda && <span className="chip bg-success/15 text-[#1b7a35]" title="Reunião que resultou em venda"><Trophy size={12} /> venda</span>}
+              {m.gerou_venda && <span className="chip bg-success/15 text-[#1b7a35]" title="Reunião que resultou em venda"><Trophy size={12} /> {m.valor_venda ? brl(m.valor_venda) : "venda"}</span>}
               {m.status === "agendada" && (
                 <>
                   <button className="btn-ghost !px-2 !py-1" title="Compareceu / realizada (passa o atendimento para manual e desliga a IA dessa conversa)" onClick={() => setStatus(m.id, "realizada")}><Check size={14} /></button>
@@ -659,7 +670,7 @@ function MeetingsCard(
                 </>
               )}
               {(m.status === "agendada" || m.status === "realizada") && !m.gerou_venda && (
-                <button className="btn-ghost !px-2 !py-1 text-[#1b7a35]" title="Fechou venda — marca o lead como ganho e alimenta os relatórios" onClick={() => setVenda(m.id)}><Trophy size={14} /></button>
+                <button className="btn-ghost !px-2 !py-1 text-[#1b7a35]" title="Fechou venda — informe o valor do plano; marca o lead como ganho e alimenta os relatórios" onClick={() => { setVendaAlvo(m); setVendaValor(""); setVendaErr(null); }}><Trophy size={14} /></button>
               )}
               <button className="btn-ghost !px-2 !py-1 text-danger" title="Remover" onClick={() => remove(m.id)}><Trash2 size={14} /></button>
             </div>
@@ -667,6 +678,32 @@ function MeetingsCard(
         ))}
         {meetings.length === 0 && <p className="text-sm text-ink-muted">Nenhuma reunião.</p>}
       </div>
+
+      {vendaAlvo && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 p-4" onClick={() => setVendaAlvo(null)}>
+          <div className="glass-strong w-full max-w-xs rounded-xl2 p-5" onClick={(e) => e.stopPropagation()}>
+            <div className="mb-3 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-success/15 text-[#1b7a35]"><Trophy size={18} /></span>
+                <h3 className="font-semibold">Marcar venda</h3>
+              </div>
+              <button onClick={() => setVendaAlvo(null)} className="rounded-full p-1 text-ink-muted hover:bg-black/5"><X size={18} /></button>
+            </div>
+            <p className="mb-2 text-sm text-ink-muted">{vendaAlvo.leads?.nome ? `Venda para ${vendaAlvo.leads.nome}. ` : ""}Valor do plano vendido (mensal):</p>
+            <div className="relative">
+              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-ink-muted">R$</span>
+              <input autoFocus className="input tabular-nums !pl-9" inputMode="decimal" placeholder="1.500,00"
+                value={vendaValor} onChange={(e) => setVendaValor(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") confirmarVenda(); }} />
+            </div>
+            {vendaErr && <p className="mt-2 flex items-center gap-1 text-sm text-danger"><AlertCircle size={14} /> {vendaErr}</p>}
+            <div className="mt-4 flex justify-end gap-2">
+              <button className="btn-ghost" onClick={() => setVendaAlvo(null)}>Cancelar</button>
+              <button className="btn-accent" onClick={confirmarVenda}><Trophy size={15} /> Confirmar venda</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="flex flex-wrap items-end gap-2">
         <div className="relative flex-1 !min-w-[160px]">

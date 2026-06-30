@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  Send, Users, Clock, Rocket, MessageCircle, ChevronRight, X,
+  Send, Clock, Rocket, MessageCircle, ChevronRight, X, Eye, EyeOff,
   Paperclip, Mic, Square, FileText, ArrowRight, RotateCcw, AlertTriangle,
   Calendar, Check, Loader2, CalendarDays, Image as ImageIcon, FileCheck,
 } from "lucide-react";
@@ -20,6 +20,7 @@ function diasAteHoje(iso: string) {
 }
 const horaDe = (iso: string | null, fallback?: string | null) =>
   iso ? new Date(iso).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }) : (fallback ?? "—");
+const brl = (n: number) => (Number(n) || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 
 type MediaKind = "image" | "audio" | "video" | "document";
 function kindFromMime(mime: string): MediaKind {
@@ -243,12 +244,13 @@ function DemandCard({ d, onMover }: { d: DemandaView; onMover: (id: string, s: D
 // =====================================================================
 // Dashboard (dark, mobile-first)
 // =====================================================================
-interface Stats { leads: number; pendentes: number; disparos: number; reunioesMes: number }
+interface Stats { vendasMes: number; pendentes: number; disparos: number; reunioesMes: number }
 
 export default function Dashboard() {
-  const [stats, setStats] = useState<Stats>({ leads: 0, pendentes: 0, disparos: 0, reunioesMes: 0 });
+  const [stats, setStats] = useState<Stats>({ vendasMes: 0, pendentes: 0, disparos: 0, reunioesMes: 0 });
   const [instances, setInstances] = useState<WhatsappInstance[]>([]);
   const [disparosAtivos, setDisparosAtivos] = useState(true);
+  const [revealVendas, setRevealVendas] = useState(false);
   const [demandas, setDemandas] = useState<DemandaView[]>([]);
   const [agenda, setAgenda] = useState<AgendaItem[]>([]);
   const [propostas, setPropostas] = useState<PropostaItem[]>([]);
@@ -268,14 +270,16 @@ export default function Dashboard() {
     const hojeInicio = new Date(); hojeInicio.setHours(0, 0, 0, 0);
     const mesInicio = new Date(hojeInicio.getFullYear(), hojeInicio.getMonth(), 1);
     const mesFim = new Date(hojeInicio.getFullYear(), hojeInicio.getMonth() + 1, 1);
-    const [leads, pendentes, disparos, reunioesMes, inst] = await Promise.all([
-      count(supabase.from("leads").select("id", { count: "exact", head: true })),
+    const [pendentes, disparos, reunioesMes, vendasRes, inst] = await Promise.all([
       count(supabase.from("message_queue").select("id", { count: "exact", head: true }).eq("status", "pendente")),
       count(supabase.from("message_queue").select("id", { count: "exact", head: true }).eq("status", "enviado").gte("sent_at", hojeInicio.toISOString())),
       count(supabase.from("meetings").select("id", { count: "exact", head: true }).neq("status", "cancelada").gte("scheduled_for", mesInicio.toISOString()).lt("scheduled_for", mesFim.toISOString())),
+      // Vendas do mês: soma dos valores marcados nas reuniões que fecharam negócio.
+      supabase.from("meetings").select("valor_venda").eq("gerou_venda", true).gte("scheduled_for", mesInicio.toISOString()).lt("scheduled_for", mesFim.toISOString()),
       supabase.from("whatsapp_instances").select("*").order("nome"),
     ]);
-    setStats({ leads, pendentes, disparos, reunioesMes });
+    const vendasMes = (((vendasRes as any).data ?? []) as { valor_venda: number | null }[]).reduce((s, r) => s + (Number(r.valor_venda) || 0), 0);
+    setStats({ vendasMes, pendentes, disparos, reunioesMes });
     setInstances((inst as any).data ?? []);
   }, []);
 
@@ -335,9 +339,8 @@ export default function Dashboard() {
   }
 
   const conectados = instances.filter((i) => i.status === "conectado").length;
-  const kpis = [
+  const simples = [
     { label: "Disparos", value: stats.disparos.toLocaleString("pt-BR"), icon: Send, hint: "hoje" },
-    { label: "Leads", value: stats.leads.toLocaleString("pt-BR"), icon: Users, hint: "base total" },
     { label: "Na fila", value: stats.pendentes.toLocaleString("pt-BR"), icon: Clock, hint: "aguardando" },
     { label: "Reuniões", value: String(stats.reunioesMes), icon: CalendarDays, hint: "este mês" },
   ];
@@ -363,12 +366,28 @@ export default function Dashboard() {
         </header>
 
         <div className="mb-5 grid grid-cols-2 gap-3">
-          {kpis.map((k) => (
+          {/* Disparos */}
+          <div className="rounded-2xl border border-white/10 bg-white/[0.045] p-3.5">
+            <div className="flex items-center justify-between"><span className="text-xs text-white/45">{simples[0].label}</span><Send size={15} className="text-white/45" /></div>
+            <div className="mt-2 text-2xl font-semibold tracking-tight">{simples[0].value}</div>
+            <div className="text-xs text-white/40">{simples[0].hint}</div>
+          </div>
+          {/* Vendas do mês (oculto por padrão, com revelar) */}
+          <div className="rounded-2xl border border-white/10 bg-white/[0.045] p-3.5">
+            <div className="flex items-center justify-between">
+              <span className="text-xs text-white/45">Vendas</span>
+              <button onClick={() => setRevealVendas((v) => !v)} className="text-white/45 transition-colors hover:text-white/80"
+                aria-label={revealVendas ? "Ocultar valor" : "Revelar valor"} title={revealVendas ? "Ocultar valor" : "Revelar valor"}>
+                {revealVendas ? <Eye size={15} /> : <EyeOff size={15} />}
+              </button>
+            </div>
+            <div className={`mt-2 text-2xl font-semibold tracking-tight transition-all ${revealVendas ? "" : "select-none blur-[7px]"}`}>{brl(stats.vendasMes)}</div>
+            <div className="text-xs text-white/40">este mês</div>
+          </div>
+          {/* Na fila + Reuniões */}
+          {simples.slice(1).map((k) => (
             <div key={k.label} className="rounded-2xl border border-white/10 bg-white/[0.045] p-3.5">
-              <div className="flex items-center justify-between">
-                <span className="text-xs text-white/45">{k.label}</span>
-                <k.icon size={15} className="text-white/45" />
-              </div>
+              <div className="flex items-center justify-between"><span className="text-xs text-white/45">{k.label}</span><k.icon size={15} className="text-white/45" /></div>
               <div className="mt-2 text-2xl font-semibold tracking-tight">{k.value}</div>
               <div className="text-xs text-white/40">{k.hint}</div>
             </div>
