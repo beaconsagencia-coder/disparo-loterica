@@ -795,13 +795,21 @@ async function gerarResposta(supabase: SupabaseClient, grupo: Grupo, cfg: Alfred
   const partes = fracionarResposta(r.mensagem);
   if (partes.length === 0) return "sem resposta (não necessária)"; // o modelo decidiu não responder
 
-  // Escalonamento IMEDIATO (modo imediato; no handoff o cron cobre a cada 2 min).
+  // Pós-resposta IMEDIATA: escalonamento + captura de demanda (não espera o cron).
   async function escalarSeNecessario() {
-    if (!cfg.operator_number) return;
-    try {
-      const esc = await classificarEscalacao(contents, contexto);
-      if (esc) await criarEscalacao(supabase, grupo, cfg, esc);
-    } catch (e) { console.error("[alfred] escalonamento:", e instanceof Error ? e.message : e); }
+    if (cfg.operator_number) {
+      try {
+        const esc = await classificarEscalacao(contents, contexto);
+        if (esc) await criarEscalacao(supabase, grupo, cfg, esc);
+      } catch (e) { console.error("[alfred] escalonamento:", e instanceof Error ? e.message : e); }
+    }
+    // Demanda: se o cliente parece ter pedido algo, registra já no Kanban.
+    if (DEMANDA_GATE.test(ultimaFalaCliente(carga.hist))) {
+      try {
+        const novas = await classificarDemanda(contents);
+        if (novas.length) await inserirDemandas(supabase, grupo, novas, new Set(carga.demandas.map((d) => d.titulo.trim().toLowerCase())));
+      } catch (e) { console.error("[alfred] captura de demanda:", e instanceof Error ? e.message : e); }
+    }
   }
 
   // ÁUDIO: pedido do cliente, decisão do modelo, OU resposta longa (explicação detalhada).
@@ -891,6 +899,55 @@ async function classificarEscalacao(contents: { role: "user" | "model"; parts: {
     if (!mo) return null;
     return { resumo: (String(parsed.resumo ?? "").trim() || "Tarefa").slice(0, 200), mensagem_operador: mo.slice(0, 1500) };
   } catch (e) { console.error("[alfred] classificarEscalacao erro:", e instanceof Error ? e.message : e); return null; }
+}
+
+// Captura IMEDIATA de demanda: roda na resposta quando o cliente parece pedir algo.
+const DEMANDA_GATE = /\b(post|posts|arte|artes|criativo|banner|story|flyer|panfleto|legenda|card|design|v[ií]deo|reels|cria(r|m)?|faz(er|em)?|monta(r|m)?|prepara(r|m)?|altera(r|ção|m)?|ajusta(r|m)?|muda(r|nça|m)?|edita(r|m)?|refaz|quero (um|uma)|preciso de|pode (fazer|criar|montar)|me (faz|manda|cria))/i;
+
+/** Detecta uma DEMANDA AVULSA concreta que o cliente acabou de pedir (pra registrar no Kanban). */
+async function classificarDemanda(contents: { role: "user" | "model"; parts: { text: string }[] }[]): Promise<NovaDemanda[]> {
+  if (!GEMINI_API_KEY || contents.length === 0) return [];
+  const sys =
+    "Você detecta se o CLIENTE acabou de PEDIR uma DEMANDA AVULSA concreta — uma arte/post específico, um criativo, uma alteração, um material ou uma tarefa pontual " +
+    "que a equipe precisa REGISTRAR e ENTREGAR. Retorne em 'demandas' SOMENTE pedidos REAIS e ESPECÍFICOS feitos pelo cliente nesta conversa " +
+    "(NÃO inclua dúvidas, conversa, agradecimento, nem algo que já foi entregue). Mesmo que o agente já tenha confirmado/aceitado o pedido, REGISTRE a demanda. " +
+    "Para cada uma: titulo curto e claro (ex.: 'Post de aniversário da lotérica'), descricao objetiva, e prazo_dias (1 a 7, realista). Se não houver pedido novo, 'demandas' vazia.";
+  const body = {
+    system_instruction: { parts: [{ text: sys }] },
+    contents,
+    generationConfig: {
+      temperature: 0, maxOutputTokens: 500, thinkingConfig: { thinkingBudget: 0 },
+      responseMimeType: "application/json",
+      responseSchema: { type: "OBJECT", properties: { demandas: { type: "ARRAY", items: { type: "OBJECT", properties: { titulo: { type: "STRING" }, descricao: { type: "STRING" }, prazo_dias: { type: "INTEGER" } }, required: ["titulo", "prazo_dias"] } } } },
+    },
+  };
+  try {
+    const res = await fetch(`${GEMINI_URL}?key=${encodeURIComponent(GEMINI_API_KEY)}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    if (!res.ok) { console.error("[alfred] classificarDemanda", res.status); return []; }
+    const data = await res.json();
+    // deno-lint-ignore no-explicit-any
+    const txt = (data?.candidates?.[0]?.content?.parts as any[] | undefined)?.map((p) => p?.text ?? "").join("") ?? "";
+    const parsed = JSON.parse(txt);
+    return Array.isArray(parsed?.demandas) ? parsed.demandas : [];
+  } catch (e) { console.error("[alfred] classificarDemanda erro:", e instanceof Error ? e.message : e); return []; }
+}
+
+/** Insere demandas novas no Kanban (dedup por título). Retorna quantas entraram. */
+async function inserirDemandas(supabase: SupabaseClient, grupo: Grupo, demandas: NovaDemanda[], abertasTit: Set<string>): Promise<number> {
+  let n = 0;
+  for (const d of demandas) {
+    const titulo = String(d?.titulo ?? "").trim();
+    if (!titulo || abertasTit.has(titulo.toLowerCase())) continue;
+    const dias = Math.min(60, Math.max(1, Math.floor(Number(d?.prazo_dias) || 3)));
+    const prazo = new Date(Date.now() + dias * 86_400_000).toISOString().slice(0, 10);
+    await supabase.from("alfred_demands").insert({
+      user_id: grupo.user_id, group_id: grupo.id, titulo: titulo.slice(0, 120),
+      descricao: (String(d?.descricao ?? "").trim() || null), prazo, origem: "chat", status: "pendente",
+    });
+    abertasTit.add(titulo.toLowerCase());
+    n++;
+  }
+  return n;
 }
 
 /** Cria a escalação e manda a DM ao operador (1 tarefa aberta por grupo). */
@@ -1600,18 +1657,7 @@ export async function processarGrupoTick(supabase: SupabaseClient, grupo: Grupo,
       if (aprend.resumo?.trim()) await supabase.from("alfred_context").upsert({ user_id: grupo.user_id, group_id: grupo.id, resumo: aprend.resumo.trim() }, { onConflict: "group_id" });
 
       // Novas demandas avulsas -> Kanban, com PRAZO obrigatório (dias a partir de hoje).
-      const abertasTit = new Set(carga.demandas.map((d) => d.titulo.trim().toLowerCase()));
-      for (const d of aprend.demandas) {
-        const titulo = String(d?.titulo ?? "").trim();
-        if (!titulo || abertasTit.has(titulo.toLowerCase())) continue; // dedup
-        const dias = Math.min(60, Math.max(1, Math.floor(Number(d?.prazo_dias) || 3)));
-        const prazo = new Date(Date.now() + dias * 86_400_000).toISOString().slice(0, 10);
-        await supabase.from("alfred_demands").insert({
-          user_id: grupo.user_id, group_id: grupo.id, titulo: titulo.slice(0, 120),
-          descricao: (String(d?.descricao ?? "").trim() || null), prazo, origem: "chat", status: "pendente",
-        });
-        abertasTit.add(titulo.toLowerCase());
-      }
+      await inserirDemandas(supabase, grupo, aprend.demandas, new Set(carga.demandas.map((d) => d.titulo.trim().toLowerCase())));
 
       // Campanhas/ativos: cria/atualiza estado e resolve a substituição (linhagem).
       const tiposOk = new Set(["campanha", "criativo", "anuncio", "outro"]);
