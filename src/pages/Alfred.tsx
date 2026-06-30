@@ -373,6 +373,10 @@ function ConfigForm({ config, onSave, loadError = false }: { config: AlfredConfi
   const [handoff, setHandoff] = useState(config.handoff_ativo);
   const [intervir, setIntervir] = useState(String(config.intervene_after_min));
   const [cooldown, setCooldown] = useState(String(config.team_cooldown_min));
+  const [expAtivo, setExpAtivo] = useState(config.expediente_ativo);
+  const [expDias, setExpDias] = useState<number[]>(config.expediente_dias);
+  const [expInicio, setExpInicio] = useState(String(config.expediente_inicio));
+  const [expFim, setExpFim] = useState(String(config.expediente_fim));
   const [salvando, setSalvando] = useState(false);
   const [msg, setMsg] = useState("");
 
@@ -385,6 +389,10 @@ function ConfigForm({ config, onSave, loadError = false }: { config: AlfredConfi
     setHandoff(config.handoff_ativo);
     setIntervir(String(config.intervene_after_min));
     setCooldown(String(config.team_cooldown_min));
+    setExpAtivo(config.expediente_ativo);
+    setExpDias(config.expediente_dias);
+    setExpInicio(String(config.expediente_inicio));
+    setExpFim(String(config.expediente_fim));
   }, [config]);
 
   async function submit(e: React.FormEvent) {
@@ -404,6 +412,10 @@ function ConfigForm({ config, onSave, loadError = false }: { config: AlfredConfi
         handoff_ativo: handoff,
         intervene_after_min: Math.max(1, Math.floor(Number(intervir) || 30)),
         team_cooldown_min: Math.max(1, Math.floor(Number(cooldown) || 5)),
+        expediente_ativo: expAtivo,
+        expediente_dias: [...expDias].sort((a, b) => a - b),
+        expediente_inicio: Math.min(23, Math.max(0, Math.floor(Number(expInicio) || 8))),
+        expediente_fim: Math.min(24, Math.max(1, Math.floor(Number(expFim) || 18))),
       });
       setMsg("Configurações salvas ✅");
       setTimeout(() => setMsg(""), 2500);
@@ -494,6 +506,55 @@ function ConfigForm({ config, onSave, loadError = false }: { config: AlfredConfi
             <div className="flex items-center gap-2">
               <input type="number" min={0} max={23} className="input tabular-nums" value={proHora} onChange={(e) => setProHora(e.target.value)} />
               <span className="text-sm text-ink-muted">h</span>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Horário de atendimento (expediente) */}
+      <div className="mt-3 rounded-xl border border-black/10 bg-white/50 p-3">
+        <div className="flex items-center justify-between gap-2">
+          <div>
+            <div className="text-sm font-medium">Horário de atendimento</div>
+            <div className="text-xs text-ink-muted">
+              {expAtivo
+                ? "Fora dos dias/horas marcados, o Alfred segura a resposta e responde quando o expediente abrir (sem mensagem de ausência)."
+                : "Desligado: o Alfred responde a qualquer hora."}
+            </div>
+          </div>
+          <button type="button" onClick={() => setExpAtivo((v) => !v)}
+            className={`relative h-7 w-12 shrink-0 rounded-full transition-colors ${expAtivo ? "bg-accent" : "bg-black/15"}`}
+            title={expAtivo ? "Desligar horário de atendimento" : "Ligar horário de atendimento"}>
+            <span className={`absolute top-1 h-5 w-5 rounded-full bg-white shadow transition-all ${expAtivo ? "left-6" : "left-1"}`} />
+          </button>
+        </div>
+        {expAtivo && (
+          <div className="mt-3 space-y-3">
+            <div>
+              <label className="mb-1 block text-xs font-medium text-ink-soft">Dias de atendimento</label>
+              <div className="flex flex-wrap gap-1.5">
+                {["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sáb"].map((d, i) => {
+                  const on = expDias.includes(i);
+                  return (
+                    <button key={i} type="button"
+                      onClick={() => setExpDias((p) => (p.includes(i) ? p.filter((x) => x !== i) : [...p, i]))}
+                      className={`rounded-lg px-2.5 py-1 text-xs font-medium transition-colors ${on ? "bg-accent text-white" : "bg-black/5 text-ink-muted hover:text-ink-soft"}`}>
+                      {d}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+            <div className="flex items-end gap-3">
+              <div className="w-28">
+                <label className="mb-1 block text-xs font-medium text-ink-soft">Início (h)</label>
+                <input type="number" min={0} max={23} className="input tabular-nums" value={expInicio} onChange={(e) => setExpInicio(e.target.value)} />
+              </div>
+              <div className="w-28">
+                <label className="mb-1 block text-xs font-medium text-ink-soft">Fim (h)</label>
+                <input type="number" min={1} max={24} className="input tabular-nums" value={expFim} onChange={(e) => setExpFim(e.target.value)} />
+              </div>
+              <span className="pb-2 text-xs text-ink-muted">Brasília · atende das {expInicio}h às {expFim}h</span>
             </div>
           </div>
         )}

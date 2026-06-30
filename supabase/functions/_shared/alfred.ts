@@ -696,8 +696,21 @@ export interface AlfredCfg {
   intervene_after_min: number;
   proactive_ativo: boolean;      // acompanhamento diário proativo
   proactive_hora: number;        // hora (0-23, Brasília) do contato diário
+  expediente_ativo: boolean;     // true = só responde dentro do horário de atendimento
+  expediente_dias: number[];     // dias da semana que atende (0=dom..6=sáb)
+  expediente_inicio: number;     // hora de início (0-23, Brasília)
+  expediente_fim: number;        // hora de fim (0-23, Brasília)
   dmin: number;
   dmax: number;
+}
+
+/** Está dentro do horário de atendimento do Alfred? (true se o expediente está desligado). */
+function dentroExpediente(cfg: AlfredCfg): boolean {
+  if (!cfg.expediente_ativo) return true;
+  const b = agoraBrasilia();
+  if (!cfg.expediente_dias.includes(b.getUTCDay())) return false;
+  const h = b.getUTCHours();
+  return h >= cfg.expediente_inicio && h < cfg.expediente_fim;
 }
 export interface Grupo {
   id: string; user_id: string; client_name: string; remote_jid: string;
@@ -1620,6 +1633,8 @@ async function carregarBolaoContexto(grupo: Grupo, gatilho: string, forcar = fal
 
 /** Resposta IMEDIATA (modo handoff desligado): chamada pelo webhook. */
 export async function responderAgora(supabase: SupabaseClient, grupo: Grupo, cfg: AlfredCfg): Promise<string> {
+  // Fora do horário de atendimento: só registra; o cron responde quando abrir (sem msg de ausência).
+  if (!dentroExpediente(cfg)) return "fora do expediente (retido)";
   const carga = await carregar(supabase, grupo.id);
   if (carga.hist.length === 0) return "vazio";
   return gerarResposta(supabase, grupo, cfg, carga);
@@ -1723,13 +1738,28 @@ export async function processarGrupoTick(supabase: SupabaseClient, grupo: Grupo,
     await supabase.from("alfred_groups").update({ last_learned_at: new Date(lastMsgMs).toISOString() }).eq("id", grupo.id);
   }
 
-  // (2) RESPOSTA — só no modo handoff (no imediato, o webhook já respondeu).
-  if (!cfg.handoff_ativo) return "modo imediato";
+  // (2) RESPOSTA — fora do expediente, segura (responde no próximo horário; sem msg de ausência).
+  if (!dentroExpediente(cfg)) return "fora do expediente";
 
   const clienteFalouPorUltimo = ultima.role === "user" && !ultima.is_team;
   if (!clienteFalouPorUltimo) return "sem necessidade";
-  const lastTeamMs = Math.max(0, ...hist.filter((m) => m.is_team).map((m) => new Date(m.created_at).getTime()));
   const sinceClient = nowMs - lastMsgMs;
+
+  if (!cfg.handoff_ativo) {
+    // Modo imediato: o webhook responde na hora DENTRO do expediente. Aqui pegamos
+    // as mensagens RETIDAS (chegaram fora do horário e seguem sem resposta) quando o
+    // expediente abre — só com o expediente ativo, e após assentar (evita corrida com o webhook).
+    if (cfg.expediente_ativo && sinceClient >= 120_000) {
+      const ultimaUser = [...hist].reverse().find((m) => m.role === "user" && m.id);
+      if (ultimaUser?.id) {
+        const { data: pend } = await supabase.from("alfred_messages").select("answered_at").eq("id", ultimaUser.id).maybeSingle();
+        if (pend && !pend.answered_at) return gerarResposta(supabase, grupo, cfg, carga);
+      }
+    }
+    return "modo imediato";
+  }
+
+  const lastTeamMs = Math.max(0, ...hist.filter((m) => m.is_team).map((m) => new Date(m.created_at).getTime()));
   const sinceTeam = lastTeamMs ? nowMs - lastTeamMs : Infinity;
   if (sinceClient < cfg.intervene_after_min * 60_000) return "aguardando prazo";
   if (sinceTeam < cfg.team_cooldown_min * 60_000) return "equipe ativa (cooldown)";

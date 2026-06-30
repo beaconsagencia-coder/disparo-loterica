@@ -159,6 +159,7 @@ Deno.serve(async (req) => {
       operator_number: cfgOp.operator_number ?? null, evolution_instance: cfgOp.evolution_instance ?? null,
       handoff_ativo: false, team_cooldown_min: 5, intervene_after_min: 30,
       proactive_ativo: false, proactive_hora: 9,
+      expediente_ativo: false, expediente_dias: [1, 2, 3, 4, 5], expediente_inicio: 8, expediente_fim: 18,
       dmin: Number(sdrOp?.delay_min_seg ?? 3), dmax: Number(sdrOp?.delay_max_seg ?? 8),
     };
     const quoted = extrairCitacao(msgObj);
@@ -230,7 +231,7 @@ Deno.serve(async (req) => {
 
   // Modo handoff x imediato.
   const { data: cfgRow } = await supabase.from("alfred_configs")
-    .select("handoff_ativo, system_prompt, base_conhecimento, operator_number, evolution_instance, team_cooldown_min, intervene_after_min")
+    .select("handoff_ativo, system_prompt, base_conhecimento, operator_number, evolution_instance, team_cooldown_min, intervene_after_min, expediente_ativo, expediente_dias, expediente_inicio, expediente_fim")
     .eq("user_id", grupo.user_id).maybeSingle();
   const handoff = cfgRow?.handoff_ativo ?? true;
 
@@ -259,6 +260,10 @@ Deno.serve(async (req) => {
     team_cooldown_min: Number(cfgRow?.team_cooldown_min ?? 5),
     intervene_after_min: Number(cfgRow?.intervene_after_min ?? 30),
     proactive_ativo: false, proactive_hora: 9,
+    expediente_ativo: cfgRow?.expediente_ativo ?? false,
+    expediente_dias: (cfgRow?.expediente_dias as number[] | null) ?? [1, 2, 3, 4, 5],
+    expediente_inicio: Number(cfgRow?.expediente_inicio ?? 8),
+    expediente_fim: Number(cfgRow?.expediente_fim ?? 18),
     dmin: Number(sdrCfg?.delay_min_seg ?? 3),
     dmax: Number(sdrCfg?.delay_max_seg ?? 8),
   };

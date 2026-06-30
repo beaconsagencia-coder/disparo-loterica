@@ -12,6 +12,10 @@ export interface AlfredConfig {
   intervene_after_min: number; // prazo p/ o Alfred intervir se a equipe não responder
   proactive_ativo: boolean;    // acompanhamento diário proativo
   proactive_hora: number;      // hora (0-23, Brasília) do contato diário
+  expediente_ativo: boolean;   // só responde dentro do horário de atendimento
+  expediente_dias: number[];   // dias da semana (0=dom..6=sáb)
+  expediente_inicio: number;   // hora de início (0-23)
+  expediente_fim: number;      // hora de fim (0-23)
 }
 export interface AlfredMember {
   id: string;
@@ -138,7 +142,7 @@ export interface AlfredMessage {
   quoted_body?: string | null; // mensagem citada (reply do WhatsApp)
 }
 
-const CONFIG_DEFAULT: AlfredConfig = { system_prompt: "", base_conhecimento: "", operator_number: "", handoff_ativo: true, team_cooldown_min: 5, intervene_after_min: 30, proactive_ativo: true, proactive_hora: 9 };
+const CONFIG_DEFAULT: AlfredConfig = { system_prompt: "", base_conhecimento: "", operator_number: "", handoff_ativo: true, team_cooldown_min: 5, intervene_after_min: 30, proactive_ativo: true, proactive_hora: 9, expediente_ativo: false, expediente_dias: [1, 2, 3, 4, 5], expediente_inicio: 8, expediente_fim: 18 };
 
 async function uid(): Promise<string> {
   const { data } = await supabase.auth.getUser();
@@ -173,7 +177,7 @@ export function useAlfred() {
   const load = useCallback(async () => {
     const [{ data: cfg, error: cfgErr }, { data: grp }, { data: ctx }, { data: tk }, { data: mem }, { data: mb }, { data: dm }, { data: as }, { data: pr }, { data: ct }] = await Promise.all([
       supabase.from("alfred_configs")
-        .select("system_prompt, base_conhecimento, operator_number, evolution_instance, connection_status, numero, handoff_ativo, team_cooldown_min, intervene_after_min, proactive_ativo, proactive_hora")
+        .select("system_prompt, base_conhecimento, operator_number, evolution_instance, connection_status, numero, handoff_ativo, team_cooldown_min, intervene_after_min, proactive_ativo, proactive_hora, expediente_ativo, expediente_dias, expediente_inicio, expediente_fim")
         .maybeSingle(),
       supabase.from("alfred_groups").select("*").order("created_at", { ascending: false }),
       supabase.from("alfred_context")
@@ -202,6 +206,10 @@ export function useAlfred() {
         intervene_after_min: Number(cfg.intervene_after_min ?? 30),
         proactive_ativo: cfg.proactive_ativo ?? true,
         proactive_hora: Number(cfg.proactive_hora ?? 9),
+        expediente_ativo: cfg.expediente_ativo ?? false,
+        expediente_dias: Array.isArray(cfg.expediente_dias) ? (cfg.expediente_dias as number[]) : [1, 2, 3, 4, 5],
+        expediente_inicio: Number(cfg.expediente_inicio ?? 8),
+        expediente_fim: Number(cfg.expediente_fim ?? 18),
       });
       setConnection({
         evolution_instance: cfg.evolution_instance ?? null,

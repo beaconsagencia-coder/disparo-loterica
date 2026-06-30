@@ -30,7 +30,7 @@ Deno.serve(async (req) => {
   async function cfgDe(userId: string): Promise<AlfredCfg> {
     if (cfgCache.has(userId)) return cfgCache.get(userId)!;
     const [{ data: a }, { data: sdr }] = await Promise.all([
-      supabase.from("alfred_configs").select("system_prompt, base_conhecimento, operator_number, evolution_instance, handoff_ativo, team_cooldown_min, intervene_after_min, proactive_ativo, proactive_hora").eq("user_id", userId).maybeSingle(),
+      supabase.from("alfred_configs").select("system_prompt, base_conhecimento, operator_number, evolution_instance, handoff_ativo, team_cooldown_min, intervene_after_min, proactive_ativo, proactive_hora, expediente_ativo, expediente_dias, expediente_inicio, expediente_fim").eq("user_id", userId).maybeSingle(),
       supabase.from("ai_config").select("delay_min_seg, delay_max_seg").eq("user_id", userId).maybeSingle(),
     ]);
     const cfg: AlfredCfg = {
@@ -43,6 +43,10 @@ Deno.serve(async (req) => {
       intervene_after_min: Number(a?.intervene_after_min ?? 30),
       proactive_ativo: a?.proactive_ativo ?? true,
       proactive_hora: Number(a?.proactive_hora ?? 9),
+      expediente_ativo: a?.expediente_ativo ?? false,
+      expediente_dias: (a?.expediente_dias as number[] | null) ?? [1, 2, 3, 4, 5],
+      expediente_inicio: Number(a?.expediente_inicio ?? 8),
+      expediente_fim: Number(a?.expediente_fim ?? 18),
       dmin: Number(sdr?.delay_min_seg ?? 3),
       dmax: Number(sdr?.delay_max_seg ?? 8),
     };
