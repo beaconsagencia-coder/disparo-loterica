@@ -276,6 +276,14 @@ function montarDemandas(d: { titulo: string; status: string; prazo: string | nul
   return linhas.join("\n");
 }
 
+/** Pauta do operador: perguntas/lembretes para o Alfred fazer NESTE acompanhamento. */
+function montarPauta(itens: { item: string }[]): string {
+  if (!itens?.length) return "";
+  const linhas = ["", "PAUTA DESTE ACOMPANHAMENTO (a EQUIPE pediu para você perguntar/lembrar isto ao cliente AGORA — faça com naturalidade, como se fosse iniciativa sua; é PRIORIDADE):"];
+  for (const x of itens) linhas.push(`- ${x.item}`);
+  return linhas.join("\n");
+}
+
 /** Campanhas/ativos: o que está NO AR agora + histórico com a linhagem. */
 function montarAtivos(assets: AssetRow[]): string {
   if (!assets?.length) return "";
@@ -1047,41 +1055,51 @@ async function comporRelay(cfg: AlfredCfg, resumo: string, pedido: string, retor
 async function classificarOperador(
   cfg: AlfredCfg, texto: string, quoted: string,
   escalacoes: { resumo: string }[], grupos: { id: string; client_name: string }[],
-): Promise<{ acao: "repassar" | "memorizar" | "perguntar"; group_id: string | null }> {
-  if (!GEMINI_API_KEY || grupos.length === 0) return { acao: "repassar", group_id: null };
+): Promise<{ acao: "repassar" | "memorizar" | "perguntar" | "pauta"; group_id: string | null; pauta_item: string; pauta_data: string | null }> {
+  const vazio = { acao: "repassar" as const, group_id: null, pauta_item: "", pauta_data: null };
+  if (!GEMINI_API_KEY || grupos.length === 0) return vazio;
   const escsTxt = escalacoes.length ? escalacoes.map((e) => `- ${e.resumo}`).join("\n") : "(nenhuma escalação aberta)";
   const gruposTxt = grupos.map((g) => `- id=${g.id} | cliente=${g.client_name}`).join("\n");
+  const hoje = agoraBrasilia().toISOString().slice(0, 10);
   const sys =
     "Você roteia uma mensagem que o OPERADOR humano (da agência) mandou NO PRIVADO para o assistente — NÃO é o cliente falando. Decida a AÇÃO:\n" +
-    "- 'repassar': o operador está respondendo a uma tarefa/escalação pendente OU pedindo explicitamente para comunicar algo ao cliente no grupo " +
+    "- 'repassar': o operador está respondendo a uma tarefa/escalação pendente OU pedindo explicitamente para comunicar algo ao cliente AGORA no grupo " +
     "(ex.: 'fala pro cliente que tá resolvido', 'responde que já subimos').\n" +
+    "- 'pauta': o operador quer que você PERGUNTE ou LEMBRE algo ao cliente NO PRÓXIMO ACOMPANHAMENTO PROATIVO (futuro), não agora " +
+    "(ex.: 'amanhã pergunta pra Lotérica Lírio se enviaram a apelação', 'no próximo acompanhamento lembra de perguntar se aprovaram a arte', " +
+    "'semana que vem cobra o acesso do Facebook'). Extraia em 'pauta_item' a pergunta/lembrete de forma curta e direta (o que perguntar ao cliente). " +
+    `Se houver data/quando (amanhã, depois de amanhã, segunda, dia X), converta para 'pauta_data' no formato YYYY-MM-DD considerando que HOJE é ${hoje} (fuso de Brasília); ` +
+    "se não houver data explícita, deixe 'pauta_data' vazio (vale para o próximo acompanhamento).\n" +
     "- 'memorizar': o operador está te ALIMENTANDO com CONTEXTO EXTERNO para GUARDAR e atualizar o andamento — resumo de uma LIGAÇÃO/REUNIÃO, negociação fechada, " +
     "combinado feito no privado, status interno, 'anota que...', 'pro seu controle'. NESSE caso NÃO se envia NADA ao cliente.\n" +
-    "- 'perguntar': claramente é para memorizar, mas você NÃO consegue identificar de qual CLIENTE se trata.\n" +
-    "Regra de bom senso: resumo de ligação/reunião e negociação fechada são SEMPRE 'memorizar'. Se não há escalação aberta e a mensagem traz informação/contexto, tende a 'memorizar'. " +
-    "Para 'memorizar' ou 'repassar', informe o group_id do cliente correspondente (case pelo nome citado; se houver só 1 grupo, ou a escalação aberta apontar claramente, use esse). Se não der, group_id vazio.\n\n" +
+    "- 'perguntar': claramente é para memorizar OU pauta, mas você NÃO consegue identificar de qual CLIENTE se trata.\n" +
+    "Diferença chave: 'repassar' é comunicar AGORA; 'pauta' é deixar agendado para o Alfred perguntar DEPOIS, no contato proativo. " +
+    "Regra de bom senso: resumo de ligação/reunião e negociação fechada são SEMPRE 'memorizar'. " +
+    "Para qualquer ação com cliente, informe o group_id correspondente (case pelo nome citado; se houver só 1 grupo, ou a escalação aberta apontar claramente, use esse). Se não der, group_id vazio.\n\n" +
     "ESCALAÇÕES ABERTAS (tarefas que o operador pode estar respondendo):\n" + escsTxt + "\n\nGRUPOS/CLIENTES (id | cliente):\n" + gruposTxt;
   const body = {
     system_instruction: { parts: [{ text: sys }] },
     contents: [{ role: "user", parts: [{ text: `Mensagem do operador${quoted ? ` (citando: "${quoted}")` : ""}:\n${texto}` }] }],
     generationConfig: {
-      temperature: 0, maxOutputTokens: 200, thinkingConfig: { thinkingBudget: 0 },
+      temperature: 0, maxOutputTokens: 300, thinkingConfig: { thinkingBudget: 0 },
       responseMimeType: "application/json",
-      responseSchema: { type: "OBJECT", properties: { acao: { type: "STRING" }, group_id: { type: "STRING" } }, required: ["acao"] },
+      responseSchema: { type: "OBJECT", properties: { acao: { type: "STRING" }, group_id: { type: "STRING" }, pauta_item: { type: "STRING" }, pauta_data: { type: "STRING" } }, required: ["acao"] },
     },
   };
   try {
     const res = await fetch(`${GEMINI_URL}?key=${encodeURIComponent(GEMINI_API_KEY)}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-    if (!res.ok) { console.error("[alfred] classificarOperador", res.status); return { acao: "repassar", group_id: null }; }
+    if (!res.ok) { console.error("[alfred] classificarOperador", res.status); return vazio; }
     const data = await res.json();
     // deno-lint-ignore no-explicit-any
     const txt = (data?.candidates?.[0]?.content?.parts as any[] | undefined)?.map((p) => p?.text ?? "").join("") ?? "";
     const parsed = JSON.parse(txt);
-    const acao = ["repassar", "memorizar", "perguntar"].includes(parsed?.acao) ? parsed.acao : "repassar";
+    const acao = ["repassar", "memorizar", "perguntar", "pauta"].includes(parsed?.acao) ? parsed.acao : "repassar";
     const gid = String(parsed?.group_id ?? "").trim();
     const valido = grupos.some((g) => g.id === gid) ? gid : (grupos.length === 1 ? grupos[0].id : null);
-    return { acao, group_id: valido };
-  } catch (e) { console.error("[alfred] classificarOperador erro:", e instanceof Error ? e.message : e); return { acao: "repassar", group_id: null }; }
+    const dataRaw = String(parsed?.pauta_data ?? "").trim();
+    const pauta_data = /^\d{4}-\d{2}-\d{2}$/.test(dataRaw) ? dataRaw : null;
+    return { acao, group_id: valido, pauta_item: String(parsed?.pauta_item ?? "").trim(), pauta_data };
+  } catch (e) { console.error("[alfred] classificarOperador erro:", e instanceof Error ? e.message : e); return vazio; }
 }
 
 /** Extrai do contexto externo do operador: fatos (chave/valor/categoria), remoções e resumo evoluído. */
@@ -1177,6 +1195,22 @@ export async function atenderOperador(
     return "operador: contexto sem cliente identificado";
   }
 
+  // Pauta: o operador quer que o Alfred PERGUNTE algo ao cliente no próximo acompanhamento proativo.
+  if (decisao.acao === "pauta" && decisao.group_id) {
+    const grupo = grupoList.find((g) => g.id === decisao.group_id);
+    const item = (decisao.pauta_item || args.replyText).trim();
+    if (grupo && item) {
+      await supabase.from("alfred_proativo_pauta").insert({
+        user_id: grupo.user_id, group_id: grupo.id, item: item.slice(0, 1000), agendar_para: decisao.pauta_data,
+      });
+      if (cfg.operator_number && instance) {
+        const quando = decisao.pauta_data ? formatarDataBR(decisao.pauta_data) : "no próximo acompanhamento";
+        try { await enviarOperador(instance, cfg.operator_number, `Anotado! ${decisao.pauta_data ? `Dia ${quando}` : "No próximo acompanhamento"} do ${grupo.client_name} eu pergunto isso pro cliente. Não enviei nada no grupo agora.`); } catch { /* ok */ }
+      }
+      return "operador: pauta agendada";
+    }
+  }
+
   if (decisao.acao === "memorizar" && decisao.group_id) {
     const grupo = grupoList.find((g) => g.id === decisao.group_id);
     if (grupo) {
@@ -1264,6 +1298,12 @@ export async function responderOperador(
 /** Horário atual em Brasília (UTC-3), como Date deslocado (use getUTC*). */
 function agoraBrasilia(): Date { return new Date(Date.now() - 3 * 3_600_000); }
 
+/** 'YYYY-MM-DD' -> 'DD/MM' (para mensagens ao operador). */
+function formatarDataBR(iso: string): string {
+  const [y, m, d] = iso.split("-");
+  return y && m && d ? `${d}/${m}` : iso;
+}
+
 /** Compõe a mensagem de acompanhamento (Alfred INICIANDO a conversa). */
 async function comporProativo(cfg: AlfredCfg, clientName: string, contexto: string, recemApresentado = false): Promise<string> {
   if (!GEMINI_API_KEY) return "";
@@ -1273,6 +1313,9 @@ async function comporProativo(cfg: AlfredCfg, clientName: string, contexto: stri
   const sys = `${cfg.system_prompt}\n\n` +
     `CONTEXTO DO CLIENTE (${clientName}):\n${contexto}\n\n` + avisoApres +
     "TAREFA: você vai INICIAR um contato proativo de ACOMPANHAMENTO DIÁRIO com o cliente agora (você está começando a conversa, não respondendo a nada). " +
+    "PRIORIDADE MÁXIMA: se houver uma seção 'PAUTA DESTE ACOMPANHAMENTO' no contexto, faça ESSAS perguntas/lembretes ao cliente com naturalidade " +
+    "(ex.: pauta diz 'perguntar se enviaram a apelação do Instagram' → 'Oi pessoal! Passando pra saber se vocês já conseguiram enviar aquela apelação pra recuperar a conta do Instagram, conseguiram?'). " +
+    "Trate como iniciativa sua, sem dizer que 'a equipe pediu'. Se a pauta já cobre o contato, pode ser só ela. " +
     "Com base no contexto: (1) se houver itens PENDENTES que dependem do CLIENTE (acessos, senhas, contas, materiais, aprovações, configurações que faltam), " +
     "faça uma cobrança gentil e ESPECÍFICA do que falta e por quê; (2) se estiver tudo em dia, dê um update curto e positivo do andamento e confirme que está " +
     "tudo seguindo o cronograma; (3) na fase de manutenção, comente o que está rodando (campanhas) ou o próximo passo; " +
@@ -1326,11 +1369,20 @@ export async function acompanhamentoProativo(supabase: SupabaseClient, grupo: Gr
     .select("id");
   if (!claim || claim.length === 0) return "já feito hoje (corrida)";
 
+  // Pauta agendada pelo operador: perguntas a fazer hoje (agendar_para nulo ou já vencido).
+  const { data: pautaRows } = await supabase.from("alfred_proativo_pauta")
+    .select("id, item")
+    .eq("group_id", grupo.id).eq("status", "pendente")
+    .or(`agendar_para.is.null,agendar_para.lte.${hojeB}`)
+    .order("created_at", { ascending: true });
+  const pauta = (pautaRows as { id: string; item: string }[]) ?? [];
+
   const baseContrato = inicioContrato(grupo);
   const fase = faseEfetiva(baseContrato, grupo.fase_override);
   const contexto = montarContexto(carga.ctx, grupo.client_name, fase)
     + montarProposta(carga.proposta) + montarMemoria(carga.mem)
     + montarAtivos(carga.assets) + montarDemandas(carga.demandas) + montarChecklist(carga.tarefas, fase, semanaAtual(baseContrato))
+    + montarPauta(pauta)
     + await carregarBolaoContexto(grupo, "", true); // dados do Bolão Gestor (posts do dia, vendas) — sem gate no proativo
   // Se o acompanhamento for a 1ª fala do Alfred no grupo, apresenta-se antes.
   const apresentou = await apresentarSeNecessario(supabase, grupo, cfg, null);
@@ -1342,6 +1394,12 @@ export async function acompanhamentoProativo(supabase: SupabaseClient, grupo: Gr
     for (const parte of partes) {
       await enviarGrupo(instance, grupo.remote_jid, parte, delayDigitacao(parte, cfg));
       await supabase.from("alfred_messages").insert({ user_id: grupo.user_id, group_id: grupo.id, remote_jid: grupo.remote_jid, role: "model", sender_name: "Alfred", body: parte });
+    }
+    // Pauta entregue: marca como concluída para não repetir no próximo acompanhamento.
+    if (pauta.length) {
+      await supabase.from("alfred_proativo_pauta")
+        .update({ status: "concluida", done_at: new Date().toISOString() })
+        .in("id", pauta.map((p) => p.id));
     }
     return "proativo enviado";
   } catch (e) {
