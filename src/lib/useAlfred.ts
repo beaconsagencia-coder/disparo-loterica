@@ -119,6 +119,17 @@ export interface AlfredMemory {
   valor: string;
   categoria: string | null;
 }
+export type PautaStatus = "pendente" | "concluida";
+/** Pauta do acompanhamento proativo: o que o Alfred vai perguntar/lembrar ao cliente. */
+export interface AlfredPauta {
+  id: string;
+  group_id: string;
+  item: string;
+  agendar_para: string | null; // YYYY-MM-DD; null = no próximo acompanhamento
+  status: PautaStatus;
+  created_at: string;
+  done_at: string | null;
+}
 export interface AlfredConnection {
   evolution_instance: string | null;
   connection_status: string;   // desconectado | conectando | conectado
@@ -170,12 +181,13 @@ export function useAlfred() {
   const [demands, setDemands] = useState<Record<string, AlfredDemand[]>>({});
   const [assets, setAssets] = useState<Record<string, AlfredAsset[]>>({});
   const [proposals, setProposals] = useState<Record<string, AlfredProposal>>({});
+  const [pautas, setPautas] = useState<Record<string, AlfredPauta[]>>({});
   const [contracts, setContracts] = useState<ContractOption[]>([]);
   const [configError, setConfigError] = useState(false);
   const [loading, setLoading] = useState(true);
 
   const load = useCallback(async () => {
-    const [{ data: cfg, error: cfgErr }, { data: grp }, { data: ctx }, { data: tk }, { data: mem }, { data: mb }, { data: dm }, { data: as }, { data: pr }, { data: ct }] = await Promise.all([
+    const [{ data: cfg, error: cfgErr }, { data: grp }, { data: ctx }, { data: tk }, { data: mem }, { data: mb }, { data: dm }, { data: as }, { data: pr }, { data: pt }, { data: ct }] = await Promise.all([
       supabase.from("alfred_configs")
         .select("system_prompt, base_conhecimento, operator_number, evolution_instance, connection_status, numero, handoff_ativo, team_cooldown_min, intervene_after_min, proactive_ativo, proactive_hora, expediente_ativo, expediente_dias, expediente_inicio, expediente_fim")
         .maybeSingle(),
@@ -190,6 +202,7 @@ export function useAlfred() {
       supabase.from("alfred_demands").select("id, group_id, titulo, descricao, status, prazo").order("prazo"),
       supabase.from("alfred_assets").select("id, group_id, titulo, tipo, status, descricao, substituida_por").order("updated_at", { ascending: false }),
       supabase.from("alfred_proposals").select("group_id, valor_mensal, valor_setup, vigencia_meses, forma_pagamento, entregaveis, observacoes"),
+      supabase.from("alfred_proativo_pauta").select("id, group_id, item, agendar_para, status, created_at, done_at").order("created_at", { ascending: false }),
       supabase.from("contracts").select("id, client_name, contract_value, due_date_day, status").order("client_name"),
     ]);
     // Se a leitura do config falhou (ex.: migração pendente, coluna inexistente),
@@ -241,6 +254,9 @@ export function useAlfred() {
       pmap[p.group_id] = { ...p, entregaveis: Array.isArray(p.entregaveis) ? (p.entregaveis as string[]) : [] };
     }
     setProposals(pmap);
+    const ptmap: Record<string, AlfredPauta[]> = {};
+    for (const p of (pt as AlfredPauta[]) ?? []) (ptmap[p.group_id] ??= []).push(p);
+    setPautas(ptmap);
     setContracts(((ct as ContractOption[]) ?? []).map((c) => ({ ...c, contract_value: Number(c.contract_value) })));
     setLoading(false);
   }, []);
@@ -258,6 +274,7 @@ export function useAlfred() {
       .on("postgres_changes", { event: "*", schema: "public", table: "alfred_demands" }, () => load())
       .on("postgres_changes", { event: "*", schema: "public", table: "alfred_assets" }, () => load())
       .on("postgres_changes", { event: "*", schema: "public", table: "alfred_proposals" }, () => load())
+      .on("postgres_changes", { event: "*", schema: "public", table: "alfred_proativo_pauta" }, () => load())
       .subscribe();
     return () => void supabase.removeChannel(ch);
   }, [load]);
@@ -475,6 +492,23 @@ export function useAlfred() {
     if (error) await load();
   }, [load]);
 
+  // ---- pauta do acompanhamento proativo (perguntas agendadas pelo operador) ----
+  const addPauta = useCallback(async (groupId: string, item: string, agendarPara?: string | null) => {
+    const user_id = await uid();
+    if (!item.trim()) throw new Error("Escreva o que o Alfred deve perguntar.");
+    const { error } = await supabase.from("alfred_proativo_pauta").insert({
+      user_id, group_id: groupId, item: item.trim(), agendar_para: agendarPara || null,
+    });
+    if (error) throw error;
+    await load();
+  }, [load]);
+
+  const deletePauta = useCallback(async (id: string, groupId: string) => {
+    setPautas((prev) => ({ ...prev, [groupId]: (prev[groupId] ?? []).filter((p) => p.id !== id) }));
+    const { error } = await supabase.from("alfred_proativo_pauta").delete().eq("id", id);
+    if (error) await load();
+  }, [load]);
+
   /** Remove um item da memória aprendida (ex.: dado sensível que não quer guardar). */
   const deleteMemory = useCallback(async (id: string, groupId: string) => {
     setMemory((prev) => ({ ...prev, [groupId]: (prev[groupId] ?? []).filter((m) => m.id !== id) }));
@@ -503,10 +537,10 @@ export function useAlfred() {
   }, []);
 
   return {
-    config, connection, groups, contexts, tasks, memory, members, demands, assets, proposals, contracts, configError, loading,
+    config, connection, groups, contexts, tasks, memory, members, demands, assets, proposals, pautas, contracts, configError, loading,
     saveConfig, connectWhatsapp, checkStatus, listarGruposWhatsapp,
     addGroup, toggleGroup, removeGroup, setFase, setContratoInicio, setContractId, setBolaoAccount, fetchBolaoAccounts, saveContext, saveProposal, toggleTask, clearHistory, deleteMemory,
-    addMember, removeMember, fetchSenders, addDemand, updateDemand, deleteDemand,
+    addMember, removeMember, fetchSenders, addDemand, updateDemand, deleteDemand, addPauta, deletePauta,
     addAsset, updateAsset, deleteAsset, reload: load,
   };
 }

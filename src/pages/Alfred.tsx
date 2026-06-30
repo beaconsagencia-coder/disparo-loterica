@@ -9,7 +9,7 @@ import { supabase } from "@/lib/supabase";
 import {
   useAlfred, faseEfetiva, semanaContrato, type AlfredConfig, type AlfredConnection, type AlfredGroup, type AlfredContext, type AlfredTask,
   type AlfredMessage, type AlfredMemory, type AlfredMember, type AlfredDemand, type DemandStatus,
-  type AlfredAsset, type AssetStatus, type AssetTipo, type Fase, type AlfredProposal, type RecentSender, type ContractOption, type BolaoAccount,
+  type AlfredAsset, type AssetStatus, type AssetTipo, type Fase, type AlfredProposal, type RecentSender, type ContractOption, type BolaoAccount, type AlfredPauta,
 } from "@/lib/useAlfred";
 
 // =====================================================================
@@ -17,7 +17,7 @@ import {
 // Lógica 100% preservada; visual no design system do app (Bento + Apple-like).
 // =====================================================================
 export default function Alfred() {
-  const { config, connection, groups, contexts, tasks, memory, members, demands, assets, proposals, configError, loading, saveConfig, connectWhatsapp, checkStatus, listarGruposWhatsapp, addGroup, toggleGroup, removeGroup, setFase, setContratoInicio, setContractId, setBolaoAccount, fetchBolaoAccounts, saveContext, saveProposal, toggleTask, clearHistory, deleteMemory, addMember, removeMember, fetchSenders, addDemand, updateDemand, deleteDemand, addAsset, updateAsset, deleteAsset, contracts } = useAlfred();
+  const { config, connection, groups, contexts, tasks, memory, members, demands, assets, proposals, pautas, configError, loading, saveConfig, connectWhatsapp, checkStatus, listarGruposWhatsapp, addGroup, toggleGroup, removeGroup, setFase, setContratoInicio, setContractId, setBolaoAccount, fetchBolaoAccounts, saveContext, saveProposal, toggleTask, clearHistory, deleteMemory, addMember, removeMember, fetchSenders, addDemand, updateDemand, deleteDemand, addPauta, deletePauta, addAsset, updateAsset, deleteAsset, contracts } = useAlfred();
   const [conversa, setConversa] = useState<AlfredGroup | null>(null);
   const [view, setView] = useState<"grupos" | "demandas">("grupos");
 
@@ -82,6 +82,7 @@ export default function Alfred() {
               members={members[g.id] ?? []}
               assets={assets[g.id] ?? []}
               proposal={proposals[g.id]}
+              pautas={pautas[g.id] ?? []}
               onToggle={toggleGroup}
               onRemove={removeGroup}
               onSetFase={setFase}
@@ -95,6 +96,8 @@ export default function Alfred() {
               onToggleTask={toggleTask}
               onVerConversa={() => setConversa(g)}
               onDeleteMemory={deleteMemory}
+              onAddPauta={addPauta}
+              onDeletePauta={deletePauta}
               onAddMember={addMember}
               onRemoveMember={removeMember}
               onFetchSenders={fetchSenders}
@@ -884,6 +887,98 @@ function Conhecimento({ resumo, memory, onDelete }: { resumo?: string | null; me
   );
 }
 
+// ---- Pauta do acompanhamento proativo (perguntas agendadas) --------
+function PautaProativa({ groupId, clientName, pautas, onAdd, onDelete }: {
+  groupId: string;
+  clientName: string;
+  pautas: AlfredPauta[];
+  onAdd: (groupId: string, item: string, agendarPara?: string | null) => Promise<void>;
+  onDelete: (id: string, groupId: string) => Promise<void>;
+}) {
+  const [item, setItem] = useState("");
+  const [data, setData] = useState("");
+  const [msg, setMsg] = useState("");
+  const [salvando, setSalvando] = useState(false);
+
+  const pendentes = pautas.filter((p) => p.status === "pendente");
+  const feitas = pautas.filter((p) => p.status === "concluida").slice(0, 4);
+
+  async function adicionar(e: React.FormEvent) {
+    e.preventDefault();
+    setMsg("");
+    if (!item.trim()) { setMsg("Escreva o que o Alfred deve perguntar."); return; }
+    setSalvando(true);
+    try { await onAdd(groupId, item, data || null); setItem(""); setData(""); }
+    catch (err) { setMsg("Erro: " + (err instanceof Error ? err.message : String(err))); }
+    finally { setSalvando(false); }
+  }
+
+  async function remover(id: string) {
+    if (!confirm("Remover esta pergunta da pauta?")) return;
+    try { await onDelete(id, groupId); } catch (e) { alert(e instanceof Error ? e.message : String(e)); }
+  }
+
+  return (
+    <div className="mb-4 rounded-xl border border-black/5 bg-white p-3 shadow-sm">
+      <div className="mb-1 flex items-center gap-1.5 text-sm font-medium">
+        <CalendarClock size={15} className="text-accent" /> Pauta do acompanhamento proativo
+      </div>
+      <p className="mb-3 text-[11px] text-ink-muted">
+        O que o Alfred vai <strong className="text-ink-soft">perguntar</strong> a {clientName} no próximo acompanhamento. (Você também pode pedir isso ao Alfred pelo privado do operador.)
+      </p>
+
+      {pendentes.length > 0 ? (
+        <div className="mb-3 space-y-1.5">
+          {pendentes.map((p) => (
+            <div key={p.id} className="flex items-start gap-2 rounded-lg bg-accent/[0.06] px-2 py-1.5 text-sm">
+              <CalendarClock size={13} className="mt-0.5 shrink-0 text-accent" />
+              <span className="min-w-0 flex-1 break-words text-ink-soft">{p.item}</span>
+              <span className="mt-0.5 shrink-0 chip bg-black/5 text-ink-muted !px-1.5 !py-0 text-[10px]">
+                {p.agendar_para ? `a partir de ${prazoBR(p.agendar_para)}` : "próximo contato"}
+              </span>
+              <button onClick={() => remover(p.id)} title="Remover da pauta" className="shrink-0 rounded p-0.5 text-ink-muted transition-colors hover:bg-danger/10 hover:text-danger">
+                <Trash2 size={13} />
+              </button>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <p className="mb-3 text-xs text-ink-muted/70">Nenhuma pergunta agendada.</p>
+      )}
+
+      <form onSubmit={adicionar} className="flex flex-col gap-2 sm:flex-row sm:items-end">
+        <div className="min-w-0 flex-1">
+          <label className="mb-1 block text-[11px] font-medium text-ink-soft">Nova pergunta / lembrete</label>
+          <input className="input text-sm" placeholder="Ex.: perguntar se enviaram a apelação do Instagram" value={item} onChange={(e) => setItem(e.target.value)} />
+        </div>
+        <div>
+          <label className="mb-1 block text-[11px] font-medium text-ink-soft">A partir de (opcional)</label>
+          <input type="date" className="input text-sm" value={data} onChange={(e) => setData(e.target.value)} />
+        </div>
+        <button type="submit" disabled={salvando} className="btn-primary shrink-0 text-sm disabled:opacity-60">
+          {salvando ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />} Agendar
+        </button>
+      </form>
+      {msg && <p className="mt-2 text-xs text-danger">{msg}</p>}
+
+      {feitas.length > 0 && (
+        <div className="mt-3 border-t border-black/5 pt-2">
+          <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-ink-muted">Já perguntadas</div>
+          <div className="space-y-1">
+            {feitas.map((p) => (
+              <div key={p.id} className="flex items-start gap-2 px-1 text-xs text-ink-muted">
+                <CheckSquare size={12} className="mt-0.5 shrink-0 text-success" />
+                <span className="min-w-0 flex-1 break-words line-through">{p.item}</span>
+                {p.done_at && <span className="shrink-0">{prazoBR(p.done_at.slice(0, 10))}</span>}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ---- Equipe do grupo (quem é membro x cliente) ---------------------
 function Equipe({ groupId, members, onAdd, onRemove, onFetchSenders }: {
   groupId: string;
@@ -1373,7 +1468,7 @@ function Proposta({ groupId, proposal, onSave }: {
 
 // ---- Card de grupo: status + on/off + equipe + checklist + contexto
 function GroupItem({
-  group, context, tasks, memory, members, assets, proposal, contracts, onToggle, onRemove, onSetFase, onSetContratoInicio, onSetContractId, onSetBolaoAccount, onFetchBolaoAccounts, onSaveContext, onSaveProposal, onToggleTask, onVerConversa, onDeleteMemory, onAddMember, onRemoveMember, onFetchSenders, onAddAsset, onUpdateAsset, onDeleteAsset,
+  group, context, tasks, memory, members, assets, proposal, pautas, contracts, onToggle, onRemove, onSetFase, onSetContratoInicio, onSetContractId, onSetBolaoAccount, onFetchBolaoAccounts, onSaveContext, onSaveProposal, onToggleTask, onVerConversa, onDeleteMemory, onAddPauta, onDeletePauta, onAddMember, onRemoveMember, onFetchSenders, onAddAsset, onUpdateAsset, onDeleteAsset,
 }: {
   group: AlfredGroup;
   context?: AlfredContext;
@@ -1382,6 +1477,7 @@ function GroupItem({
   members: AlfredMember[];
   assets: AlfredAsset[];
   proposal?: AlfredProposal;
+  pautas: AlfredPauta[];
   onToggle: (id: string, active: boolean) => Promise<void>;
   onRemove: (id: string) => Promise<void>;
   onSetFase: (id: string, fase: Fase | null) => Promise<void>;
@@ -1395,6 +1491,8 @@ function GroupItem({
   onToggleTask: (t: AlfredTask) => Promise<void>;
   onVerConversa: () => void;
   onDeleteMemory: (id: string, groupId: string) => Promise<void>;
+  onAddPauta: (groupId: string, item: string, agendarPara?: string | null) => Promise<void>;
+  onDeletePauta: (id: string, groupId: string) => Promise<void>;
   onAddMember: (groupId: string, numero: string, nome?: string) => Promise<void>;
   onRemoveMember: (id: string, groupId: string) => Promise<void>;
   onFetchSenders: (groupId: string) => Promise<RecentSender[]>;
@@ -1536,6 +1634,7 @@ function GroupItem({
         <BolaoVinculo group={group} onSetBolaoAccount={onSetBolaoAccount} onFetchAccounts={onFetchBolaoAccounts} />
         <Proposta groupId={group.id} proposal={proposal} onSave={onSaveProposal} />
         <Equipe groupId={group.id} members={members} onAdd={onAddMember} onRemove={onRemoveMember} onFetchSenders={onFetchSenders} />
+        <PautaProativa groupId={group.id} clientName={group.client_name} pautas={pautas} onAdd={onAddPauta} onDelete={onDeletePauta} />
         {/* Manutenção: campanhas em primeiro plano; Onboarding: cronograma primeiro. */}
         {fase === "manutencao" ? (
           <>
