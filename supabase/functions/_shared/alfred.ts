@@ -803,8 +803,10 @@ async function gerarResposta(supabase: SupabaseClient, grupo: Grupo, cfg: Alfred
         if (esc) await criarEscalacao(supabase, grupo, cfg, esc);
       } catch (e) { console.error("[alfred] escalonamento:", e instanceof Error ? e.message : e); }
     }
-    // Demanda: se o cliente parece ter pedido algo, registra já no Kanban.
-    if (DEMANDA_GATE.test(ultimaFalaCliente(carga.hist))) {
+    // Demanda: registra já no Kanban se o cliente pediu OU se o próprio Alfred
+    // acabou de confirmar que vai providenciar/adicionar.
+    const pediu = DEMANDA_GATE.test(ultimaFalaCliente(carga.hist)) || DEMANDA_GATE_RESP.test(partes.join(" "));
+    if (pediu) {
       try {
         const novas = await classificarDemanda(contents);
         if (novas.length) await inserirDemandas(supabase, grupo, novas, new Set(carga.demandas.map((d) => d.titulo.trim().toLowerCase())));
@@ -902,7 +904,9 @@ async function classificarEscalacao(contents: { role: "user" | "model"; parts: {
 }
 
 // Captura IMEDIATA de demanda: roda na resposta quando o cliente parece pedir algo.
-const DEMANDA_GATE = /\b(post|posts|arte|artes|criativo|banner|story|flyer|panfleto|legenda|card|design|v[ií]deo|reels|cria(r|m)?|faz(er|em)?|monta(r|m)?|prepara(r|m)?|altera(r|ção|m)?|ajusta(r|m)?|muda(r|nça|m)?|edita(r|m)?|refaz|quero (um|uma)|preciso de|pode (fazer|criar|montar)|me (faz|manda|cria))/i;
+const DEMANDA_GATE = /\b(post|posts|postagem|arte|artes|criativo|banner|story|flyer|panfleto|legenda|card|design|v[ií]deo|reels|relat[óo]rio|demanda|adicion|anota|registra|solicita|agenda(r)?|cria(r|m)?|faz(er|em)?|monta(r|m)?|prepara(r|m)?|altera(r|ção|m)?|ajusta(r|m)?|muda(r|nça|m)?|edita(r|m)?|refaz|quero|queria|gostaria|preciso de|pode (fazer|criar|montar|adicionar)|me (faz|manda|cria))/i;
+// Confirmação do PRÓPRIO Alfred de que vai providenciar/registrar — sinal forte de demanda.
+const DEMANDA_GATE_RESP = /\b(adicion|providenci|registr|anota|deixa comigo|fica comigo|j[áa] (vou|estou)|coloquei (na|nas)|na demanda|nas demandas)/i;
 
 /** Detecta uma DEMANDA AVULSA concreta que o cliente acabou de pedir (pra registrar no Kanban). */
 async function classificarDemanda(contents: { role: "user" | "model"; parts: { text: string }[] }[]): Promise<NovaDemanda[]> {
