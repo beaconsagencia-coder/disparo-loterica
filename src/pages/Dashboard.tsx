@@ -1,12 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Send, Users, Clock, Rocket, MessageCircle, ChevronRight, X,
-  Paperclip, Mic, Smile, ArrowRight, RotateCcw, AlertTriangle,
-  Calendar, Check, Loader2, CalendarDays, Image as ImageIcon, LayoutTemplate, FileCheck,
+  Paperclip, Mic, Square, FileText, ArrowRight, RotateCcw, AlertTriangle,
+  Calendar, Check, Loader2, CalendarDays, Image as ImageIcon, FileCheck,
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
-import type { WhatsappInstance, Message, LeadStatus } from "@/lib/types";
-import { LEAD_STATUS_LABEL } from "@/lib/types";
+import type { WhatsappInstance, Message } from "@/lib/types";
 import type { AlfredDemand, DemandStatus } from "@/lib/useAlfred";
 
 // =====================================================================
@@ -22,13 +21,23 @@ function diasAteHoje(iso: string) {
 const horaDe = (iso: string | null, fallback?: string | null) =>
   iso ? new Date(iso).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }) : (fallback ?? "—");
 
-const STATUS_TONE: Partial<Record<LeadStatus, string>> = {
-  reuniao_agendada: C.gr, em_negociacao: C.am, ganho: C.gr, respondeu: C.acT,
-  em_followup: C.acT, aguardando_resposta: C.am, perdido: C.rd,
+type MediaKind = "image" | "audio" | "video" | "document";
+function kindFromMime(mime: string): MediaKind {
+  if (mime.startsWith("image/")) return "image";
+  if (mime.startsWith("audio/")) return "audio";
+  if (mime.startsWith("video/")) return "video";
+  return "document";
+}
+
+// Só estes estágios do CRM entram em "Propostas recentes".
+const STAGE_PROP: Record<string, { label: string; tone: string }> = {
+  proposta_enviada: { label: "Proposta enviada", tone: "#D4537E" },
+  contrato: { label: "Contrato", tone: "#1D9E75" },
 };
+const STAGES_PROP = Object.keys(STAGE_PROP);
 
 interface AgendaItem { id: string; titulo: string | null; quando_texto: string; scheduled_for: string | null; conversation_id: string | null; nome: string }
-interface PropostaItem { conversation_id: string; nome: string; preview: string | null; last_at: string | null; status: LeadStatus; unread: number }
+interface PropostaItem { conversation_id: string; nome: string; preview: string | null; last_at: string | null; stage: string; unread: number }
 interface DemandaView extends AlfredDemand { client_name: string }
 interface ChatTarget { conversationId: string; nome: string; sub: string }
 
@@ -40,7 +49,12 @@ function ChatDrawer({ target, onClose }: { target: ChatTarget; onClose: () => vo
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [recording, setRecording] = useState(false);
   const endRef = useRef<HTMLDivElement>(null);
+  const imgRef = useRef<HTMLInputElement>(null);
+  const docRef = useRef<HTMLInputElement>(null);
+  const mediaRecRef = useRef<MediaRecorder | null>(null);
+  const chunksRef = useRef<Blob[]>([]);
 
   useEffect(() => {
     let alive = true;
@@ -78,6 +92,53 @@ function ChatDrawer({ target, onClose }: { target: ChatTarget; onClose: () => vo
     setSending(false);
   }
 
+  // Sobe ao Storage e devolve a URL pública (mesmo bucket do Inbox).
+  async function uploadToStorage(file: File) {
+    const { data: u } = await supabase.auth.getUser();
+    const uid = u.user?.id ?? "anon";
+    const ext = file.name.includes(".") ? file.name.split(".").pop() : (file.type.split("/")[1] || "bin");
+    const path = `${uid}/outbound/${crypto.randomUUID()}.${ext}`;
+    const { error } = await supabase.storage.from("chat-media").upload(path, file, { contentType: file.type || "application/octet-stream", upsert: false });
+    if (error) { alert("Falha no upload: " + error.message); return null; }
+    return { url: supabase.storage.from("chat-media").getPublicUrl(path).data.publicUrl, mime: file.type || "application/octet-stream", name: file.name };
+  }
+
+  // Envia imagem/áudio/vídeo/documento pela conversa (Edge Function send-reply).
+  async function sendFile(file: File) {
+    setSending(true);
+    const up = await uploadToStorage(file);
+    if (!up) { setSending(false); return; }
+    const { error } = await supabase.functions.invoke("send-reply", {
+      body: { conversation_id: target.conversationId, body: draft.trim() || undefined, media: { url: up.url, kind: kindFromMime(up.mime), mime: up.mime, name: up.name } },
+    });
+    if (error) alert("Falha ao enviar: " + error.message); else setDraft("");
+    setSending(false);
+  }
+
+  function onPick(e: React.ChangeEvent<HTMLInputElement>) {
+    const f = e.target.files?.[0];
+    e.target.value = "";
+    if (f) sendFile(f);
+  }
+
+  // Grava nota de voz pelo microfone e envia ao parar.
+  async function toggleRecord() {
+    if (recording) { mediaRecRef.current?.stop(); return; }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mr = new MediaRecorder(stream);
+      chunksRef.current = [];
+      mr.ondataavailable = (ev) => { if (ev.data.size) chunksRef.current.push(ev.data); };
+      mr.onstop = async () => {
+        stream.getTracks().forEach((t) => t.stop());
+        const blob = new Blob(chunksRef.current, { type: mr.mimeType || "audio/webm" });
+        await sendFile(new File([blob], `audio-${Date.now()}.webm`, { type: blob.type }));
+        setRecording(false);
+      };
+      mr.start(); mediaRecRef.current = mr; setRecording(true);
+    } catch { alert("Não consegui acessar o microfone. Verifique a permissão do navegador."); }
+  }
+
   return (
     <div className="fixed inset-0 z-50 flex justify-end" role="dialog" aria-label={`Conversa com ${target.nome}`}>
       <div className="absolute inset-0 bg-black/55" onClick={onClose} />
@@ -101,7 +162,11 @@ function ChatDrawer({ target, onClose }: { target: ChatTarget; onClose: () => vo
             return (
               <div key={m.id} className={`flex ${out ? "justify-end" : "justify-start"}`}>
                 <div className={`max-w-[80%] rounded-2xl px-3 py-2 text-[13px] leading-snug ${out ? "rounded-br-md bg-[#0a84ff] text-white" : "rounded-bl-md border border-white/10 bg-white/[0.07] text-white/90"}`}>
-                  {m.body || (m.media_kind ? `[${m.media_kind}]` : "")}
+                  {m.media_url && m.media_kind === "image" && <a href={m.media_url} target="_blank" rel="noreferrer"><img src={m.media_url} alt="" className="mb-1 max-h-56 rounded-lg" /></a>}
+                  {m.media_url && m.media_kind === "audio" && <audio controls src={m.media_url} className="mb-1 w-56 max-w-full" />}
+                  {m.media_url && m.media_kind === "video" && <video controls src={m.media_url} className="mb-1 max-h-56 rounded-lg" />}
+                  {m.media_url && m.media_kind === "document" && <a href={m.media_url} target="_blank" rel="noreferrer" className="mb-1 flex items-center gap-1 underline"><FileText size={13} /> {m.media_name || "documento"}</a>}
+                  {m.body}
                   <div className={`mt-0.5 text-[10px] ${out ? "text-white/70" : "text-white/40"}`}>{horaDe(m.created_at)}</div>
                 </div>
               </div>
@@ -121,13 +186,17 @@ function ChatDrawer({ target, onClose }: { target: ChatTarget; onClose: () => vo
               {sending ? <Loader2 className="animate-spin" size={17} /> : <Send size={17} />}
             </button>
           </div>
-          <div className="mt-2 flex items-center gap-1 px-1 text-white/45">
-            <span className="flex h-8 w-8 items-center justify-center rounded-full hover:bg-white/10" aria-hidden="true"><Paperclip size={18} /></span>
-            <span className="flex h-8 w-8 items-center justify-center rounded-full hover:bg-white/10" aria-hidden="true"><ImageIcon size={18} /></span>
-            <span className="flex h-8 w-8 items-center justify-center rounded-full hover:bg-white/10" aria-hidden="true"><Mic size={18} /></span>
-            <span className="flex h-8 w-8 items-center justify-center rounded-full hover:bg-white/10" aria-hidden="true"><Smile size={18} /></span>
-            <span className="flex h-8 w-8 items-center justify-center rounded-full hover:bg-white/10" aria-hidden="true"><LayoutTemplate size={18} /></span>
+          <div className="mt-2 flex items-center gap-1 px-1 text-white/55">
+            <button onClick={() => docRef.current?.click()} disabled={sending || recording} aria-label="Enviar documento" className="flex h-8 w-8 items-center justify-center rounded-full hover:bg-white/10 disabled:opacity-40"><Paperclip size={18} /></button>
+            <button onClick={() => imgRef.current?.click()} disabled={sending || recording} aria-label="Enviar imagem ou vídeo" className="flex h-8 w-8 items-center justify-center rounded-full hover:bg-white/10 disabled:opacity-40"><ImageIcon size={18} /></button>
+            <button onClick={toggleRecord} disabled={sending} aria-label={recording ? "Parar gravação" : "Gravar áudio"}
+              className={`flex h-8 w-8 items-center justify-center rounded-full disabled:opacity-40 ${recording ? "bg-[#ff453a]/20 text-[#ff453a]" : "hover:bg-white/10"}`}>
+              {recording ? <Square size={16} /> : <Mic size={18} />}
+            </button>
+            {recording && <span className="text-[11px] text-[#ff453a]">gravando… toque pra enviar</span>}
           </div>
+          <input ref={imgRef} type="file" accept="image/*,video/*" className="hidden" onChange={onPick} />
+          <input ref={docRef} type="file" className="hidden" onChange={onPick} />
         </div>
       </aside>
     </div>
@@ -224,12 +293,14 @@ export default function Dashboard() {
   }, []);
 
   const refreshPropostas = useCallback(async () => {
+    // Apenas conversas de leads nas colunas "Proposta enviada" e "Contrato" do CRM.
     const { data } = await supabase.from("conversations")
-      .select("id, last_message_at, last_message_preview, unread_count, leads(nome, status)")
-      .order("last_message_at", { ascending: false, nullsFirst: false }).limit(8);
+      .select("id, last_message_at, last_message_preview, unread_count, leads!inner(nome, crm_stage)")
+      .in("leads.crm_stage", STAGES_PROP)
+      .order("last_message_at", { ascending: false, nullsFirst: false }).limit(12);
     setPropostas(((data as any[]) ?? []).map((c) => ({
       conversation_id: c.id, nome: c.leads?.nome ?? "Lead", preview: c.last_message_preview,
-      last_at: c.last_message_at, status: (c.leads?.status ?? "novo") as LeadStatus, unread: c.unread_count ?? 0,
+      last_at: c.last_message_at, stage: c.leads?.crm_stage ?? "proposta_enviada", unread: c.unread_count ?? 0,
     })));
   }, []);
 
@@ -358,16 +429,16 @@ export default function Dashboard() {
             {propostas.length === 0 ? (
               <p className="px-4 py-7 text-center text-sm text-white/40">Nenhuma conversa ainda.</p>
             ) : propostas.map((p, i) => {
-              const tone = STATUS_TONE[p.status] ?? C.acT;
+              const st = STAGE_PROP[p.stage] ?? STAGE_PROP.proposta_enviada;
               return (
                 <button key={p.conversation_id}
-                  onClick={() => setChat({ conversationId: p.conversation_id, nome: p.nome, sub: LEAD_STATUS_LABEL[p.status] })}
+                  onClick={() => setChat({ conversationId: p.conversation_id, nome: p.nome, sub: st.label })}
                   className={`flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-white/[0.04] ${i > 0 ? "border-t border-white/[0.07]" : ""}`}>
                   <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[#0a84ff]/20 text-xs font-medium text-[#4da3ff]">{p.nome.slice(0, 2).toUpperCase()}</span>
                   <span className="min-w-0 flex-1">
                     <span className="block truncate text-sm font-medium">{p.nome}</span>
-                    <span className="mt-0.5 inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px]" style={{ background: tone + "22", color: tone }}>
-                      <FileCheck size={11} /> {LEAD_STATUS_LABEL[p.status]}
+                    <span className="mt-0.5 inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px]" style={{ background: st.tone + "22", color: st.tone }}>
+                      <FileCheck size={11} /> {st.label}
                     </span>
                   </span>
                   <span className="shrink-0 text-right">

@@ -1,4 +1,4 @@
-import { Routes, Route } from "react-router-dom";
+import { Routes, Route, useLocation } from "react-router-dom";
 import { Sidebar, MobileNav } from "./components/ui/Sidebar";
 import { useSession } from "./lib/useSession";
 import Login from "./pages/Login";
@@ -19,6 +19,7 @@ import Instances from "./pages/Instances";
 
 export default function App() {
   const { session, loading } = useSession();
+  const { pathname } = useLocation();
 
   if (loading) {
     return (
@@ -30,11 +31,14 @@ export default function App() {
 
   if (!session) return <Login />;
 
+  // A dashboard usa tema dark — o menu lateral e a área acompanham nessa rota.
+  const dark = pathname === "/";
+
   return (
-    <div className="flex min-h-screen">
-      <Sidebar />
-      <MobileNav />
-      <main className="flex-1 overflow-x-hidden px-4 pb-8 pt-20 md:px-10 md:py-6">
+    <div className={`flex min-h-screen ${dark ? "bg-[#0a0b10]" : ""}`}>
+      <Sidebar dark={dark} />
+      <MobileNav dark={dark} />
+      <main className={`flex-1 overflow-x-hidden px-4 pb-8 pt-20 md:px-10 md:py-6 ${dark ? "bg-[#0a0b10]" : ""}`}>
         <Routes>
           <Route path="/" element={<Dashboard />} />
           <Route path="/upload" element={<UploadPage />} />
